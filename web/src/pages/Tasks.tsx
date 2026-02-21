@@ -1050,16 +1050,55 @@ function ContentView({ content, selected, completing, editingUuid, collapsedProj
   const [editingNotes, setEditingNotes] = useState(false);
   const [projectNotes, setProjectNotes] = useState(content.notes || "");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [showProjectMenu, setShowProjectMenu] = useState(false);
+  const [projectLogbook, setProjectLogbook] = useState<CompletedTask[]>([]);
+  const [showLoggedItems, setShowLoggedItems] = useState(false);
   const notesRef = useRef<HTMLTextAreaElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const isProject = selected.kind === "project";
+  const projectUuid = isProject ? (selected as { uuid: string }).uuid : null;
 
   // Reset notes state when project changes
   useEffect(() => {
     setEditingNotes(false);
     setConfirmDelete(false);
+    setShowProjectMenu(false);
     setProjectNotes(content.notes || "");
-  }, [selected.kind === "project" ? (selected as { uuid: string }).uuid : null, content.notes]);
+    setShowLoggedItems(false);
+    setProjectLogbook([]);
+  }, [projectUuid, content.notes]);
 
-  const isProject = selected.kind === "project";
+  // Fetch project logbook when showing logged items
+  useEffect(() => {
+    if (!isProject || !showLoggedItems || !projectUuid) return;
+    fetch(`/api/tasks/logbook/project/${projectUuid}`)
+      .then((r) => r.json())
+      .then((d) => setProjectLogbook(d.tasks || []))
+      .catch(() => setProjectLogbook([]));
+  }, [isProject, showLoggedItems, projectUuid]);
+
+  // Close menu on outside click
+  useEffect(() => {
+    if (!showProjectMenu) return;
+    const handler = (e: globalThis.MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setShowProjectMenu(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showProjectMenu]);
+
+  const formatLoggedDate = (isoString: string): string => {
+    const d = new Date(isoString);
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const target = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const diffDays = Math.round((today.getTime() - target.getTime()) / 86400000);
+    if (diffDays === 0) return "today";
+    if (diffDays === 1) return "yesterday";
+    if (diffDays < 7) return d.toLocaleDateString("en-US", { weekday: "short" }).toLowerCase();
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  };
 
   return (
     <>
@@ -1068,29 +1107,34 @@ function ContentView({ content, selected, completing, editingUuid, collapsedProj
           {content.icon && <ListIcon type={content.icon} size={24} />}
           <h2>{content.title}</h2>
           {content.subtitle && <MetaText>{content.subtitle}</MetaText>}
-        </div>
-        {isProject && (
-          <div className="t3-header-actions">
-            <button className="t3-header-btn" onClick={() => { setEditingNotes(!editingNotes); setTimeout(() => notesRef.current?.focus(), 50); }} title="Edit notes">
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M12.146.854a.5.5 0 01.708 0l2.292 2.292a.5.5 0 010 .708L5.854 13.146a.5.5 0 01-.233.131l-4 1a.5.5 0 01-.606-.606l1-4a.5.5 0 01.131-.233L12.146.854z"/></svg>
-            </button>
-            {confirmDelete ? (
-              <>
-                <span className="t3-header-confirm-text">Delete?</span>
-                <button className="t3-header-btn t3-header-btn-danger" onClick={() => { onDeleteProject?.((selected as { uuid: string }).uuid); setConfirmDelete(false); }} title="Confirm delete">
-                  Yes
-                </button>
-                <button className="t3-header-btn" onClick={() => setConfirmDelete(false)} title="Cancel">
-                  No
-                </button>
-              </>
-            ) : (
-              <button className="t3-header-btn t3-header-btn-danger" onClick={() => setConfirmDelete(true)} title="Delete project">
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M5.5 1a.5.5 0 00-.5.5V2H2.5a.5.5 0 000 1h.538l.853 10.66A2 2 0 005.885 15h4.23a2 2 0 001.994-1.84L12.962 3h.538a.5.5 0 000-1H11v-.5a.5.5 0 00-.5-.5h-5zM6 2v-.5h4V2H6z"/></svg>
+          {isProject && (
+            <div className="t3-header-dots-wrap" ref={menuRef}>
+              <button className="t3-header-dots" onClick={() => setShowProjectMenu(!showProjectMenu)} title="Project options">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="13" cy="8" r="1.5"/></svg>
               </button>
-            )}
-          </div>
-        )}
+              {showProjectMenu && (
+                <div className="t3-dots-menu">
+                  <button className="t3-dots-menu-item" onClick={() => { setShowProjectMenu(false); setEditingNotes(!editingNotes); setTimeout(() => notesRef.current?.focus(), 50); }}>
+                    Edit notes
+                  </button>
+                  {confirmDelete ? (
+                    <div className="t3-dots-menu-confirm">
+                      <span>Delete this project?</span>
+                      <div className="t3-dots-menu-confirm-btns">
+                        <button className="t3-dots-menu-item t3-dots-menu-danger" onClick={() => { onDeleteProject?.(projectUuid!); setConfirmDelete(false); setShowProjectMenu(false); }}>Yes, delete</button>
+                        <button className="t3-dots-menu-item" onClick={() => setConfirmDelete(false)}>Cancel</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button className="t3-dots-menu-item t3-dots-menu-danger" onClick={() => setConfirmDelete(true)}>
+                      Delete project
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {isProject && editingNotes ? (
@@ -1105,7 +1149,7 @@ function ContentView({ content, selected, completing, editingUuid, collapsedProj
           />
           <div className="t3-project-notes-actions">
             <Button variant="primary" size="sm" onClick={() => {
-              onUpdateProject?.((selected as { uuid: string }).uuid, projectNotes);
+              onUpdateProject?.(projectUuid!, projectNotes);
               setEditingNotes(false);
               setTimeout(() => onRefresh?.(), 2000);
             }}>Save</Button>
@@ -1163,13 +1207,24 @@ function ContentView({ content, selected, completing, editingUuid, collapsedProj
             );
           }
 
+          /* ── Heading section (inside project view) ── */
           if (section.isArea || (section.label && !section.isProject)) {
             return (
               <div key={section.label || `s-${i}`}>
-                <SectionLabel className="section-label-flex">
-                  {section.areaIcon && <ListIcon type="area" size={16} />}
-                  {section.label}
-                </SectionLabel>
+                {isProject && section.label ? (
+                  <div className="t3-heading-section">
+                    <span className="t3-heading-label">{section.label}</span>
+                    <div className="t3-heading-line" />
+                    <button className="t3-heading-dots" title="Section options">
+                      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="13" cy="8" r="1.5"/></svg>
+                    </button>
+                  </div>
+                ) : (
+                  <SectionLabel className="section-label-flex">
+                    {section.areaIcon && <ListIcon type="area" size={16} />}
+                    {section.label}
+                  </SectionLabel>
+                )}
                 {section.tasks.map((task) => (
                   <TaskRow key={task.uuid} task={task} onComplete={onComplete} onUpdate={onUpdate}
                     isCompleting={completing.has(task.uuid)} isEditing={editingUuid === task.uuid}
@@ -1200,6 +1255,32 @@ function ContentView({ content, selected, completing, editingUuid, collapsedProj
           );
         })}
         {content.sections.length === 0 && <EmptyState message="No tasks" />}
+
+        {/* ── Project logbook (completed items) ── */}
+        {isProject && (
+          <div className="t3-project-logbook">
+            <button
+              className="t3-project-logbook-toggle"
+              onClick={() => setShowLoggedItems(!showLoggedItems)}
+            >
+              {showLoggedItems ? "Hide" : "Show"} logged items
+            </button>
+            {showLoggedItems && projectLogbook.length > 0 && (
+              <div className="t3-project-logbook-list">
+                {projectLogbook.map((t) => (
+                  <div key={t.uuid} className="t3-project-logbook-row">
+                    <span className="t3-check t3-check-done t3-check-logged" />
+                    <span className="t3-logbook-row-date">{formatLoggedDate(t.completedAt)}</span>
+                    <span className="t3-logbook-row-title">{t.title}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {showLoggedItems && projectLogbook.length === 0 && (
+              <div className="t3-project-logbook-empty">No completed tasks</div>
+            )}
+          </div>
+        )}
       </div>
     </>
   );

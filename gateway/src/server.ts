@@ -28,7 +28,7 @@ import { startScheduler, stopScheduler, listJobs, createJob, updateJob, toggleJo
 import { runSelfRepair } from "./cron/self-repair.js";
 import { searchMemories } from "./knowledge/searcher.js";
 import { log as writeLog, getRecentLogs, queryLogs, pruneLogs, setLogBroadcast } from "./logging.js";
-import { getActiveTasks, getProjects, getTags, getAreas, getCompletedTasks, createTask, completeTask, uncompleteTask, updateTask, moveTask, duplicateTask, createProject, createArea, deleteProject, appendChecklistItems, getProjectHeadings, showInThings, toggleChecklistItem, deleteChecklistItem, deleteTask, getAllHeadingsForProjects, type ThingsList } from "./things/client.js";
+import { getActiveTasks, getProjects, getTags, getAreas, getCompletedTasks, getCompletedTasksByProject, createTask, completeTask, uncompleteTask, updateTask, moveTask, duplicateTask, createProject, createArea, deleteProject, appendChecklistItems, getProjectHeadings, showInThings, toggleChecklistItem, deleteChecklistItem, deleteTask, getAllHeadingsForProjects, type ThingsList } from "./things/client.js";
 import { createOutlineWebhookRouter } from "./sync/outline-webhook.js";
 import { fullOutlineSync, scanObsidianToOutline, getSyncStatus, getConflicts, resolveConflict } from "./sync/outline-sync.js";
 import {
@@ -41,6 +41,7 @@ import {
 import { transcribeYouTube, transcribeAudioFile } from "./youtube/transcriber.js";
 import { executeTriageActions, handleTriageRejection } from "./channels/triage-actions.js";
 import { processFeedback } from "./knowledge/learner.js";
+import { applyFactReviewResolution } from "./knowledge/fact-reviews.js";
 import { syncToThings3, readThings3Progress } from "./okr/things3-sync.js";
 import { configureAPNs, closeAPNs } from "./notifications/apns.js";
 import { createPushDispatcher, getNotificationLog, getDeviceCount } from "./notifications/dispatcher.js";
@@ -48,6 +49,45 @@ import { generateToken } from "./livekit/token.js";
 import { AutoDevProxy } from "./autodev/proxy.js";
 
 const config = loadConfig();
+
+const VOICE_TOOL_FILLER_CACHE = new Map<string, string>();
+const VOICE_TOOL_FILLER_RULES: Array<{ pattern: RegExp; filler: string }> = [
+  { pattern: /(calendar|event|schedule)/i, filler: "I am checking your calendar now." },
+  { pattern: /(gmail|email|inbox|mail)/i, filler: "I am checking your inbox now." },
+  { pattern: /(weather|forecast)/i, filler: "I am checking the weather now." },
+  { pattern: /(memory|knowledge|search|lookup|find)/i, filler: "I am looking that up now." },
+  { pattern: /(contact|person|people)/i, filler: "I am checking that contact now." },
+  { pattern: /(task|todo|things|okr)/i, filler: "I am checking your task list now." },
+  { pattern: /(channel_send|whatsapp|telegram|imessage|sms|message)/i, filler: "I am preparing that message now." },
+  { pattern: /(code|autodev|terminal|shell|command|git)/i, filler: "I am running that task now." },
+];
+
+function getVoiceToolFiller(toolName: string): string {
+  const key = (toolName || "tool").trim().toLowerCase();
+  const cached = VOICE_TOOL_FILLER_CACHE.get(key);
+  if (cached) return cached;
+
+  const rule = VOICE_TOOL_FILLER_RULES.find((r) => r.pattern.test(key));
+  const filler = rule?.filler ?? "I am working on that now.";
+  VOICE_TOOL_FILLER_CACHE.set(key, filler);
+  return filler;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function isVerifyFactReview(type: string | null | undefined, proposedAction: unknown): boolean {
+  if (type !== "verify") return false;
+  const action = asRecord(proposedAction);
+  if (!action) return false;
+  const kind = typeof action.kind === "string" ? action.kind : "";
+  const factId = typeof action.fact_id === "string"
+    ? action.fact_id
+    : (typeof action.factId === "string" ? action.factId : "");
+  return kind === "verify_fact" && factId.trim().length > 0;
+}
 
 // Configure APNs if credentials are available
 if (config.apns.keyPath && config.apns.keyId && config.apns.teamId) {
@@ -302,6 +342,21 @@ app.get("/api/livekit/config", (_req, res) => {
     hasApiSecret: !!lk.apiSecret,
     pronunciations: lk.pronunciations ?? [],
     voicePrompt: lk.voicePrompt ?? "",
+    voiceModel: lk.voiceModel,
+    voiceHistoryLimit: lk.voiceHistoryLimit,
+    voiceEnableTools: lk.voiceEnableTools,
+    voiceIncludeMemory: lk.voiceIncludeMemory,
+    voiceMinEndpointSec: lk.voiceMinEndpointSec,
+    voiceMaxEndpointSec: lk.voiceMaxEndpointSec,
+    ttsCacheEnabled: lk.ttsCacheEnabled,
+    ttsCacheLocalMaxItems: lk.ttsCacheLocalMaxItems,
+    ttsCacheLocalMaxBytes: lk.ttsCacheLocalMaxBytes,
+    ttsCacheMaxTextChars: lk.ttsCacheMaxTextChars,
+    ttsCacheMaxAudioBytes: lk.ttsCacheMaxAudioBytes,
+    ttsCacheRedisTtlSec: lk.ttsCacheRedisTtlSec,
+    ttsCachePrefix: lk.ttsCachePrefix,
+    ttsCacheRedisUrl: lk.ttsCacheRedisUrl || "",
+    hasTtsCacheRedisUrl: !!lk.ttsCacheRedisUrl,
   });
 });
 
@@ -338,16 +393,20 @@ app.post("/api/voice/chat", async (req, res) => {
     });
 
     const convId = await ensureConversation(conversationId, agentId || "personal");
-    const voiceModel = process.env.JOI_VOICE_MODEL || "openai/gpt-4o-mini";
-    const voiceHistoryLimitRaw = Number.parseInt(process.env.JOI_VOICE_HISTORY_LIMIT || "8", 10);
+    const voiceModel = config.livekit.voiceModel || process.env.JOI_VOICE_MODEL || "openai/gpt-4o-mini";
+    const voiceHistoryLimitRaw = Number.parseInt(
+      String(config.livekit.voiceHistoryLimit ?? process.env.JOI_VOICE_HISTORY_LIMIT ?? "8"),
+      10,
+    );
     const voiceHistoryLimit = Number.isFinite(voiceHistoryLimitRaw)
       ? Math.min(50, Math.max(2, voiceHistoryLimitRaw))
       : 8;
-    const voiceToolsEnabled = process.env.JOI_VOICE_ENABLE_TOOLS === "1";
-    const voiceMemoryEnabled = process.env.JOI_VOICE_INCLUDE_MEMORY === "1";
+    const voiceToolsEnabled = config.livekit.voiceEnableTools ?? (process.env.JOI_VOICE_ENABLE_TOOLS === "1");
+    const voiceMemoryEnabled = config.livekit.voiceIncludeMemory ?? (process.env.JOI_VOICE_INCLUDE_MEMORY === "1");
     const stripVoiceTags = (text: string) =>
       text.replace(/\[(?:[a-z][a-z0-9_-]{0,20})\]\s*/gi, "");
     const voiceStartMs = Date.now();
+    const emittedToolUseIds = new Set<string>();
     console.log(
       `[voice/chat] conv=${convId} model=${voiceModel} tools=${voiceToolsEnabled} memory=${voiceMemoryEnabled} history=${voiceHistoryLimit}`,
     );
@@ -370,11 +429,20 @@ app.post("/api/voice/chat", async (req, res) => {
           res.write(`data: ${JSON.stringify({ type: "stream", delta: cleanDelta })}\n\n`);
         }
       },
+      onToolUse: (toolName, _toolInput, toolUseId) => {
+        if (toolUseId && emittedToolUseIds.has(toolUseId)) return;
+        if (toolUseId) emittedToolUseIds.add(toolUseId);
+        const filler = getVoiceToolFiller(toolName);
+        const cleanFiller = stripVoiceTags(filler);
+        if (cleanFiller) {
+          res.write(`data: ${JSON.stringify({ type: "stream", delta: `${cleanFiller} ` })}\n\n`);
+        }
+      },
     });
 
     const cleanContent = stripVoiceTags(result.content);
     const latencyMs = Date.now() - voiceStartMs;
-    res.write(`data: ${JSON.stringify({ type: "done", content: cleanContent, model: result.model, usage: result.usage, costUsd: result.costUsd, latencyMs })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: "done", messageId: result.messageId, content: cleanContent, model: result.model, usage: result.usage, costUsd: result.costUsd, latencyMs })}\n\n`);
     res.end();
   } catch (err) {
     console.error("[voice/chat] Error:", err);
@@ -384,6 +452,117 @@ app.post("/api/voice/chat", async (req, res) => {
       res.write(`data: ${JSON.stringify({ type: "error", error: String(err) })}\n\n`);
       res.end();
     }
+  }
+});
+
+// ─── Voice Cache Metrics Ingest (from LiveKit worker) ───
+app.post("/api/voice/cache-metrics", async (req, res) => {
+  try {
+    const body = req.body as {
+      conversationId?: string;
+      messageId?: string;
+      agentId?: string;
+      provider?: string;
+      model?: string;
+      voice?: string;
+      metrics?: {
+        cacheHits?: number;
+        cacheMisses?: number;
+        cacheHitChars?: number;
+        cacheMissChars?: number;
+        cacheHitAudioBytes?: number;
+        cacheMissAudioBytes?: number;
+        segments?: number;
+      };
+    };
+
+    const conversationId = body.conversationId || null;
+    const messageId = body.messageId || null;
+    const agentId = body.agentId || null;
+    const provider = body.provider || "cartesia";
+    const model = body.model || null;
+    const voice = body.voice || null;
+    const metrics = body.metrics || {};
+
+    const cacheHits = Math.max(0, Number(metrics.cacheHits || 0));
+    const cacheMisses = Math.max(0, Number(metrics.cacheMisses || 0));
+    const cacheHitChars = Math.max(0, Number(metrics.cacheHitChars || 0));
+    const cacheMissChars = Math.max(0, Number(metrics.cacheMissChars || 0));
+    const cacheHitAudioBytes = Math.max(0, Number(metrics.cacheHitAudioBytes || 0));
+    const cacheMissAudioBytes = Math.max(0, Number(metrics.cacheMissAudioBytes || 0));
+    const segments = Math.max(0, Number(metrics.segments || 0));
+    const totalSegments = Math.max(segments, cacheHits + cacheMisses);
+
+    if (!conversationId || totalSegments <= 0) {
+      res.status(400).json({ error: "conversationId and non-empty metrics are required" });
+      return;
+    }
+
+    const usagePatch = {
+      voiceCache: {
+        cacheHits,
+        cacheMisses,
+        cacheHitChars,
+        cacheMissChars,
+        cacheHitAudioBytes,
+        cacheMissAudioBytes,
+        segments: totalSegments,
+        hitRate: totalSegments > 0 ? cacheHits / totalSegments : 0,
+      },
+    };
+
+    if (messageId) {
+      await query(
+        `UPDATE messages
+         SET token_usage = COALESCE(token_usage, '{}'::jsonb) || $2::jsonb
+         WHERE id = $1 AND conversation_id = $3`,
+        [messageId, JSON.stringify(usagePatch), conversationId],
+      );
+    } else {
+      await query(
+        `UPDATE messages
+         SET token_usage = COALESCE(token_usage, '{}'::jsonb) || $2::jsonb
+         WHERE id = (
+           SELECT id FROM messages
+           WHERE conversation_id = $1 AND role = 'assistant'
+           ORDER BY created_at DESC
+           LIMIT 1
+         )`,
+        [conversationId, JSON.stringify(usagePatch)],
+      );
+    }
+
+    try {
+      await query(
+        `INSERT INTO voice_usage_log (provider, service, model, duration_ms, characters, cost_usd, conversation_id, agent_id, metadata)
+         VALUES ($1, 'tts_cache', $2, 0, $3, 0, $4, $5, $6::jsonb)`,
+        [
+          provider,
+          model,
+          cacheHitChars + cacheMissChars,
+          conversationId,
+          agentId,
+          JSON.stringify({
+            voice,
+            cache_hits: cacheHits,
+            cache_misses: cacheMisses,
+            cache_hit_chars: cacheHitChars,
+            cache_miss_chars: cacheMissChars,
+            cache_hit_audio_bytes: cacheHitAudioBytes,
+            cache_miss_audio_bytes: cacheMissAudioBytes,
+            segments: totalSegments,
+            hit_rate: totalSegments > 0 ? cacheHits / totalSegments : 0,
+          }),
+        ],
+      );
+    } catch (err) {
+      console.warn("[voice/cache-metrics] failed inserting voice_usage_log:", (err as Error).message);
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[voice/cache-metrics] failed:", err);
+    res.status(500).json({ error: "Failed to ingest voice cache metrics" });
   }
 });
 
@@ -662,6 +841,20 @@ app.get("/api/settings", (_req, res) => {
       cartesiaApiKey: config.livekit.cartesiaApiKey ? "***" + config.livekit.cartesiaApiKey.slice(-4) : null,
       pronunciations: config.livekit.pronunciations ?? [],
       voicePrompt: config.livekit.voicePrompt ?? "",
+      voiceModel: config.livekit.voiceModel,
+      voiceHistoryLimit: config.livekit.voiceHistoryLimit,
+      voiceEnableTools: config.livekit.voiceEnableTools,
+      voiceIncludeMemory: config.livekit.voiceIncludeMemory,
+      voiceMinEndpointSec: config.livekit.voiceMinEndpointSec,
+      voiceMaxEndpointSec: config.livekit.voiceMaxEndpointSec,
+      ttsCacheEnabled: config.livekit.ttsCacheEnabled,
+      ttsCacheLocalMaxItems: config.livekit.ttsCacheLocalMaxItems,
+      ttsCacheLocalMaxBytes: config.livekit.ttsCacheLocalMaxBytes,
+      ttsCacheMaxTextChars: config.livekit.ttsCacheMaxTextChars,
+      ttsCacheMaxAudioBytes: config.livekit.ttsCacheMaxAudioBytes,
+      ttsCacheRedisTtlSec: config.livekit.ttsCacheRedisTtlSec,
+      ttsCachePrefix: config.livekit.ttsCachePrefix,
+      ttsCacheRedisUrl: config.livekit.ttsCacheRedisUrl || "",
     },
   };
   res.json(masked);
@@ -727,6 +920,20 @@ app.put("/api/settings", (req, res) => {
       if (lk.cartesiaApiKey && !lk.cartesiaApiKey.includes("***")) (config as any).livekit.cartesiaApiKey = lk.cartesiaApiKey;
       if (Array.isArray(lk.pronunciations)) (config as any).livekit.pronunciations = lk.pronunciations;
       if (lk.voicePrompt !== undefined) (config as any).livekit.voicePrompt = lk.voicePrompt;
+      if (lk.voiceModel !== undefined) (config as any).livekit.voiceModel = lk.voiceModel;
+      if (lk.voiceHistoryLimit !== undefined) (config as any).livekit.voiceHistoryLimit = lk.voiceHistoryLimit;
+      if (lk.voiceEnableTools !== undefined) (config as any).livekit.voiceEnableTools = !!lk.voiceEnableTools;
+      if (lk.voiceIncludeMemory !== undefined) (config as any).livekit.voiceIncludeMemory = !!lk.voiceIncludeMemory;
+      if (lk.voiceMinEndpointSec !== undefined) (config as any).livekit.voiceMinEndpointSec = lk.voiceMinEndpointSec;
+      if (lk.voiceMaxEndpointSec !== undefined) (config as any).livekit.voiceMaxEndpointSec = lk.voiceMaxEndpointSec;
+      if (lk.ttsCacheEnabled !== undefined) (config as any).livekit.ttsCacheEnabled = !!lk.ttsCacheEnabled;
+      if (lk.ttsCacheLocalMaxItems !== undefined) (config as any).livekit.ttsCacheLocalMaxItems = lk.ttsCacheLocalMaxItems;
+      if (lk.ttsCacheLocalMaxBytes !== undefined) (config as any).livekit.ttsCacheLocalMaxBytes = lk.ttsCacheLocalMaxBytes;
+      if (lk.ttsCacheMaxTextChars !== undefined) (config as any).livekit.ttsCacheMaxTextChars = lk.ttsCacheMaxTextChars;
+      if (lk.ttsCacheMaxAudioBytes !== undefined) (config as any).livekit.ttsCacheMaxAudioBytes = lk.ttsCacheMaxAudioBytes;
+      if (lk.ttsCacheRedisTtlSec !== undefined) (config as any).livekit.ttsCacheRedisTtlSec = lk.ttsCacheRedisTtlSec;
+      if (lk.ttsCachePrefix !== undefined) (config as any).livekit.ttsCachePrefix = lk.ttsCachePrefix;
+      if (lk.ttsCacheRedisUrl !== undefined) (config as any).livekit.ttsCacheRedisUrl = lk.ttsCacheRedisUrl;
     }
 
     // Reset cached API clients so they pick up new keys
@@ -1282,23 +1489,38 @@ app.get("/api/reports/voice/summary", async (req, res) => {
   try {
     const result = await query(
       `SELECT
-        COUNT(*)::int AS total_calls,
-        COALESCE(SUM(duration_ms),0)::bigint AS total_duration_ms,
-        COALESCE(SUM(characters),0)::bigint AS total_characters,
+        COUNT(*) FILTER (WHERE service IN ('stt','tts'))::int AS total_calls,
+        COALESCE(SUM(duration_ms) FILTER (WHERE service IN ('stt','tts')),0)::bigint AS total_duration_ms,
+        COALESCE(SUM(characters) FILTER (WHERE service='tts'),0)::bigint AS total_characters,
         COALESCE(SUM(cost_usd),0)::float AS total_cost,
         COALESCE(SUM(cost_usd) FILTER (WHERE service='stt'),0)::float AS stt_cost,
         COALESCE(SUM(cost_usd) FILTER (WHERE service='tts'),0)::float AS tts_cost,
         COALESCE(SUM(duration_ms) FILTER (WHERE service='stt'),0)::bigint AS stt_duration_ms,
-        COALESCE(SUM(characters) FILTER (WHERE service='tts'),0)::bigint AS tts_characters
+        COALESCE(SUM(characters) FILTER (WHERE service='tts'),0)::bigint AS tts_characters,
+        COALESCE(SUM((metadata->>'cache_hits')::int) FILTER (WHERE service='tts_cache'),0)::bigint AS cache_hits,
+        COALESCE(SUM((metadata->>'cache_misses')::int) FILTER (WHERE service='tts_cache'),0)::bigint AS cache_misses,
+        COALESCE(SUM((metadata->>'cache_hit_chars')::int) FILTER (WHERE service='tts_cache'),0)::bigint AS cache_hit_chars,
+        COALESCE(SUM((metadata->>'cache_miss_chars')::int) FILTER (WHERE service='tts_cache'),0)::bigint AS cache_miss_chars,
+        COALESCE(SUM((metadata->>'cache_hit_audio_bytes')::int) FILTER (WHERE service='tts_cache'),0)::bigint AS cache_hit_audio_bytes,
+        COALESCE(SUM((metadata->>'cache_miss_audio_bytes')::int) FILTER (WHERE service='tts_cache'),0)::bigint AS cache_miss_audio_bytes
        FROM voice_usage_log
        WHERE created_at >= CURRENT_DATE - $1::int`,
       [days],
     );
-    res.json(result.rows[0]);
+    const row = result.rows[0] as Record<string, unknown>;
+    const cacheHits = Number(row.cache_hits || 0);
+    const cacheMisses = Number(row.cache_misses || 0);
+    const cacheTotal = cacheHits + cacheMisses;
+    res.json({
+      ...row,
+      cache_hit_rate: cacheTotal > 0 ? cacheHits / cacheTotal : 0,
+    });
   } catch {
     res.json({
       total_calls: 0, total_duration_ms: 0, total_characters: 0, total_cost: 0,
       stt_cost: 0, tts_cost: 0, stt_duration_ms: 0, tts_characters: 0,
+      cache_hits: 0, cache_misses: 0, cache_hit_chars: 0, cache_miss_chars: 0,
+      cache_hit_audio_bytes: 0, cache_miss_audio_bytes: 0, cache_hit_rate: 0,
     });
   }
 });
@@ -1315,8 +1537,34 @@ app.get("/api/reports/voice/daily", async (req, res) => {
         COALESCE(SUM(duration_ms),0)::bigint AS duration_ms,
         COALESCE(SUM(characters),0)::bigint AS characters
        FROM voice_usage_log
-       WHERE created_at >= CURRENT_DATE - $1::int
-       GROUP BY 1, 2 ORDER BY 1, 2`,
+       WHERE service IN ('stt','tts') AND created_at >= CURRENT_DATE - $1::int
+       GROUP BY 1, 2
+
+       UNION ALL
+
+       SELECT date_trunc('day', created_at)::date AS day,
+         'tts_cache_hit'::text AS service,
+         COALESCE(SUM((metadata->>'cache_hits')::int),0)::int AS calls,
+         0::float AS cost,
+         0::bigint AS duration_ms,
+         COALESCE(SUM((metadata->>'cache_hit_chars')::int),0)::bigint AS characters
+       FROM voice_usage_log
+       WHERE service='tts_cache' AND created_at >= CURRENT_DATE - $1::int
+       GROUP BY 1
+
+       UNION ALL
+
+       SELECT date_trunc('day', created_at)::date AS day,
+         'tts_cache_miss'::text AS service,
+         COALESCE(SUM((metadata->>'cache_misses')::int),0)::int AS calls,
+         0::float AS cost,
+         0::bigint AS duration_ms,
+         COALESCE(SUM((metadata->>'cache_miss_chars')::int),0)::bigint AS characters
+       FROM voice_usage_log
+       WHERE service='tts_cache' AND created_at >= CURRENT_DATE - $1::int
+       GROUP BY 1
+
+       ORDER BY 1, 2`,
       [days],
     );
     res.json({ daily: result.rows });
@@ -1748,6 +1996,12 @@ app.get("/api/reviews", async (req, res) => {
     const agentId = req.query.agent_id as string | undefined;
     const tag = req.query.tag as string | undefined;
     const type = req.query.type as string | undefined;
+    const minPriorityRaw = Number(req.query.min_priority);
+    const maxPriorityRaw = Number(req.query.max_priority);
+    const minPriority = Number.isFinite(minPriorityRaw) ? Math.max(0, Math.min(10, Math.floor(minPriorityRaw))) : null;
+    const maxPriority = Number.isFinite(maxPriorityRaw) ? Math.max(0, Math.min(10, Math.floor(maxPriorityRaw))) : null;
+    const maxAgeDaysRaw = Number(req.query.max_age_days);
+    const maxAgeDays = Number.isFinite(maxAgeDaysRaw) && maxAgeDaysRaw > 0 ? Math.min(maxAgeDaysRaw, 365) : null;
     const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 1000);
     const offset = Math.max(Number(req.query.offset) || 0, 0);
 
@@ -1775,6 +2029,18 @@ app.get("/api/reviews", async (req, res) => {
       conditions.push(`$${idx++} = ANY(tags)`);
       params.push(tag);
     }
+    if (minPriority !== null) {
+      conditions.push(`priority >= $${idx++}`);
+      params.push(minPriority);
+    }
+    if (maxPriority !== null) {
+      conditions.push(`priority <= $${idx++}`);
+      params.push(maxPriority);
+    }
+    if (maxAgeDays !== null) {
+      conditions.push(`created_at >= NOW() - make_interval(days := $${idx++}::int)`);
+      params.push(Math.floor(maxAgeDays));
+    }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
     params.push(limit);
@@ -1792,7 +2058,7 @@ app.get("/api/reviews", async (req, res) => {
        ORDER BY
          CASE status WHEN 'pending' THEN 0 ELSE 1 END,
          priority DESC,
-         created_at ASC
+         created_at DESC
        LIMIT $${limitParam}
        OFFSET $${offsetParam}`,
       params,
@@ -1850,6 +2116,7 @@ app.put("/api/reviews/:id/resolve", async (req, res) => {
       res.status(404).json({ error: "Review not found" });
       return;
     }
+    const isFactVerify = isVerifyFactReview(row.type, row.proposed_action);
     const effectiveResolution = status === "rejected"
       ? (resolution ?? null)
       : (resolution ?? row.proposed_action ?? null);
@@ -1883,8 +2150,17 @@ app.put("/api/reviews/:id/resolve", async (req, res) => {
       }
     }
 
+    if (isFactVerify) {
+      applyFactReviewResolution({
+        status,
+        resolution: effectiveResolution,
+        proposedAction: row.proposed_action,
+        resolvedBy: resolved_by || "human",
+      }).catch((err) => console.warn("[Reviews] Fact verification apply failed:", err));
+    }
+
     // Fire-and-forget: learning pipeline
-    if (row) {
+    if (row && !isFactVerify) {
       processFeedback(
         {
           reviewId: req.params.id,
@@ -2336,6 +2612,16 @@ app.get("/api/tasks/logbook", (_req, res) => {
   try {
     const limit = Number(_req.query.limit) || 50;
     res.json({ tasks: getCompletedTasks(limit) });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
+  }
+});
+
+app.get("/api/tasks/logbook/project/:uuid", (req, res) => {
+  try {
+    const limit = Number(req.query.limit) || 100;
+    res.json({ tasks: getCompletedTasksByProject(req.params.uuid, limit) });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ error: message });
@@ -3410,6 +3696,10 @@ app.get("/api/store/objects", async (req, res) => {
   try {
     const collection = req.query.collection as string | undefined;
     const status = (req.query.status as string) || "active";
+    const factStateRaw = (req.query.fact_state as string | undefined) || "non_outdated";
+    const factState = ["all", "non_outdated", "outdated", "verified", "unverified", "disputed"].includes(factStateRaw)
+      ? factStateRaw
+      : "non_outdated";
     const sortBy = (req.query.sort_by as string) || "created_at";
     const sortOrder = (req.query.sort_order as string) === "asc" ? "ASC" : "DESC";
     const limit = Math.min(Number(req.query.limit) || 50, 200);
@@ -3432,12 +3722,23 @@ app.get("/api/store/objects", async (req, res) => {
       idx++;
     }
 
+    if (factState === "non_outdated") {
+      conditions.push(`(c.name <> 'Facts' OR COALESCE(o.data->>'status', 'unverified') <> 'outdated')`);
+    } else if (factState === "outdated") {
+      conditions.push(`(c.name <> 'Facts' OR COALESCE(o.data->>'status', 'unverified') = 'outdated')`);
+    } else if (factState !== "all") {
+      conditions.push(`(c.name <> 'Facts' OR COALESCE(o.data->>'status', 'unverified') = $${idx})`);
+      params.push(factState);
+      idx++;
+    }
+
     const where = `WHERE ${conditions.join(" AND ")}`;
     const orderCol = sortBy === "title" ? "o.title" : sortBy === "updated_at" ? "o.updated_at" : "o.created_at";
 
     params.push(limit, offset);
     const result = await query(
       `SELECT o.id, o.collection_id, o.title, o.data, o.tags, o.status, o.created_by, o.created_at, o.updated_at,
+              COALESCE(o.data->>'status', '') AS semantic_status,
               c.name AS collection_name, c.icon AS collection_icon
        FROM store_objects o
        JOIN store_collections c ON c.id = o.collection_id
@@ -3598,13 +3899,16 @@ app.delete("/api/store/relations/:id", async (req, res) => {
 
 app.post("/api/store/search", async (req, res) => {
   try {
-    const { query: searchQuery, collection, limit: maxLimit } = req.body;
+    const { query: searchQuery, collection, limit: maxLimit, fact_state: factStateRaw } = req.body;
     if (!searchQuery) {
       res.status(400).json({ error: "query is required" });
       return;
     }
 
     const maxResults = Math.min(maxLimit || 20, 100);
+    const factState = ["all", "non_outdated", "outdated", "verified", "unverified", "disputed"].includes(factStateRaw)
+      ? factStateRaw
+      : "non_outdated";
     let queryEmbedding: number[] | null = null;
     try {
       queryEmbedding = await embed(searchQuery, config);
@@ -3620,6 +3924,16 @@ app.post("/api/store/search", async (req, res) => {
       idx++;
     }
 
+    if (factState === "non_outdated") {
+      conditions.push(`(c.name <> 'Facts' OR COALESCE(o.data->>'status', 'unverified') <> 'outdated')`);
+    } else if (factState === "outdated") {
+      conditions.push(`(c.name <> 'Facts' OR COALESCE(o.data->>'status', 'unverified') = 'outdated')`);
+    } else if (factState !== "all") {
+      conditions.push(`(c.name <> 'Facts' OR COALESCE(o.data->>'status', 'unverified') = $${idx})`);
+      params.push(factState);
+      idx++;
+    }
+
     let sql: string;
     if (queryEmbedding) {
       params.push(`[${queryEmbedding.join(",")}]`);
@@ -3631,6 +3945,7 @@ app.post("/api/store/search", async (req, res) => {
 
       sql = `
         SELECT o.id, o.title, o.data, o.tags, o.created_at, o.updated_at,
+               COALESCE(o.data->>'status', '') AS semantic_status,
                c.name AS collection_name, c.icon AS collection_icon,
                CASE WHEN o.embedding IS NOT NULL
                  THEN 1 - (o.embedding <=> $${embIdx}::vector)
@@ -3656,6 +3971,7 @@ app.post("/api/store/search", async (req, res) => {
 
       sql = `
         SELECT o.id, o.title, o.data, o.tags, o.created_at, o.updated_at,
+               COALESCE(o.data->>'status', '') AS semantic_status,
                c.name AS collection_name, c.icon AS collection_icon,
                0 AS vector_score,
                ts_rank(o.fts, websearch_to_tsquery('english', $${qIdx})) AS text_score
@@ -4081,6 +4397,10 @@ wss.on("connection", (ws) => {
             ws.send(frame("chat.error", { error: "Missing id or status" }, msg.id));
             break;
           }
+          if (!["approved", "rejected", "modified"].includes(data.status)) {
+            ws.send(frame("chat.error", { error: "status must be approved, rejected, or modified" }, msg.id));
+            break;
+          }
           // Fetch review for triage handling + learning
           const wsReviewResult = await query<{
             type: string; conversation_id: string | null; proposed_action: unknown;
@@ -4090,22 +4410,30 @@ wss.on("connection", (ws) => {
             [data.id],
           );
           const wsRow = wsReviewResult.rows[0];
+          if (!wsRow) {
+            ws.send(frame("chat.error", { error: "Review not found" }, msg.id));
+            break;
+          }
+          const wsIsFactVerify = isVerifyFactReview(wsRow.type, wsRow.proposed_action);
+          const effectiveResolution = data.status === "rejected"
+            ? (data.resolution ?? null)
+            : (data.resolution ?? wsRow.proposed_action ?? null);
           await query(
             `UPDATE review_queue
              SET status = $1, resolution = $2, resolved_by = $3, resolved_at = NOW()
              WHERE id = $4`,
-            [data.status, data.resolution ? JSON.stringify(data.resolution) : null, data.resolved_by || "human", data.id],
+            [data.status, effectiveResolution ? JSON.stringify(effectiveResolution) : null, data.resolved_by || "human", data.id],
           );
           broadcast("review.resolved", {
             id: data.id,
             status: data.status,
-            resolution: data.resolution,
+            resolution: effectiveResolution,
             resolvedBy: data.resolved_by || "human",
           });
           // Handle triage actions (same as REST path)
           if (wsRow?.type === "triage" && wsRow.conversation_id) {
             if (data.status === "approved" || data.status === "modified") {
-              const actions = (data.resolution || wsRow.proposed_action) as import("./channels/triage.js").TriageAction[] | null;
+              const actions = (effectiveResolution || wsRow.proposed_action) as import("./channels/triage.js").TriageAction[] | null;
               if (actions && Array.isArray(actions)) {
                 executeTriageActions(data.id, wsRow.conversation_id, actions, broadcast)
                   .catch((err) => console.error("[Reviews] WS triage action execution failed:", err));
@@ -4115,8 +4443,16 @@ wss.on("connection", (ws) => {
                 .catch((err) => console.error("[Reviews] WS triage rejection handling failed:", err));
             }
           }
+          if (wsIsFactVerify) {
+            applyFactReviewResolution({
+              status: data.status as "approved" | "rejected" | "modified",
+              resolution: effectiveResolution,
+              proposedAction: wsRow.proposed_action,
+              resolvedBy: data.resolved_by || "human",
+            }).catch((err) => console.warn("[Reviews] WS fact verification apply failed:", err));
+          }
           // Fire-and-forget: learning pipeline
-          if (wsRow) {
+          if (wsRow && !wsIsFactVerify) {
             processFeedback(
               {
                 reviewId: data.id,
@@ -4127,7 +4463,7 @@ wss.on("connection", (ws) => {
                 description: wsRow.description,
                 contentBlocks: wsRow.content,
                 proposedAction: wsRow.proposed_action,
-                resolution: data.resolution,
+                resolution: effectiveResolution,
               },
               config,
             ).catch((err) => console.warn("[Learner]", err));
