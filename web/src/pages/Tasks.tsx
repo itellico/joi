@@ -1,6 +1,5 @@
 import { useEffect, useState, useCallback, useRef, useMemo, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
 import ChatWidget from "../components/ChatWidget";
-import AutoDevPanel from "../components/AutoDevPanel";
 import { Badge, Button, EmptyState, MetaText, Modal, PageHeader, SectionLabel } from "../components/ui";
 
 type ThingsList = "inbox" | "today" | "upcoming" | "anytime" | "someday";
@@ -756,9 +755,6 @@ export default function Tasks({ ws, chatMode }: TasksProps) {
           </button>
         </div>
 
-        {/* Auto Developer Panel */}
-        <div className="t3-sidebar-divider" />
-        <AutoDevPanel ws={ws} />
       </div>
 
       {/* ── Content ── */}
