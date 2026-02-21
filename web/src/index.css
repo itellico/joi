@@ -1972,6 +1972,35 @@ code {
   border-radius: 4px;
 }
 
+.agent-model-select {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.agent-model-select:hover,
+.agent-model-select:focus {
+  border-color: var(--accent, #6366f1);
+}
+
+.agent-model-select optgroup {
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.agent-model-select option {
+  font-weight: 400;
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+}
+
 .agent-edit-desc {
   font-size: 13px;
   color: var(--text-secondary);
@@ -6045,7 +6074,7 @@ select.t3-dialog-input {
   word-wrap: break-word;
   overflow-wrap: break-word;
   min-width: 0;
-  overflow-x: hidden;
+  overflow: hidden;
 }
 .assistant-msg.user {
   align-self: flex-end;
@@ -6090,7 +6119,8 @@ select.t3-dialog-input {
   background: var(--bg-primary);
   padding: 8px 10px;
   border-radius: 6px;
-  overflow-x: auto;
+  overflow-x: hidden;
+  text-overflow: ellipsis;
   margin: 6px 0;
   font-size: 11px;
 }
@@ -6105,7 +6135,23 @@ select.t3-dialog-input {
 }
 .assistant-msg.assistant li { margin: 2px 0; }
 
-/* Typing indicator */
+/* Thinking indicator */
+.assistant-thinking {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+.assistant-thinking-text {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+  animation: fadeInOut 2s ease-in-out infinite;
+}
+@keyframes fadeInOut {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
 .assistant-typing {
   display: inline-flex;
   gap: 4px;
@@ -6120,6 +6166,20 @@ select.t3-dialog-input {
 }
 .assistant-typing span:nth-child(2) { animation-delay: 0.2s; }
 .assistant-typing span:nth-child(3) { animation-delay: 0.4s; }
+
+/* Message metadata */
+.assistant-msg-meta {
+  font-size: 9px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  opacity: 0.6;
+  transition: opacity 0.15s;
+  font-family: var(--font-mono);
+  letter-spacing: 0.2px;
+}
+.assistant-msg:hover .assistant-msg-meta {
+  opacity: 1;
+}
 
 /* Tool badges */
 .assistant-tools {
