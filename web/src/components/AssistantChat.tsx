@@ -28,7 +28,7 @@ interface AssistantChatProps {
 }
 
 export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatProps) {
-  const { messages, isStreaming, conversationId, sendMessage, loadConversation, newConversation, addMessage } = useChat({
+  const { messages, isStreaming, conversationId, sendMessage, loadConversation, newConversation } = useChat({
     send: ws.send,
     on: ws.on,
   });
@@ -39,23 +39,47 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
   const [debugCopied, setDebugCopied] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  const voiceSyncTimerRef = useRef<number | null>(null);
+
+  const scheduleVoiceSync = useCallback((convId: string) => {
+    if (voiceSyncTimerRef.current !== null) {
+      window.clearTimeout(voiceSyncTimerRef.current);
+    }
+    voiceSyncTimerRef.current = window.setTimeout(() => {
+      loadConversation(convId);
+      voiceSyncTimerRef.current = null;
+    }, 600);
+  }, [loadConversation]);
+
   const handleFinalTranscript = useCallback(
-    (transcript: VoiceTranscript) => {
-      addMessage({
-        id: crypto.randomUUID(),
-        role: transcript.speaker === "user" ? "user" : "assistant",
-        content: transcript.text,
-        createdAt: new Date().toISOString(),
-      });
+    (_transcript: VoiceTranscript) => {
+      if (!conversationId) return;
+      scheduleVoiceSync(conversationId);
     },
-    [addMessage],
+    [conversationId, scheduleVoiceSync],
   );
+
+  const handleVoiceConversationReady = useCallback((voiceConversationId: string) => {
+    if (!voiceConversationId) return;
+    if (voiceConversationId !== conversationId) {
+      loadConversation(voiceConversationId);
+    }
+  }, [conversationId, loadConversation]);
 
   const voice = useVoiceSession({
     conversationId,
     agentId: "personal",
     onFinalTranscript: handleFinalTranscript,
+    onConversationReady: handleVoiceConversationReady,
   });
+
+  useEffect(() => {
+    return () => {
+      if (voiceSyncTimerRef.current !== null) {
+        window.clearTimeout(voiceSyncTimerRef.current);
+      }
+    };
+  }, []);
 
   const fetchConversations = useCallback(() => {
     fetch("/api/conversations?type=direct")
@@ -352,6 +376,21 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
   );
 }
 
+function ElapsedTimer({ startedAt }: { startedAt: number }) {
+  const [elapsed, setElapsed] = useState(() => Date.now() - startedAt);
+
+  useEffect(() => {
+    const iv = setInterval(() => setElapsed(Date.now() - startedAt), 100);
+    return () => clearInterval(iv);
+  }, [startedAt]);
+
+  return (
+    <span className="assistant-elapsed-timer">
+      {(elapsed / 1000).toFixed(1)}s
+    </span>
+  );
+}
+
 function AssistantMessageBubble({ message }: { message: ChatMessage }) {
   if (message.role === "system") {
     return (
@@ -376,6 +415,9 @@ function AssistantMessageBubble({ message }: { message: ChatMessage }) {
     <div className="assistant-msg assistant">
       <div className="assistant-msg-avatar-row">
         <img src="/joi-avatar.jpg" alt="JOI" className="assistant-msg-avatar" />
+        {message.isStreaming && message.streamStartedAt && (
+          <ElapsedTimer startedAt={message.streamStartedAt} />
+        )}
       </div>
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
       {message.isStreaming && !message.content && (
@@ -404,7 +446,15 @@ function AssistantMsgMeta({ message }: { message: ChatMessage }) {
   const parts: string[] = [];
 
   if (message.latencyMs) {
-    parts.push(`${(message.latencyMs / 1000).toFixed(1)}s`);
+    // Show TTFT → total if both available, otherwise just total
+    if (message.ttftMs) {
+      const ttft = message.ttftMs < 1000
+        ? `${Math.round(message.ttftMs)}ms`
+        : `${(message.ttftMs / 1000).toFixed(1)}s`;
+      parts.push(`${ttft} ttft · ${(message.latencyMs / 1000).toFixed(1)}s total`);
+    } else {
+      parts.push(`${(message.latencyMs / 1000).toFixed(1)}s`);
+    }
   }
   if (message.usage) {
     const total = message.usage.inputTokens + message.usage.outputTokens;
@@ -434,9 +484,16 @@ function AssistantToolBadge({ tc }: { tc: ToolCall }) {
   const isPending = tc.result === undefined;
   const isError = tc.error;
 
+  const durationLabel = tc.durationMs != null
+    ? tc.durationMs < 1000
+      ? `${Math.round(tc.durationMs)}ms`
+      : `${(tc.durationMs / 1000).toFixed(1)}s`
+    : null;
+
   return (
     <span className={`assistant-tool-badge${isError ? " error" : isPending ? "" : " done"}`}>
       {tc.name}
+      {durationLabel && <span className="assistant-tool-duration">{durationLabel}</span>}
       {isPending && !isError && <span className="assistant-tool-spinner" />}
     </span>
   );

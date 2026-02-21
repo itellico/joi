@@ -6116,6 +6116,14 @@ select.t3-dialog-input {
   object-fit: cover;
   border: 1px solid var(--accent);
 }
+.assistant-elapsed-timer {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  letter-spacing: 0.3px;
+  min-width: 32px;
+  font-variant-numeric: tabular-nums;
+}
 
 /* Markdown inside assistant messages */
 .assistant-msg.assistant p { margin: 4px 0; }
@@ -6211,6 +6219,11 @@ select.t3-dialog-input {
 .assistant-tool-badge.error {
   background: rgba(248, 113, 113, 0.1);
   color: var(--error);
+}
+.assistant-tool-duration {
+  opacity: 0.6;
+  font-size: 9px;
+  font-family: var(--font-mono);
 }
 .assistant-tool-spinner {
   width: 8px;

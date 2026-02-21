@@ -30,6 +30,8 @@ export interface ChatMessage {
   attachments?: Attachment[];
   usage?: { inputTokens: number; outputTokens: number };
   latencyMs?: number;
+  ttftMs?: number;
+  streamStartedAt?: number;
   isStreaming?: boolean;
   createdAt?: string;
   costUsd?: number;
@@ -57,6 +59,7 @@ export function useChat({ send, on }: UseChatOptions) {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const streamBufferRef = useRef("");
   const streamStartRef = useRef(0);
+  const firstTokenRef = useRef(0);
   const requestIdRef = useRef(0);
 
   // Listen for stream events
@@ -64,6 +67,12 @@ export function useChat({ send, on }: UseChatOptions) {
     const unsubs = [
       on("chat.stream", (frame) => {
         const data = frame.data as { delta: string; conversationId?: string };
+
+        // Capture time-to-first-token
+        if (!firstTokenRef.current && streamStartRef.current) {
+          firstTokenRef.current = Date.now() - streamStartRef.current;
+        }
+
         streamBufferRef.current += data.delta;
 
         // Track conversation ID from server
@@ -76,7 +85,11 @@ export function useChat({ send, on }: UseChatOptions) {
           if (last?.isStreaming) {
             return [
               ...prev.slice(0, -1),
-              { ...last, content: stripInternalTags(streamBufferRef.current) },
+              {
+                ...last,
+                content: stripInternalTags(streamBufferRef.current),
+                ttftMs: firstTokenRef.current || undefined,
+              },
             ];
           }
           return prev;
@@ -103,6 +116,7 @@ export function useChat({ send, on }: UseChatOptions) {
         }
 
         const latencyMs = data.latencyMs || (Date.now() - streamStartRef.current);
+        const ttftMs = firstTokenRef.current || undefined;
 
         setMessages((prev) => {
           const last = prev[prev.length - 1];
@@ -120,6 +134,7 @@ export function useChat({ send, on }: UseChatOptions) {
                 usage: data.usage,
                 costUsd: data.costUsd,
                 latencyMs,
+                ttftMs,
                 isStreaming: false,
               },
             ];
@@ -129,6 +144,7 @@ export function useChat({ send, on }: UseChatOptions) {
 
         setIsStreaming(false);
         streamBufferRef.current = "";
+        firstTokenRef.current = 0;
       }),
 
       on("chat.tool_use", (frame) => {
@@ -204,6 +220,7 @@ export function useChat({ send, on }: UseChatOptions) {
       const reqId = String(++requestIdRef.current);
       streamBufferRef.current = "";
       streamStartRef.current = Date.now();
+      firstTokenRef.current = 0;
 
       // Add user message
       const userMsg: ChatMessage = {
@@ -219,6 +236,7 @@ export function useChat({ send, on }: UseChatOptions) {
         role: "assistant",
         content: "",
         isStreaming: true,
+        streamStartedAt: streamStartRef.current,
       };
 
       setMessages((prev) => [...prev, userMsg, assistantMsg]);
@@ -249,7 +267,7 @@ export function useChat({ send, on }: UseChatOptions) {
               model?: string;
               tool_calls?: Array<{ id: string; name: string; input: unknown }>;
               tool_results?: Array<{ tool_use_id: string; content: string }>;
-              token_usage?: { inputTokens: number; outputTokens: number };
+              token_usage?: { inputTokens: number; outputTokens: number; latencyMs?: number };
               attachments?: Attachment[];
               created_at: string;
             }
@@ -275,6 +293,7 @@ export function useChat({ send, on }: UseChatOptions) {
                     content: m.content || "",
                     model: m.model,
                     usage: m.token_usage || undefined,
+                    latencyMs: typeof m.token_usage?.latencyMs === "number" ? m.token_usage.latencyMs : undefined,
                     attachments: m.attachments || undefined,
                     createdAt: m.created_at,
                   };
