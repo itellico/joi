@@ -183,6 +183,7 @@ interface TasksProps {
 export default function Tasks({ ws, chatMode }: TasksProps) {
   const [allTasks, setAllTasks] = useState<Task[]>([]);
   const [logbook, setLogbook] = useState<CompletedTask[]>([]);
+  const [logbookLimit, setLogbookLimit] = useState(100);
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [projects, setProjects] = useState<Project[]>([]);
   const [areas, setAreas] = useState<Area[]>([]);
@@ -256,13 +257,13 @@ export default function Tasks({ ws, chatMode }: TasksProps) {
     }
   }, [fetchConversationMap]);
 
-  const fetchLogbook = useCallback(async () => {
+  const fetchLogbook = useCallback(async (limit = logbookLimit) => {
     try {
-      const res = await fetch("/api/tasks/logbook?limit=100");
+      const res = await fetch(`/api/tasks/logbook?limit=${limit}`);
       const data = await res.json();
       setLogbook(data.tasks || []);
     } catch { /* ignore */ }
-  }, []);
+  }, [logbookLimit]);
 
   useEffect(() => {
     fetchAll();
@@ -779,6 +780,7 @@ export default function Tasks({ ws, chatMode }: TasksProps) {
           <LogbookView
             logbookByDate={logbookByDate} logbook={logbook} uncompleting={uncompleting}
             onUncomplete={handleUncomplete} onRefresh={fetchLogbook}
+            onLoadMore={() => { const next = logbookLimit + 100; setLogbookLimit(next); fetchLogbook(next); }}
           />
         ) : content ? (
           <ContentView
@@ -939,9 +941,31 @@ function SearchView({ results, logbookResults, query, searchByList, completing, 
   );
 }
 
-function LogbookView({ logbookByDate, logbook, uncompleting, onUncomplete, onRefresh }: {
+function formatLogbookDate(dateStr: string): string {
+  const date = new Date(dateStr + "T00:00:00");
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const target = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const diffDays = Math.round((today.getTime() - target.getTime()) / 86400000);
+
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  if (diffDays < 7) return date.toLocaleDateString("en-US", { weekday: "long" });
+  if (date.getFullYear() === now.getFullYear()) {
+    return date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+  }
+  return date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+}
+
+function formatCompletionTime(isoString: string): string {
+  const d = new Date(isoString);
+  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }).toLowerCase();
+}
+
+function LogbookView({ logbookByDate, logbook, uncompleting, onUncomplete, onRefresh, onLoadMore }: {
   logbookByDate: Record<string, CompletedTask[]>; logbook: CompletedTask[];
   uncompleting: Set<string>; onUncomplete: (u: string) => void; onRefresh: () => void;
+  onLoadMore: () => void;
 }) {
   return (
     <>
@@ -953,17 +977,54 @@ function LogbookView({ logbookByDate, logbook, uncompleting, onUncomplete, onRef
         </div>
         <Button onClick={onRefresh}>Refresh</Button>
       </div>
-      <div className="t3-task-list">
-        {Object.entries(logbookByDate).map(([date, tasks]) => (
-          <div key={date}>
-            <SectionLabel className="section-label-normal">
-              {new Date(date + "T00:00:00").toLocaleDateString("de-AT", { weekday: "long", day: "numeric", month: "long" })}
-            </SectionLabel>
-            {tasks.map((t) => (
-              <CompletedRow key={t.uuid} task={t} isUncompleting={uncompleting.has(t.uuid)} onUncomplete={onUncomplete} />
-            ))}
+      <div className="t3-task-list t3-logbook">
+        {Object.entries(logbookByDate).map(([date, tasks]) => {
+          // Group tasks by project within this date
+          const byProject = new Map<string, CompletedTask[]>();
+          const standalone: CompletedTask[] = [];
+          for (const t of tasks) {
+            if (t.projectTitle) {
+              if (!byProject.has(t.projectTitle)) byProject.set(t.projectTitle, []);
+              byProject.get(t.projectTitle)!.push(t);
+            } else {
+              standalone.push(t);
+            }
+          }
+
+          return (
+            <div key={date} className="t3-logbook-day">
+              <div className="t3-logbook-date-header">
+                <span className="t3-logbook-date-label">{formatLogbookDate(date)}</span>
+                <span className="t3-logbook-date-count">{tasks.length} {tasks.length === 1 ? "task" : "tasks"}</span>
+              </div>
+              <div className="t3-logbook-day-tasks">
+                {/* Standalone tasks (no project) */}
+                {standalone.map((t) => (
+                  <CompletedRow key={t.uuid} task={t} isUncompleting={uncompleting.has(t.uuid)} onUncomplete={onUncomplete} />
+                ))}
+
+                {/* Grouped by project */}
+                {Array.from(byProject.entries()).map(([projectTitle, projectTasks]) => (
+                  <div key={projectTitle} className="t3-logbook-project-group">
+                    <div className="t3-logbook-project-header">
+                      <ListIcon type="project" size={14} />
+                      <span className="t3-logbook-project-name">{projectTitle}</span>
+                      <span className="t3-logbook-project-count">{projectTasks.length}</span>
+                    </div>
+                    {projectTasks.map((t) => (
+                      <CompletedRow key={t.uuid} task={t} isUncompleting={uncompleting.has(t.uuid)} onUncomplete={onUncomplete} showProject={false} />
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+        {logbook.length > 0 && logbook.length % 100 === 0 && (
+          <div className="t3-logbook-load-more">
+            <Button onClick={onLoadMore}>Load more</Button>
           </div>
-        ))}
+        )}
         {logbook.length === 0 && <EmptyState message="No completed tasks yet" />}
       </div>
     </>
@@ -1150,24 +1211,27 @@ function ContentView({ content, selected, completing, editingUuid, collapsedProj
 
 /* ── Completed row (logbook) ── */
 
-function CompletedRow({ task, isUncompleting, onUncomplete }: {
-  task: CompletedTask; isUncompleting: boolean; onUncomplete: (u: string) => void;
+function CompletedRow({ task, isUncompleting, onUncomplete, showProject = true }: {
+  task: CompletedTask; isUncompleting: boolean; onUncomplete: (u: string) => void; showProject?: boolean;
 }) {
   return (
     <div className={`t3-row t3-row-completed${isUncompleting ? " t3-uncompleting" : ""}`}>
       <button
         className={`t3-check t3-check-done${isUncompleting ? " t3-unchecking" : ""}`}
         onClick={() => !isUncompleting && onUncomplete(task.uuid)}
-        title="Undo"
+        title="Mark incomplete"
       />
-      <div className="t3-row-body">
-        <span className={`t3-row-title t3-done${isUncompleting ? " t3-restoring" : ""}`}>{task.title}</span>
-        {(task.projectTitle || task.areaTitle) && (
-          <span className="t3-row-meta">
-            {task.areaTitle && <MetaText size="xs">{task.areaTitle}</MetaText>}
-            {task.projectTitle && <MetaText size="xs">{task.projectTitle}</MetaText>}
-          </span>
-        )}
+      <div className="t3-row-body t3-completed-body">
+        <span className={`t3-row-title t3-completed-title${isUncompleting ? " t3-restoring" : ""}`}>{task.title}</span>
+        <span className="t3-completed-meta">
+          {showProject && task.projectTitle && (
+            <span className="t3-completed-project">{task.projectTitle}</span>
+          )}
+          {task.areaTitle && !task.projectTitle && (
+            <span className="t3-completed-area">{task.areaTitle}</span>
+          )}
+          <span className="t3-completed-time">{formatCompletionTime(task.completedAt)}</span>
+        </span>
       </div>
     </div>
   );
