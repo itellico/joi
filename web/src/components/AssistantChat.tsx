@@ -2,7 +2,6 @@ import { useRef, useEffect, useState, useCallback } from "react";
 import { useChat, type ChatMessage, type ToolCall } from "../hooks/useChat";
 import type { ConnectionStatus, Frame } from "../hooks/useWebSocket";
 import { useVoiceSession, type VoiceTranscript } from "../hooks/useVoiceSession";
-import VoiceOverlay from "./VoiceOverlay";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -27,6 +26,53 @@ interface AssistantChatProps {
   chatMode?: "api" | "claude-code";
 }
 
+const TOOL_FILLER_CACHE = new Map<string, string>();
+const GENERIC_FILLERS = [
+  "One moment, I am on it...",
+  "Working on that now...",
+  "Let me check that for you...",
+  "I am pulling that up now...",
+  "On it...",
+];
+const TOOL_FILLER_RULES: Array<{ pattern: RegExp; filler: string }> = [
+  { pattern: /(calendar|event|schedule)/i, filler: "Checking your calendar now..." },
+  { pattern: /(gmail|email|inbox|mail)/i, filler: "Checking your inbox now..." },
+  { pattern: /(weather|forecast)/i, filler: "Checking the weather now..." },
+  { pattern: /(memory|knowledge|search|lookup|find)/i, filler: "Looking that up now..." },
+  { pattern: /(contact|person|people)/i, filler: "Looking up that contact now..." },
+  { pattern: /(task|todo|things|okr)/i, filler: "Checking your task list now..." },
+  { pattern: /(channel_send|whatsapp|telegram|imessage|sms|message)/i, filler: "Preparing that message now..." },
+  { pattern: /(code|autodev|terminal|shell|command|git)/i, filler: "Running that task now..." },
+];
+
+function getToolAwareFiller(message: ChatMessage): string {
+  const pendingTool = message.toolCalls?.find((tc) => tc.result === undefined && !tc.error);
+  if (pendingTool?.name) {
+    const key = pendingTool.name.toLowerCase();
+    const cached = TOOL_FILLER_CACHE.get(key);
+    if (cached) return cached;
+    const rule = TOOL_FILLER_RULES.find((r) => r.pattern.test(key));
+    const filler = rule?.filler ?? "Working on that now...";
+    TOOL_FILLER_CACHE.set(key, filler);
+    return filler;
+  }
+  return GENERIC_FILLERS[Math.abs(message.id.charCodeAt(0)) % GENERIC_FILLERS.length];
+}
+
+function formatDuration(ms: number): string {
+  return ms < 1000
+    ? `${Math.round(ms)}ms`
+    : `${(ms / 1000).toFixed(1)}s`;
+}
+
+function formatToolName(name: string): string {
+  const normalized = name.trim().toLowerCase();
+  if (normalized === "contacts_search") return "Contact search";
+  return normalized
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (ch) => ch.toUpperCase());
+}
+
 export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatProps) {
   const { messages, isStreaming, conversationId, sendMessage, loadConversation, newConversation } = useChat({
     send: ws.send,
@@ -45,10 +91,12 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
     if (voiceSyncTimerRef.current !== null) {
       window.clearTimeout(voiceSyncTimerRef.current);
     }
+    // Try immediately for snappier bubble updates, then retry once after the backend persists.
+    loadConversation(convId);
     voiceSyncTimerRef.current = window.setTimeout(() => {
       loadConversation(convId);
       voiceSyncTimerRef.current = null;
-    }, 600);
+    }, 350);
   }, [loadConversation]);
 
   const handleFinalTranscript = useCallback(
@@ -106,6 +154,13 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Keep the latest live transcript in view while speaking.
+  useEffect(() => {
+    if (voice.interimTranscript?.text) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [voice.interimTranscript?.text]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -200,39 +255,36 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
       {messages.map((msg) => (
         <AssistantMessageBubble key={msg.id} message={msg} />
       ))}
+      {voice.state !== "idle"
+        && voice.interimTranscript?.speaker === "user"
+        && voice.interimTranscript?.text?.trim() && (
+        <LiveTranscriptBubble transcript={voice.interimTranscript} />
+      )}
       <div ref={messagesEndRef} />
     </div>
   );
 
-  const micButton = (
-    <button
-      type="button"
-      className={`assistant-voice-btn${voice.state === "connecting" ? " assistant-voice-btn--connecting" : ""}${voice.state === "connected" ? " assistant-voice-btn--active" : ""}`}
-      onClick={() => voice.state === "idle" ? voice.connect() : voice.disconnect()}
-      disabled={ws.status !== "connected"}
-      title={voice.state === "idle" ? "Start voice" : "End voice"}
-    >
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-        <line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" />
-      </svg>
-    </button>
-  );
+  const voiceStatus = voice.state === "idle"
+    ? "Voice off"
+    : voice.error
+      ? "Voice error"
+      : voice.state === "connecting"
+        ? "Connecting..."
+        : voice.isMuted
+          ? "Muted"
+          : voice.activity === "agentSpeaking"
+            ? "Speaking..."
+            : voice.activity === "processing"
+              ? "Thinking..."
+              : voice.activity === "waitingForAgent"
+                ? "Waiting..."
+                : "Listening...";
 
-  const voiceOverlay = voice.state !== "idle" ? (
-    <VoiceOverlay
-      state={voice.state}
-      activity={voice.activity}
-      isMuted={voice.isMuted}
-      audioLevel={voice.audioLevel}
-      agentAudioLevel={voice.agentAudioLevel}
-      interimTranscript={voice.interimTranscript}
-      error={voice.error}
-      onToggleMute={voice.toggleMute}
-      onEnd={voice.disconnect}
-    />
-  ) : null;
+  const voiceSubtitle = voice.error
+    ? voice.error
+    : voice.state !== "idle"
+        ? voiceStatus
+        : "Personal Assistant";
 
   const composeArea = (
     <form className="assistant-compose" onSubmit={handleSubmit}>
@@ -244,7 +296,6 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
         disabled={ws.status !== "connected"}
         rows={1}
       />
-      {micButton}
       <button type="submit" disabled={!input.trim() || isStreaming || ws.status !== "connected"}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" />
@@ -260,7 +311,12 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
         <div className="assistant-modal-header">
           <div className="assistant-header-left">
             <img src="/joi-avatar.jpg" alt="JOI" className="assistant-header-avatar" />
-            <span className="assistant-header-title">JOI</span>
+            <div className="assistant-header-title-wrap">
+              <span className="assistant-header-title">JOI</span>
+              <span className={`assistant-header-subtitle${voice.state !== "idle" ? " assistant-header-subtitle--live" : ""}`}>
+                {voiceSubtitle}
+              </span>
+            </div>
           </div>
           <div className="assistant-header-actions">
             {messages.length > 0 && (
@@ -268,6 +324,41 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
                 {debugCopied ? "ok" : "dbg"}
               </button>
             )}
+            {voice.state !== "idle" && (
+              <button
+                onClick={voice.toggleMute}
+                title={voice.isMuted ? "Unmute" : "Mute"}
+                className={`assistant-header-btn${voice.isMuted ? " assistant-header-btn--active" : ""}`}
+                disabled={voice.state === "connecting" || voice.activity === "waitingForAgent"}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  {voice.isMuted ? (
+                    <>
+                      <line x1="1" y1="1" x2="23" y2="23" />
+                      <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
+                      <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17" />
+                    </>
+                  ) : (
+                    <>
+                      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                    </>
+                  )}
+                </svg>
+              </button>
+            )}
+            <button
+              onClick={() => voice.state === "idle" ? voice.connect() : voice.disconnect()}
+              title={voice.state === "idle" ? "Start voice" : "End voice"}
+              className={`assistant-header-btn${voice.state === "connected" ? " assistant-header-btn--active" : ""}`}
+              disabled={ws.status !== "connected"}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                <line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" />
+              </svg>
+            </button>
             <button onClick={() => setMode("docked")} title="Dock to side" className="assistant-header-btn">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
             </button>
@@ -277,7 +368,6 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
           </div>
         </div>
         {messagesArea}
-        {voiceOverlay}
         {composeArea}
       </div>
     );
@@ -292,7 +382,9 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
             <img src="/joi-avatar.jpg" alt="JOI" className="assistant-docked-avatar" />
             <div>
               <span className="assistant-docked-name">JOI</span>
-              <span className="assistant-docked-subtitle">Personal Assistant</span>
+              <span className={`assistant-docked-subtitle${voice.state !== "idle" ? " assistant-docked-subtitle--live" : ""}`}>
+                {voiceSubtitle}
+              </span>
             </div>
           </div>
           <div className="assistant-header-actions">
@@ -321,6 +413,29 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
                 <line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" />
               </svg>
             </button>
+            {voice.state !== "idle" && (
+              <button
+                onClick={voice.toggleMute}
+                title={voice.isMuted ? "Unmute" : "Mute"}
+                className={`assistant-header-btn${voice.isMuted ? " assistant-header-btn--active" : ""}`}
+                disabled={voice.state === "connecting" || voice.activity === "waitingForAgent"}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  {voice.isMuted ? (
+                    <>
+                      <line x1="1" y1="1" x2="23" y2="23" />
+                      <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
+                      <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17" />
+                    </>
+                  ) : (
+                    <>
+                      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                    </>
+                  )}
+                </svg>
+              </button>
+            )}
             <button onClick={() => newConversation()} title="New conversation" className="assistant-header-btn">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
@@ -335,7 +450,6 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
           </div>
         </div>
         {messagesArea}
-        {voiceOverlay}
         {composeArea}
       </div>
       {historyOpen && (
@@ -408,18 +522,29 @@ function AssistantMessageBubble({ message }: { message: ChatMessage }) {
     );
   }
 
-  const fillerWords = ["Hmm, let me think...", "One moment...", "Let me see...", "Working on it...", "Thinking..."];
-  const filler = fillerWords[Math.abs(message.id.charCodeAt(0)) % fillerWords.length];
+  const filler = getToolAwareFiller(message);
+  const hasTextContent = message.content.trim().length > 0;
+  const hasToolCalls = Boolean(message.toolCalls?.length);
+  const inlineToolBadges = hasToolCalls && !hasTextContent;
 
   return (
     <div className="assistant-msg assistant">
-      <div className="assistant-msg-avatar-row">
+      <div className={`assistant-msg-avatar-row${inlineToolBadges ? " assistant-msg-avatar-row--inline-tools" : ""}`}>
         <img src="/joi-avatar.jpg" alt="JOI" className="assistant-msg-avatar" />
         {message.isStreaming && message.streamStartedAt && (
           <ElapsedTimer startedAt={message.streamStartedAt} />
         )}
+        {inlineToolBadges && (
+          <div className="assistant-tools assistant-tools--inline">
+            {message.toolCalls?.map((tc) => (
+              <AssistantToolBadge key={tc.id} tc={tc} />
+            ))}
+          </div>
+        )}
       </div>
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+      {hasTextContent && (
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+      )}
       {message.isStreaming && !message.content && (
         <div className="assistant-thinking">
           <span className="assistant-thinking-text">{filler}</span>
@@ -428,16 +553,24 @@ function AssistantMessageBubble({ message }: { message: ChatMessage }) {
           </div>
         </div>
       )}
-      {message.toolCalls && message.toolCalls.length > 0 && (
+      {hasToolCalls && !inlineToolBadges && (
         <div className="assistant-tools">
-          {message.toolCalls.map((tc) => (
+          {message.toolCalls?.map((tc) => (
             <AssistantToolBadge key={tc.id} tc={tc} />
           ))}
         </div>
       )}
-      {!message.isStreaming && message.content && (
+      {!message.isStreaming && (hasTextContent || hasToolCalls) && (
         <AssistantMsgMeta message={message} />
       )}
+    </div>
+  );
+}
+
+function LiveTranscriptBubble({ transcript }: { transcript: VoiceTranscript }) {
+  return (
+    <div className="assistant-msg user assistant-msg-live assistant-msg-live-user">
+      {transcript.text}
     </div>
   );
 }
@@ -448,17 +581,36 @@ function AssistantMsgMeta({ message }: { message: ChatMessage }) {
   if (message.latencyMs) {
     // Show TTFT → total if both available, otherwise just total
     if (message.ttftMs) {
-      const ttft = message.ttftMs < 1000
-        ? `${Math.round(message.ttftMs)}ms`
-        : `${(message.ttftMs / 1000).toFixed(1)}s`;
-      parts.push(`${ttft} ttft · ${(message.latencyMs / 1000).toFixed(1)}s total`);
+      parts.push(`${formatDuration(message.ttftMs)} ttft · ${formatDuration(message.latencyMs)} total`);
     } else {
-      parts.push(`${(message.latencyMs / 1000).toFixed(1)}s`);
+      parts.push(formatDuration(message.latencyMs));
+    }
+  }
+  if (message.toolCalls?.length) {
+    const finishedToolTimes = message.toolCalls
+      .map((tc) => tc.durationMs)
+      .filter((ms): ms is number => typeof ms === "number");
+    if (finishedToolTimes.length > 0) {
+      const totalToolMs = finishedToolTimes.reduce((sum, ms) => sum + ms, 0);
+      if (message.toolCalls.length === 1) {
+        parts.push(`${formatToolName(message.toolCalls[0].name)} ${formatDuration(totalToolMs)}`);
+      } else {
+        parts.push(`tools ${formatDuration(totalToolMs)}`);
+      }
     }
   }
   if (message.usage) {
     const total = message.usage.inputTokens + message.usage.outputTokens;
     parts.push(`${total.toLocaleString()} tok`);
+    if (message.usage.voiceCache) {
+      const hits = Number(message.usage.voiceCache.cacheHits || 0);
+      const misses = Number(message.usage.voiceCache.cacheMisses || 0);
+      const totalSegments = Number(message.usage.voiceCache.segments || (hits + misses));
+      if (totalSegments > 0) {
+        const rate = Math.round((hits / totalSegments) * 100);
+        parts.push(`cache ${rate}% (${hits}/${totalSegments})`);
+      }
+    }
   }
   if (message.costUsd) {
     parts.push(message.costUsd >= 0.01
@@ -483,16 +635,32 @@ function AssistantMsgMeta({ message }: { message: ChatMessage }) {
 function AssistantToolBadge({ tc }: { tc: ToolCall }) {
   const isPending = tc.result === undefined;
   const isError = tc.error;
+  const [elapsedMs, setElapsedMs] = useState<number>(() => {
+    if (tc.startedAt) return Math.max(0, Date.now() - tc.startedAt);
+    return 0;
+  });
 
-  const durationLabel = tc.durationMs != null
-    ? tc.durationMs < 1000
-      ? `${Math.round(tc.durationMs)}ms`
-      : `${(tc.durationMs / 1000).toFixed(1)}s`
-    : null;
+  useEffect(() => {
+    const startedAt = tc.startedAt;
+    if (!isPending || !startedAt) return;
+    const iv = window.setInterval(() => {
+      setElapsedMs(Math.max(0, Date.now() - startedAt));
+    }, 100);
+    return () => window.clearInterval(iv);
+  }, [isPending, tc.startedAt]);
+
+  const durationMs = tc.durationMs != null
+    ? tc.durationMs
+    : (isPending && tc.startedAt ? elapsedMs : null);
+  const durationLabel = durationMs != null ? formatDuration(durationMs) : null;
+  const toolLabel = formatToolName(tc.name);
 
   return (
-    <span className={`assistant-tool-badge${isError ? " error" : isPending ? "" : " done"}`}>
-      {tc.name}
+    <span
+      className={`assistant-tool-badge${isError ? " error" : isPending ? "" : " done"}`}
+      title={tc.name}
+    >
+      <span className="assistant-tool-name">{toolLabel}</span>
       {durationLabel && <span className="assistant-tool-duration">{durationLabel}</span>}
       {isPending && !isError && <span className="assistant-tool-spinner" />}
     </span>

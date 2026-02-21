@@ -1,0 +1,242 @@
+import { useEffect, useState } from "react";
+import { Routes, Route, NavLink, Navigate, useNavigate } from "react-router-dom";
+import { TooltipProvider } from "./components/ui";
+import { useWebSocket } from "./hooks/useWebSocket";
+import { useTheme } from "./hooks/useTheme";
+import { useDebug } from "./hooks/useDebug";
+import DebugPanel from "./components/DebugPanel";
+import Dashboard from "./pages/Dashboard";
+import Chat from "./pages/Chat";
+import Agents from "./pages/Agents";
+import Knowledge from "./pages/Knowledge";
+import Cron from "./pages/Cron";
+import Logs from "./pages/Logs";
+import Terminal from "./pages/Terminal";
+import Settings from "./pages/Settings";
+import Tasks from "./pages/Tasks";
+import Reviews from "./pages/Reviews";
+import Channels from "./pages/Channels";
+import Contacts from "./pages/Contacts";
+import ContactDetail from "./pages/ContactDetail";
+import Store from "./pages/Store";
+import OKRs from "./pages/OKRs";
+import Reports from "./pages/Reports";
+import AutoDev from "./pages/AutoDev";
+import AssistantChat from "./components/AssistantChat";
+
+type ChatMode = "api" | "claude-code";
+
+type ServiceHealth = Record<string, { status: "green" | "orange" | "red"; detail?: string }>;
+
+function App() {
+  const ws = useWebSocket();
+  const [chatMode, setChatMode] = useState<ChatMode>("api");
+  const { theme, toggle: toggleTheme } = useTheme();
+  const debug = useDebug();
+  const navigate = useNavigate();
+  const [autodevState, setAutodevState] = useState<string>("waiting");
+  const [health, setHealth] = useState<ServiceHealth>({});
+
+  // Fetch health + autodev state on WS connect/reconnect
+  useEffect(() => {
+    if (ws.status !== "connected") return;
+    fetch("/api/health")
+      .then((r) => r.json())
+      .then((data) => { if (data.services) setHealth(data.services); })
+      .catch(() => {});
+    fetch("/api/autodev/status")
+      .then((r) => r.json())
+      .then((data) => { if (data.state) setAutodevState(data.state); })
+      .catch(() => {});
+  }, [ws.status]);
+
+  // Refresh health every 30s
+  useEffect(() => {
+    const id = setInterval(() => {
+      fetch("/api/health")
+        .then((r) => r.json())
+        .then((data) => { if (data.services) setHealth(data.services); })
+        .catch(() => {});
+    }, 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    return ws.on("autodev.status", (frame) => {
+      const data = frame.data as { state: string; workerConnected?: boolean };
+      if (data.state) setAutodevState(data.state);
+      setHealth((prev) => ({
+        ...prev,
+        autodev: data.workerConnected !== false
+          ? { status: "green", detail: data.state }
+          : { status: "red", detail: "Worker disconnected" },
+      }));
+    });
+  }, [ws]);
+
+  return (
+    <TooltipProvider>
+    <div className="app-layout">
+      <aside className="sidebar">
+        <div className="sidebar-brand">
+          <div className="sidebar-brand-row">
+            <img src="/joi-avatar.jpg" alt="JOI" className="sidebar-avatar" />
+            <div>
+              <h1>JOI</h1>
+              <p>Personal AI Assistant</p>
+            </div>
+          </div>
+        </div>
+
+        <nav className="sidebar-nav">
+          <NavLink to="/" end>
+            Dashboard
+          </NavLink>
+          <NavLink to="/chat">
+            Chats
+          </NavLink>
+          <NavLink to="/contacts">
+            Contacts
+          </NavLink>
+          <NavLink to="/agents">
+            Agents
+          </NavLink>
+          <NavLink to="/knowledge">
+            Knowledge
+          </NavLink>
+          <NavLink to="/store">
+            Store
+          </NavLink>
+          <NavLink to="/okrs">
+            OKRs
+          </NavLink>
+          <NavLink to="/cron">
+            Cron
+          </NavLink>
+          <NavLink to="/tasks">
+            Tasks
+          </NavLink>
+          <NavLink to="/reviews">
+            Reviews
+          </NavLink>
+          <NavLink to="/autodev">
+            AutoDev
+          </NavLink>
+          <NavLink to="/terminal">
+            Terminal
+          </NavLink>
+          <NavLink to="/logs">
+            Logs
+          </NavLink>
+          <NavLink to="/reports">
+            Reports
+          </NavLink>
+          <NavLink to="/integrations">
+            Integrations
+          </NavLink>
+          <NavLink to="/settings">
+            Settings
+          </NavLink>
+        </nav>
+
+        <button
+          onClick={toggleTheme}
+          className="sidebar-theme-toggle"
+          title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+        >
+          <span className="sidebar-theme-icon">
+            {theme === "dark" ? "\u2600\uFE0F" : "\uD83C\uDF19"}
+          </span>
+          <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>
+        </button>
+
+        <div
+          className="sidebar-mode-toggle"
+          onClick={() => setChatMode(chatMode === "api" ? "claude-code" : "api")}
+        >
+          <div
+            className="sidebar-toggle-track"
+            style={{ background: chatMode === "claude-code" ? "var(--accent)" : "var(--bg-tertiary)" }}
+          >
+            <div
+              className="sidebar-toggle-thumb"
+              style={{ left: chatMode === "claude-code" ? 16 : 2 }}
+            />
+          </div>
+          <span style={{ fontWeight: chatMode === "claude-code" ? 600 : 400 }}>
+            {chatMode === "claude-code" ? "Claude Code CLI" : "API Mode"}
+          </span>
+        </div>
+        <div
+          className="sidebar-mode-toggle"
+          onClick={debug.toggle}
+        >
+          <div
+            className="sidebar-toggle-track"
+            style={{ background: debug.enabled ? "var(--accent)" : "var(--bg-tertiary)" }}
+          >
+            <div
+              className="sidebar-toggle-thumb"
+              style={{ left: debug.enabled ? 16 : 2 }}
+            />
+          </div>
+          <span style={{ fontWeight: debug.enabled ? 600 : 400 }}>
+            Debug
+          </span>
+        </div>
+        <div className="sidebar-health">
+          <div className="sidebar-health-row">
+            <span className={`sidebar-health-dot ${ws.status === "connected" ? "green" : "red"}`} />
+            <span>Gateway</span>
+          </div>
+          <div className="sidebar-health-row">
+            <span className={`sidebar-health-dot ${health.database?.status || "red"}`} />
+            <span>Database</span>
+          </div>
+          <div className="sidebar-health-row sidebar-health-clickable" onClick={() => navigate("/autodev")}>
+            <span className={`sidebar-health-dot ${health.autodev?.status || "red"}`} />
+            <span>AutoDev</span>
+            <span className="sidebar-health-detail">{autodevState}</span>
+          </div>
+          <div className="sidebar-health-row">
+            <span className={`sidebar-health-dot ${health.livekit?.status || "red"}`} />
+            <span>LiveKit</span>
+          </div>
+          <div className="sidebar-health-row">
+            <span className={`sidebar-health-dot ${health.memory?.status || "orange"}`} />
+            <span>Memory</span>
+          </div>
+        </div>
+      </aside>
+
+      <main className="main-content">
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/chat" element={<Chat ws={ws} chatMode={chatMode} />} />
+          <Route path="/contacts" element={<Contacts />} />
+          <Route path="/contacts/:id" element={<ContactDetail />} />
+          <Route path="/agents" element={<Agents />} />
+          <Route path="/knowledge" element={<Knowledge />} />
+          <Route path="/store" element={<Store />} />
+          <Route path="/okrs" element={<OKRs />} />
+          <Route path="/cron" element={<Cron />} />
+          <Route path="/skills" element={<Navigate to="/agents" replace />} />
+          <Route path="/logs" element={<Logs />} />
+          <Route path="/reports" element={<Reports />} />
+          <Route path="/terminal" element={<Terminal ws={ws} />} />
+          <Route path="/settings" element={<Settings />} />
+          <Route path="/tasks" element={<Tasks ws={ws} chatMode={chatMode} />} />
+          <Route path="/reviews" element={<Reviews ws={ws} />} />
+          <Route path="/integrations" element={<Channels ws={ws} />} />
+          <Route path="/autodev" element={<AutoDev ws={ws} />} />
+          <Route path="/channels" element={<Navigate to="/integrations" replace />} />
+        </Routes>
+      </main>
+      <AssistantChat ws={ws} chatMode={chatMode} />
+      <DebugPanel />
+    </div>
+    </TooltipProvider>
+  );
+}
+
+export default App;

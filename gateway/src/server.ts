@@ -22,6 +22,7 @@ import { AVAILABLE_MODELS, resetClients, getOllamaUrl, utilityCall, resolveModel
 // Cost calculation is now handled inside runtime.ts (totalCostUsd)
 import { checkOllamaModel, pullOllamaLLMModel } from "./agent/ollama-llm.js";
 import { listMemories } from "./knowledge/writer.js";
+import { runConsolidation } from "./knowledge/consolidator.js";
 import { fullSync, startWatching, stopWatching, isSyncActive } from "./knowledge/obsidian-sync.js";
 import { ingestDocument } from "./knowledge/ingest.js";
 import { startScheduler, stopScheduler, listJobs, createJob, updateJob, toggleJob, deleteJob, executeJobNow, listJobRuns } from "./cron/scheduler.js";
@@ -50,27 +51,79 @@ import { AutoDevProxy } from "./autodev/proxy.js";
 
 const config = loadConfig();
 
-const VOICE_TOOL_FILLER_CACHE = new Map<string, string>();
-const VOICE_TOOL_FILLER_RULES: Array<{ pattern: RegExp; filler: string }> = [
-  { pattern: /(calendar|event|schedule)/i, filler: "I am checking your calendar now." },
-  { pattern: /(gmail|email|inbox|mail)/i, filler: "I am checking your inbox now." },
-  { pattern: /(weather|forecast)/i, filler: "I am checking the weather now." },
-  { pattern: /(memory|knowledge|search|lookup|find)/i, filler: "I am looking that up now." },
-  { pattern: /(contact|person|people)/i, filler: "I am checking that contact now." },
-  { pattern: /(task|todo|things|okr)/i, filler: "I am checking your task list now." },
-  { pattern: /(channel_send|whatsapp|telegram|imessage|sms|message)/i, filler: "I am preparing that message now." },
-  { pattern: /(code|autodev|terminal|shell|command|git)/i, filler: "I am running that task now." },
+const TOOL_ANNOUNCEMENT_CACHE = new Map<string, string>();
+const TOOL_ANNOUNCEMENT_RULES: Array<{ pattern: RegExp; phrase: string }> = [
+  { pattern: /(calendar|event|schedule)/i, phrase: "checking your calendar" },
+  { pattern: /(gmail|email|inbox|mail)/i, phrase: "checking your inbox" },
+  { pattern: /(weather|forecast)/i, phrase: "checking the weather" },
+  { pattern: /(memory|knowledge|search|lookup|find)/i, phrase: "looking that up" },
+  { pattern: /(contact|person|people)/i, phrase: "checking that contact" },
+  { pattern: /(task|todo|things|okr)/i, phrase: "checking your task list" },
+  { pattern: /(channel_send|whatsapp|telegram|imessage|sms|message)/i, phrase: "preparing that message" },
+  { pattern: /(code|autodev|terminal|shell|command|git)/i, phrase: "running that task" },
 ];
 
-function getVoiceToolFiller(toolName: string): string {
-  const key = (toolName || "tool").trim().toLowerCase();
-  const cached = VOICE_TOOL_FILLER_CACHE.get(key);
-  if (cached) return cached;
+function firstStringField(input: unknown, key: string): string | null {
+  const obj = asRecord(input);
+  if (!obj) return null;
+  const value = obj[key];
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : null;
+}
 
-  const rule = VOICE_TOOL_FILLER_RULES.find((r) => r.pattern.test(key));
-  const filler = rule?.filler ?? "I am working on that now.";
-  VOICE_TOOL_FILLER_CACHE.set(key, filler);
-  return filler;
+function getGenericToolAnnouncement(toolName: string): string {
+  const key = (toolName || "tool").trim().toLowerCase();
+  const cached = TOOL_ANNOUNCEMENT_CACHE.get(key);
+  if (cached) return cached;
+  const rule = TOOL_ANNOUNCEMENT_RULES.find((r) => r.pattern.test(key));
+  const phrase = rule?.phrase ?? "working on that";
+  const announcement = `I am ${phrase} now.`;
+  TOOL_ANNOUNCEMENT_CACHE.set(key, announcement);
+  return announcement;
+}
+
+function getToolAnnouncement(toolName: string, toolInput: unknown): string {
+  const key = (toolName || "tool").trim().toLowerCase();
+
+  if (key === "store_create_collection") {
+    const name = firstStringField(toolInput, "name");
+    return name
+      ? `I am creating the ${name} collection now.`
+      : "I am creating that collection now.";
+  }
+
+  if (key === "store_create_object") {
+    const collection = firstStringField(toolInput, "collection");
+    const title = firstStringField(toolInput, "title");
+    if (title && collection) return `I am adding ${title} to ${collection} now.`;
+    if (title) return `I am adding ${title} now.`;
+    if (collection) return `I am adding that to ${collection} now.`;
+    return "I am creating that record now.";
+  }
+
+  if (key === "store_update_object") {
+    const collection = firstStringField(toolInput, "collection");
+    if (collection) return `I am updating that in ${collection} now.`;
+    return "I am updating that record now.";
+  }
+
+  if (key === "store_query" || key === "store_search") {
+    const collection = firstStringField(toolInput, "collection");
+    return collection
+      ? `I am checking ${collection} now.`
+      : "I am checking your stored data now.";
+  }
+
+  if (key === "contacts_search") {
+    return "I am looking up your contacts now.";
+  }
+
+  if (key === "okr_report") {
+    return "I am checking your OKRs now.";
+  }
+
+  return getGenericToolAnnouncement(key);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -429,10 +482,10 @@ app.post("/api/voice/chat", async (req, res) => {
           res.write(`data: ${JSON.stringify({ type: "stream", delta: cleanDelta })}\n\n`);
         }
       },
-      onToolUse: (toolName, _toolInput, toolUseId) => {
+      onToolUse: (toolName, toolInput, toolUseId) => {
         if (toolUseId && emittedToolUseIds.has(toolUseId)) return;
         if (toolUseId) emittedToolUseIds.add(toolUseId);
-        const filler = getVoiceToolFiller(toolName);
+        const filler = getToolAnnouncement(toolName, toolInput);
         const cleanFiller = stripVoiceTags(filler);
         if (cleanFiller) {
           res.write(`data: ${JSON.stringify({ type: "stream", delta: `${cleanFiller} ` })}\n\n`);
@@ -809,6 +862,54 @@ app.get("/api/status", async (_req, res) => {
       version: "0.1.0",
     });
   }
+});
+
+// Health overview for sidebar indicators
+app.get("/api/health", async (_req, res) => {
+  const services: Record<string, { status: "green" | "orange" | "red"; detail?: string }> = {};
+
+  // Gateway — always green if we're responding
+  services.gateway = { status: "green" };
+
+  // Database
+  try {
+    const dbCheck = await query("SELECT 1 as ok");
+    services.database = { status: dbCheck.rows.length > 0 ? "green" : "red" };
+  } catch {
+    services.database = { status: "red", detail: "Connection failed" };
+  }
+
+  // AutoDev worker
+  const adStatus = autoDevProxy.getStatus();
+  if (adStatus.workerConnected) {
+    services.autodev = { status: "green", detail: adStatus.state };
+  } else {
+    services.autodev = { status: "red", detail: "Worker disconnected" };
+  }
+
+  // LiveKit
+  const lkConfigured = !!(config.livekit.url && config.livekit.apiKey && config.livekit.apiSecret);
+  if (lkConfigured) {
+    services.livekit = { status: "green", detail: "Configured" };
+  } else {
+    services.livekit = { status: "orange", detail: "Not configured" };
+  }
+
+  // Memory (Ollama)
+  try {
+    const ollama = await checkOllama(config);
+    if (ollama.available && ollama.modelLoaded) {
+      services.memory = { status: "green", detail: "Ollama ready" };
+    } else if (ollama.available) {
+      services.memory = { status: "orange", detail: "Model not loaded" };
+    } else {
+      services.memory = { status: "red", detail: ollama.error || "Unavailable" };
+    }
+  } catch {
+    services.memory = { status: "orange", detail: "Ollama unreachable" };
+  }
+
+  res.json({ services, uptime: process.uptime() });
 });
 
 // ─── Settings API ───
@@ -1573,6 +1674,137 @@ app.get("/api/reports/voice/daily", async (req, res) => {
   }
 });
 
+async function getKnowledgeAuditSnapshot(): Promise<{
+  facts: {
+    active: number;
+    archived: number;
+    duplicateRows: number;
+    duplicateGroups: number;
+  };
+  memories: {
+    operationalActive: number;
+    legacyIdentityActive: number;
+    legacyPreferencesActive: number;
+  };
+  reviews: {
+    pendingTotal: number;
+    pendingTriage: number;
+    pendingVerifyFact: number;
+  };
+}> {
+  const factsCollection = await query<{ id: string }>(
+    "SELECT id FROM store_collections WHERE name = 'Facts' LIMIT 1",
+  );
+  const factsCollectionId = factsCollection.rows[0]?.id;
+
+  let facts = {
+    active: 0,
+    archived: 0,
+    duplicateRows: 0,
+    duplicateGroups: 0,
+  };
+
+  if (factsCollectionId) {
+    const factsCounts = await query<{ status: string; count: number }>(
+      `SELECT status, count(*)::int AS count
+       FROM store_objects
+       WHERE collection_id = $1
+       GROUP BY status`,
+      [factsCollectionId],
+    );
+    for (const row of factsCounts.rows) {
+      if (row.status === "active") facts.active = row.count;
+      if (row.status === "archived") facts.archived = row.count;
+    }
+
+    const dupes = await query<{ duplicate_rows: number; duplicate_groups: number }>(
+      `WITH norm AS (
+         SELECT
+           LOWER(BTRIM(COALESCE(data->>'subject',''))) AS subject,
+           LOWER(BTRIM(COALESCE(data->>'predicate',''))) AS predicate,
+           LOWER(BTRIM(COALESCE(data->>'object',''))) AS object,
+           count(*) AS c
+         FROM store_objects
+         WHERE collection_id = $1
+           AND status = 'active'
+         GROUP BY 1, 2, 3
+       )
+       SELECT
+         COALESCE(SUM(c - 1), 0)::int AS duplicate_rows,
+         count(*) FILTER (WHERE c > 1)::int AS duplicate_groups
+       FROM norm`,
+      [factsCollectionId],
+    );
+    facts.duplicateRows = dupes.rows[0]?.duplicate_rows ?? 0;
+    facts.duplicateGroups = dupes.rows[0]?.duplicate_groups ?? 0;
+  }
+
+  const memoryCounts = await query<{ area: string; count: number }>(
+    `SELECT area, count(*)::int AS count
+     FROM memories
+     WHERE superseded_by IS NULL
+       AND (expires_at IS NULL OR expires_at > NOW())
+       AND confidence > 0.05
+     GROUP BY area`,
+  );
+  const memories = {
+    operationalActive: 0,
+    legacyIdentityActive: 0,
+    legacyPreferencesActive: 0,
+  };
+  for (const row of memoryCounts.rows) {
+    if (row.area === "knowledge" || row.area === "solutions" || row.area === "episodes") {
+      memories.operationalActive += row.count;
+    } else if (row.area === "identity") {
+      memories.legacyIdentityActive = row.count;
+    } else if (row.area === "preferences") {
+      memories.legacyPreferencesActive = row.count;
+    }
+  }
+
+  const reviewCounts = await query<{ type: string; count: number }>(
+    `SELECT type, count(*)::int AS count
+     FROM review_queue
+     WHERE status = 'pending'
+     GROUP BY type`,
+  );
+  const reviews = {
+    pendingTotal: 0,
+    pendingTriage: 0,
+    pendingVerifyFact: 0,
+  };
+  for (const row of reviewCounts.rows) {
+    reviews.pendingTotal += row.count;
+    if (row.type === "triage") reviews.pendingTriage = row.count;
+    if (row.type === "verify_fact") reviews.pendingVerifyFact = row.count;
+  }
+
+  return { facts, memories, reviews };
+}
+
+// GET /api/knowledge/audit — quick health snapshot for learning system
+app.get("/api/knowledge/audit", async (_req, res) => {
+  try {
+    const audit = await getKnowledgeAuditSnapshot();
+    res.json(audit);
+  } catch (err) {
+    console.error("Failed to build knowledge audit:", err);
+    res.status(500).json({ error: "Failed to build knowledge audit" });
+  }
+});
+
+// POST /api/knowledge/repair — run consolidation/cleanup now
+app.post("/api/knowledge/repair", async (_req, res) => {
+  try {
+    const report = await runConsolidation(config);
+    const audit = await getKnowledgeAuditSnapshot();
+    res.json({ repaired: true, report, audit });
+  } catch (err) {
+    console.error("Failed to run knowledge repair:", err);
+    res.status(500).json({ error: "Failed to run knowledge repair" });
+  }
+});
+
 // GET /api/memories — list memories by area
 app.get("/api/memories", async (req, res) => {
   try {
@@ -1593,8 +1825,12 @@ app.get("/api/memories/stats", async (_req, res) => {
       `SELECT area, count(*)::int AS count, avg(confidence)::float AS avg_confidence
        FROM memories
        WHERE superseded_by IS NULL
+         AND (expires_at IS NULL OR expires_at > NOW())
+         AND confidence > 0.05
+         AND area = ANY($1::text[])
        GROUP BY area
        ORDER BY area`,
+      [["knowledge", "solutions", "episodes"]],
     );
     res.json({ stats: result.rows });
   } catch {
@@ -1985,6 +2221,93 @@ app.get("/api/google/callback", async (req, res) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ error: message });
+  }
+});
+
+// ─── Inbox Rules API ───
+
+app.get("/api/inbox/rules/summary", async (_req, res) => {
+  try {
+    const result = await query<{
+      total_active: number;
+      auto_approve_active: number;
+      channel_scoped: number;
+      sender_scoped: number;
+      keyword_scoped: number;
+      semantic_only: number;
+      total_hits: number;
+      last_hit_at: string | null;
+    }>(
+      `WITH rules AS (
+         SELECT o.data
+         FROM store_objects o
+         WHERE o.collection_id = (
+           SELECT id FROM store_collections WHERE name = 'Inbox Rules' LIMIT 1
+         )
+           AND o.status = 'active'
+       )
+       SELECT
+         count(*)::int AS total_active,
+         count(*) FILTER (
+           WHERE COALESCE((data->>'auto_approve')::boolean, false)
+         )::int AS auto_approve_active,
+         count(*) FILTER (
+           WHERE COALESCE(NULLIF(BTRIM(data->>'match_channel'), ''), 'any') <> 'any'
+         )::int AS channel_scoped,
+         count(*) FILTER (
+           WHERE COALESCE(NULLIF(BTRIM(data->>'match_sender'), ''), '') <> ''
+         )::int AS sender_scoped,
+         count(*) FILTER (
+           WHERE COALESCE(NULLIF(BTRIM(data->>'match_keywords'), ''), '') <> ''
+         )::int AS keyword_scoped,
+         count(*) FILTER (
+           WHERE COALESCE(NULLIF(BTRIM(data->>'match_sender'), ''), '') = ''
+             AND COALESCE(NULLIF(BTRIM(data->>'match_keywords'), ''), '') = ''
+             AND COALESCE(NULLIF(BTRIM(data->>'match_channel'), ''), 'any') = 'any'
+         )::int AS semantic_only,
+         COALESCE(
+           sum(
+             CASE
+               WHEN COALESCE(data->>'hit_count', '') ~ '^[0-9]+$'
+                 THEN (data->>'hit_count')::int
+               ELSE 0
+             END
+           ),
+           0
+         )::int AS total_hits,
+         max(
+           CASE
+             WHEN COALESCE(data->>'last_hit_at', '') <> ''
+               THEN (data->>'last_hit_at')::timestamptz
+             ELSE NULL
+           END
+         )::text AS last_hit_at
+       FROM rules`,
+    );
+
+    const row = result.rows[0] || {
+      total_active: 0,
+      auto_approve_active: 0,
+      channel_scoped: 0,
+      sender_scoped: 0,
+      keyword_scoped: 0,
+      semantic_only: 0,
+      total_hits: 0,
+      last_hit_at: null,
+    };
+    res.json(row);
+  } catch (err) {
+    console.error("Failed to load inbox rules summary:", err);
+    res.status(500).json({
+      total_active: 0,
+      auto_approve_active: 0,
+      channel_scoped: 0,
+      sender_scoped: 0,
+      keyword_scoped: 0,
+      semantic_only: 0,
+      total_hits: 0,
+      last_hit_at: null,
+    });
   }
 });
 
@@ -4157,6 +4480,9 @@ wss.on("connection", (ws) => {
     timestamp: new Date().toISOString(),
   }));
 
+  // Send cached autodev state so reconnecting clients don't show stale data
+  autoDevProxy.sendSyncToClient(ws);
+
   ws.on("message", async (raw) => {
     const msg = parseFrame(raw.toString());
     if (!msg) {
@@ -4203,6 +4529,7 @@ wss.on("connection", (ws) => {
           const agentId = data.agentId || "personal";
           const conversationId = data.conversationId;
           const mode = data.mode || "api";
+          const emittedToolUseIds = new Set<string>();
 
           if (mode === "claude-code") {
             // ── Claude Code CLI mode (uses subscription, not API) ──
@@ -4221,6 +4548,15 @@ wss.on("connection", (ws) => {
                 }, msg.id));
               },
               onToolUse: (name, input, id) => {
+                if (id && emittedToolUseIds.has(id)) return;
+                if (id) emittedToolUseIds.add(id);
+                const announcement = getToolAnnouncement(name, input);
+                if (announcement) {
+                  ws.send(frame("chat.stream", {
+                    conversationId: convId,
+                    delta: `${announcement} `,
+                  }, msg.id));
+                }
                 ws.send(frame("chat.tool_use", {
                   conversationId: convId,
                   toolName: name,
@@ -4292,6 +4628,15 @@ wss.on("connection", (ws) => {
                 }, msg.id));
               },
               onToolUse: (name, input, id) => {
+                if (id && emittedToolUseIds.has(id)) return;
+                if (id) emittedToolUseIds.add(id);
+                const announcement = getToolAnnouncement(name, input);
+                if (announcement) {
+                  ws.send(frame("chat.stream", {
+                    conversationId: convId,
+                    delta: `${announcement} `,
+                  }, msg.id));
+                }
                 ws.send(frame("chat.tool_use", {
                   conversationId: convId,
                   toolName: name,

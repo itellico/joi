@@ -643,33 +643,62 @@ textarea:focus {
   color: var(--accent);
 }
 
-.sidebar-status {
-  padding: 12px 16px;
+/* ── Sidebar Health Indicators ── */
+
+.sidebar-health {
+  padding: 8px 14px 10px;
   border-top: 1px solid var(--border);
-  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sidebar-health-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
   color: var(--text-muted);
+  padding: 2px 0;
 }
 
-.sidebar-status .dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
+.sidebar-health-clickable {
+  cursor: pointer;
+}
+
+.sidebar-health-clickable:hover {
+  color: var(--text-primary);
+}
+
+.sidebar-health-dot {
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  margin-right: 6px;
+  flex-shrink: 0;
 }
 
-.sidebar-status .dot.connected {
+.sidebar-health-dot.green {
   background: var(--success);
-  animation: dot-pulse 2s ease-in-out infinite;
+}
+
+.sidebar-health-dot.orange {
+  background: #f59e0b;
+}
+
+.sidebar-health-dot.red {
+  background: var(--error);
+}
+
+.sidebar-health-detail {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: lowercase;
 }
 
 @keyframes dot-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
-}
-
-.sidebar-status .dot.disconnected {
-  background: var(--error);
 }
 
 /* Sidebar controls */
@@ -5700,10 +5729,35 @@ select.t3-dialog-input {
 
 /* ─── Reviews page ─── */
 
+.reviews-toolbar {
+  padding: 10px 24px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.reviews-toolbar-row {
+  display: flex;
+}
+
+.reviews-overview {
+  padding: 10px 24px 0;
+}
+
+.reviews-overview-card {
+  background: color-mix(in srgb, var(--bg-secondary) 88%, var(--accent-subtle));
+  border-color: color-mix(in srgb, var(--border) 72%, var(--accent));
+}
+
+.reviews-overview-line {
+  color: var(--text-secondary);
+}
+
 .reviews-page-body {
   flex-direction: row;
   gap: var(--space-4);
-  height: calc(100vh - 80px);
+  height: auto;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -5714,6 +5768,7 @@ select.t3-dialog-input {
 .reviews-kanban {
   display: flex;
   gap: var(--space-3);
+  flex: 1 1 0;
   overflow: hidden;
   transition: flex 0.2s;
 }
@@ -5723,6 +5778,7 @@ select.t3-dialog-input {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
 }
 
 .reviews-column-pending { flex: 2; }
@@ -5815,6 +5871,15 @@ select.t3-dialog-input {
   border-top: 1px solid var(--border);
 }
 
+.reviews-card-actions .btn-primary,
+.reviews-card-actions .ui-btn-danger {
+  flex: 1;
+}
+
+.reviews-card-action-preview {
+  min-height: 18px;
+}
+
 .reviews-code-block {
   background: var(--bg-primary);
   padding: var(--space-3);
@@ -5879,6 +5944,27 @@ select.t3-dialog-input {
   font-size: var(--text-base);
 }
 
+.reviews-action-list {
+  margin: 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-secondary);
+  font-size: var(--text-base);
+  line-height: 1.5;
+}
+
+.reviews-learning-card {
+  background: color-mix(in srgb, var(--bg-secondary) 88%, var(--accent-subtle));
+}
+
+.reviews-details-summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
 .reviews-content-image {
   max-width: 100%;
   border-radius: var(--radius-sm);
@@ -5900,6 +5986,57 @@ select.t3-dialog-input {
   font-size: var(--text-base);
   border: 1px dashed var(--border);
   border-radius: var(--radius-md);
+}
+
+@media (max-width: 1280px) {
+  .reviews-page-body {
+    flex-direction: column;
+  }
+
+  .reviews-kanban-with-detail {
+    flex: 1;
+  }
+
+  .reviews-detail-panel {
+    flex: 1;
+    border-left: none;
+    border-top: 1px solid var(--border);
+    padding-left: 0;
+    padding-top: var(--space-4);
+  }
+}
+
+@media (max-width: 840px) {
+  .reviews-toolbar {
+    padding: 10px 12px 0;
+  }
+
+  .reviews-overview {
+    padding: 10px 12px 0;
+  }
+
+  .reviews-page-body {
+    padding: 12px;
+    gap: var(--space-3);
+  }
+
+  .reviews-kanban {
+    flex-direction: column;
+    overflow: visible;
+  }
+
+  .reviews-column-pending {
+    flex: 1;
+  }
+
+  .reviews-column-body {
+    max-height: 42vh;
+  }
+
+  .reviews-column-header {
+    padding-left: 0;
+    padding-right: 0;
+  }
 }
 
 /* ─── Channels page ─── */
@@ -6278,6 +6415,14 @@ select.t3-dialog-input {
   color: var(--error);
   font-size: 11px;
   border-radius: 6px;
+}
+
+.assistant-msg-live {
+  box-shadow: inset 0 0 0 1px rgba(167, 139, 250, 0.25);
+}
+
+.assistant-msg-live-user {
+  white-space: pre-wrap;
 }
 
 .assistant-msg-avatar-row {
@@ -7181,40 +7326,7 @@ select.t3-dialog-input {
   opacity: 0.7;
 }
 
-/* ── AutoDev Sidebar Indicator ── */
-
-.sidebar-autodev-indicator {
-  padding: 6px 14px;
-  border-top: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  user-select: none;
-}
-
-.sidebar-autodev-indicator:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
-}
-
-.sidebar-autodev-indicator .dot.autodev-running {
-  background: var(--success);
-  animation: dot-pulse 2s ease-in-out infinite;
-}
-
-.sidebar-autodev-indicator .dot.autodev-idle {
-  background: var(--text-muted);
-}
-
-.sidebar-autodev-state {
-  margin-left: auto;
-  font-size: 10px;
-  color: var(--text-muted);
-  text-transform: lowercase;
-}
+/* (Old sidebar-autodev-indicator removed — replaced by sidebar-health) */
 
 /* ── AutoDev Page ── */
 

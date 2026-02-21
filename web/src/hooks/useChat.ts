@@ -28,7 +28,20 @@ export interface ChatMessage {
   toolProvider?: string;
   toolCalls?: ToolCall[];
   attachments?: Attachment[];
-  usage?: { inputTokens: number; outputTokens: number };
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    voiceCache?: {
+      cacheHits?: number;
+      cacheMisses?: number;
+      cacheHitChars?: number;
+      cacheMissChars?: number;
+      cacheHitAudioBytes?: number;
+      cacheMissAudioBytes?: number;
+      segments?: number;
+      hitRate?: number;
+    };
+  };
   latencyMs?: number;
   ttftMs?: number;
   streamStartedAt?: number;
@@ -105,7 +118,20 @@ export function useChat({ send, on }: UseChatOptions) {
           toolProvider?: string;
           messageId: string;
           conversationId?: string;
-          usage?: { inputTokens: number; outputTokens: number };
+          usage?: {
+            inputTokens: number;
+            outputTokens: number;
+            voiceCache?: {
+              cacheHits?: number;
+              cacheMisses?: number;
+              cacheHitChars?: number;
+              cacheMissChars?: number;
+              cacheHitAudioBytes?: number;
+              cacheMissAudioBytes?: number;
+              segments?: number;
+              hitRate?: number;
+            };
+          };
           latencyMs?: number;
           costUsd?: number;
         };
@@ -267,7 +293,21 @@ export function useChat({ send, on }: UseChatOptions) {
               model?: string;
               tool_calls?: Array<{ id: string; name: string; input: unknown }>;
               tool_results?: Array<{ tool_use_id: string; content: string }>;
-              token_usage?: { inputTokens: number; outputTokens: number; latencyMs?: number };
+              token_usage?: {
+                inputTokens: number;
+                outputTokens: number;
+                latencyMs?: number;
+                voiceCache?: {
+                  cacheHits?: number;
+                  cacheMisses?: number;
+                  cacheHitChars?: number;
+                  cacheMissChars?: number;
+                  cacheHitAudioBytes?: number;
+                  cacheMissAudioBytes?: number;
+                  segments?: number;
+                  hitRate?: number;
+                };
+              };
               attachments?: Attachment[];
               created_at: string;
             }
