@@ -195,7 +195,7 @@ export default function Contacts() {
       header: "Phone",
       render: (c) => c.phones[0] || <MetaText size="xs">—</MetaText>,
       sortValue: (c) => c.phones[0] || "",
-      width: 150,
+      width: 180,
     },
     {
       key: "status",
@@ -262,7 +262,7 @@ export default function Contacts() {
           <div className="list-page-toolbar-right">
             <ViewToggle
               value={viewMode}
-              onChange={handleViewChange}
+              onChange={(m) => handleViewChange(m as "list" | "cards")}
               storageKey="contacts"
             />
           </div>

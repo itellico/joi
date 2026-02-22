@@ -23,6 +23,7 @@ import {
   FormField,
   FormGrid,
   UnifiedList,
+  ViewToggle,
   type UnifiedListColumn,
 } from "../components/ui";
 
@@ -464,16 +465,12 @@ export default function Knowledge() {
       />
 
       {/* Search + filter */}
-      <Row gap={2}>
-        <input
-          type="text"
-          name="memory_search"
-          aria-label="Search memories"
-          autoComplete="off"
-          placeholder="Search memories…"
+      <div className="list-page-toolbar">
+        <SearchInput
           value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className="knowledge-search-input"
+          onChange={setSearchQuery}
+          placeholder="Search memories…"
+          resultCount={searchQuery.trim() ? filtered.length : undefined}
         />
         <FilterGroup
           options={KNOWLEDGE_AREAS}
@@ -481,7 +478,14 @@ export default function Knowledge() {
           onChange={setSelectedArea}
           labelFn={(a) => a === "all" ? "All" : a.charAt(0).toUpperCase() + a.slice(1)}
         />
-      </Row>
+        <div className="list-page-toolbar-right">
+          <ViewToggle
+            value={viewMode}
+            onChange={(v) => setViewMode(v as "list" | "cards")}
+            storageKey="knowledge"
+          />
+        </div>
+      </div>
 
       {/* Memory list */}
       {loading ? (
@@ -549,12 +553,21 @@ export default function Knowledge() {
 
   const documentsContent = (
     <Stack gap={5}>
-      <SearchInput
-        value={docSearch}
-        onChange={setDocSearch}
-        placeholder="Search documents by title or path…"
-        resultCount={docSearch ? filteredDocuments.length : undefined}
-      />
+      <div className="list-page-toolbar">
+        <SearchInput
+          value={docSearch}
+          onChange={setDocSearch}
+          placeholder="Search documents by title or path…"
+          resultCount={docSearch ? filteredDocuments.length : undefined}
+        />
+        <div className="list-page-toolbar-right">
+          <ViewToggle
+            value={viewMode}
+            onChange={(v) => setViewMode(v as "list" | "cards")}
+            storageKey="knowledge"
+          />
+        </div>
+      </div>
 
       {loading ? (
         <Card><MetaText>Loading…</MetaText></Card>
@@ -684,12 +697,21 @@ export default function Knowledge() {
         </Card>
       )}
 
-      <SearchInput
-        value={flushSearch}
-        onChange={setFlushSearch}
-        placeholder="Search flushes by summary, area, or conversation…"
-        resultCount={flushSearch ? filteredFlushes.length : undefined}
-      />
+      <div className="list-page-toolbar">
+        <SearchInput
+          value={flushSearch}
+          onChange={setFlushSearch}
+          placeholder="Search flushes by summary, area, or conversation…"
+          resultCount={flushSearch ? filteredFlushes.length : undefined}
+        />
+        <div className="list-page-toolbar-right">
+          <ViewToggle
+            value={viewMode}
+            onChange={(v) => setViewMode(v as "list" | "cards")}
+            storageKey="knowledge"
+          />
+        </div>
+      </div>
 
       {/* Flush list grouped by conversation */}
       {loading ? (
@@ -766,17 +788,7 @@ export default function Knowledge() {
 
   return (
     <>
-      <PageHeader
-        title="Knowledge Base"
-        actions={(
-          <FilterGroup
-            options={KNOWLEDGE_VIEWS}
-            value={viewMode}
-            onChange={(v) => setViewMode(v as "list" | "cards")}
-            labelFn={(mode) => mode === "list" ? "List View" : "Card View"}
-          />
-        )}
-      />
+      <PageHeader title="Knowledge Base" />
 
       <PageBody gap={16}>
         <Tabs

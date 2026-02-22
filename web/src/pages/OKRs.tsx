@@ -4,6 +4,7 @@ import {
   Button,
   Card,
   EmptyState,
+  FilterGroup,
   FormField,
   FormGrid,
   MetaText,
@@ -568,64 +569,51 @@ export default function OKRs() {
     );
   }
 
-  const quarterSelector = (
-    <select
-      value={quarter}
-      onChange={(e) => setQuarter(e.target.value)}
-      className="okr-quarter-select"
-    >
-      {QUARTERS.map((q) => (
-        <option key={q} value={q}>
-          {q}
-        </option>
-      ))}
-    </select>
-  );
-
   return (
     <>
       <PageHeader
         title="OKRs"
         actions={
-          <>
-            {quarterSelector}
-            <Button variant="primary" size="sm" onClick={() => setShowNewObjective(true)}>
-              + New Objective
-            </Button>
-            <ViewToggle
-              value={viewMode}
-              onChange={(m) => {
-                setViewMode(m);
-                localStorage.setItem("view-toggle:okrs", m);
-              }}
-              storageKey="okrs"
-            />
-          </>
+          <Button variant="primary" size="sm" onClick={() => setShowNewObjective(true)}>
+            + New Objective
+          </Button>
         }
       />
 
-      {/* Overall score */}
-      {objectives.length > 0 && (
-        <div className="okr-overall-bar">
-          <MetaText className="font-semibold">Overall</MetaText>
-          <ScoreBar score={overallScore} height={10} width="240px" />
-          <MetaText size="xs">
-            {objectives.length} objective{objectives.length !== 1 ? "s" : ""}
-          </MetaText>
-        </div>
-      )}
-
-      <div className="list-page-toolbar" style={{ padding: "0 16px" }}>
-        <SearchInput
-          value={searchQuery}
-          onChange={setSearchQuery}
-          placeholder="Search objectives and key results..."
-          resultCount={searchQuery.trim() ? filteredObjectives.length : undefined}
-          className="list-page-search"
-        />
-      </div>
-
       <PageBody className="okr-page-body">
+        {/* Overall score */}
+        {objectives.length > 0 && (
+          <div className="okr-overall-bar">
+            <MetaText className="font-semibold">Overall</MetaText>
+            <ScoreBar score={overallScore} height={10} width="240px" />
+            <MetaText size="xs">
+              {objectives.length} objective{objectives.length !== 1 ? "s" : ""}
+            </MetaText>
+          </div>
+        )}
+
+        <div className="list-page-toolbar">
+          <SearchInput
+            value={searchQuery}
+            onChange={setSearchQuery}
+            placeholder="Search objectives and key results..."
+            resultCount={searchQuery.trim() ? filteredObjectives.length : undefined}
+          />
+          <FilterGroup
+            options={QUARTERS}
+            value={quarter}
+            onChange={(v) => setQuarter(v as string)}
+            labelFn={(q) => String(q)}
+          />
+          <div className="list-page-toolbar-right">
+            <ViewToggle
+              value={viewMode}
+              onChange={(m) => setViewMode(m as "list" | "cards")}
+              storageKey="okrs"
+            />
+          </div>
+        </div>
+
         {loading ? (
           <EmptyState message="Loading OKRs..." />
         ) : filteredObjectives.length === 0 ? (

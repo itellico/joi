@@ -4,6 +4,7 @@ import {
   Badge,
   Button,
   Card,
+  ChipGroup,
   EmptyState,
   FilterGroup,
   MetaText,
@@ -15,6 +16,7 @@ import {
   SectionLabel,
   Stack,
   UnifiedList,
+  ViewToggle,
   type UnifiedListColumn,
 } from "../components/ui";
 
@@ -403,7 +405,7 @@ export default function Reviews({ ws }: { ws: { on: (type: string, handler: (fra
   const [searchParams, setSearchParams] = useSearchParams();
   const [reviews, setReviews] = useState<ReviewItem[]>([]);
   const [stats, setStats] = useState<ReviewStats>({ stats: [] });
-  const [rulesSummary, setRulesSummary] = useState<InboxRulesSummary | null>(null);
+  const [, setRulesSummary] = useState<InboxRulesSummary | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(() => searchParams.get("id"));
   const [resolving, setResolving] = useState(false);
   const [dragOverColumn, setDragOverColumn] = useState<KanbanColumn | null>(null);
@@ -762,18 +764,7 @@ export default function Reviews({ ws }: { ws: { on: (type: string, handler: (fra
   const dismissedCount = statCountByStatus.get("rejected") ?? 0;
   const selectedReview = selectedId ? reviews.find((r) => r.id === selectedId) : null;
   const bulkNoiseCount = reviews.filter(isLowSignalNoise).length;
-  const visiblePendingCount = columns.pending.length;
-  const highPriorityPendingCount = columns.pending.filter((r) => r.priority > 0).length;
   const nextPendingReview = columns.pending.find((r) => r.priority > 0) ?? columns.pending[0] ?? null;
-  const pendingByAgent = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const review of columns.pending) {
-      counts.set(review.agent_id, (counts.get(review.agent_id) ?? 0) + 1);
-    }
-    return Array.from(counts.entries())
-      .map(([agentId, count]) => ({ agentId, count, label: getAgentLabel(agentId) }))
-      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
-  }, [columns.pending]);
 
   const REVIEW_PAGE_SIZE = 50;
   const listItems = useMemo(() => {
@@ -922,180 +913,47 @@ export default function Reviews({ ws }: { ws: { on: (type: string, handler: (fra
         )}
       />
 
-      <div className="reviews-toolbar">
-        <div className="reviews-summary-grid">
-          <Card className="reviews-focus-card">
-            <SectionLabel className="mb-2">Queue Focus</SectionLabel>
-            <div className="reviews-metric-grid">
-              <div className="reviews-metric reviews-metric-pending">
-                <span className="reviews-metric-label">Needs review</span>
-                <strong className="reviews-metric-value">{pendingCount}</strong>
-              </div>
-              <div className="reviews-metric reviews-metric-approved">
-                <span className="reviews-metric-label">Approved</span>
-                <strong className="reviews-metric-value">{approvedCount}</strong>
-              </div>
-              <div className="reviews-metric reviews-metric-dismissed">
-                <span className="reviews-metric-label">Dismissed</span>
-                <strong className="reviews-metric-value">{dismissedCount}</strong>
-              </div>
-            </div>
-
-            <MetaText size="sm" className="block mt-3">
-              {scope === "pending"
-                ? `Showing ${visiblePendingCount} pending reviews (${highPriorityPendingCount} high-priority).`
-                : `${filteredReviews.length} reviews match the current filters.`}
-            </MetaText>
-
-            {nextPendingReview ? (
-              <div className="reviews-next-action">
-                <MetaText size="sm" className="block mb-2">
-                  Next recommended: <strong>{nextPendingReview.title}</strong> ({getAgentLabel(nextPendingReview.agent_id)}).
-                </MetaText>
-                <Button
-                  size="sm"
-                  variant="primary"
-                  onClick={() => setSelectedId(nextPendingReview.id)}
-                >
-                  Open Next Review
-                </Button>
-              </div>
-            ) : (
-              <MetaText size="sm" className="block mt-2">
-                No pending reviews right now.
-              </MetaText>
-            )}
-          </Card>
-
-          <Card className="reviews-overview-card">
-            <SectionLabel className="mb-2">Decision Guide</SectionLabel>
-            <ul className="reviews-guide-list">
-              <li><strong>Apply Plan</strong> runs the proposed action immediately.</li>
-              <li><strong>Dismiss Plan</strong> rejects the action and records your correction.</li>
-              <li><strong>Approved</strong> includes both approved and modified outcomes.</li>
-              <li><strong>Needs Review</strong> means waiting for human decision.</li>
-            </ul>
-            <Row gap={2} wrap className="mt-2">
-              <Badge status="muted">rules: {rulesSummary?.total_active ?? 0}</Badge>
-              <Badge status="muted">auto-approve: {rulesSummary?.auto_approve_active ?? 0}</Badge>
-              <Badge status="muted">rule hits: {rulesSummary?.total_hits ?? 0}</Badge>
-            </Row>
-            {rulesSummary?.last_hit_at && (
-              <MetaText size="xs" className="block mt-2">last rule hit {timeAgo(rulesSummary.last_hit_at)}</MetaText>
-            )}
-          </Card>
-
-          <Card className="reviews-overview-card">
-            <SectionLabel className="mb-2">Agents Involved</SectionLabel>
-            {pendingByAgent.length === 0 ? (
-              <MetaText size="sm">No agents with pending items.</MetaText>
-            ) : (
-              <div className="reviews-agent-list">
-                {pendingByAgent.slice(0, 8).map((agent) => (
-                  <button
-                    key={agent.agentId}
-                    type="button"
-                    className={`reviews-agent-chip${agentFilter === agent.agentId ? " reviews-agent-chip--active" : ""}`}
-                    onClick={() => {
-                      setAgentFilter((current) => current === agent.agentId ? "all" : agent.agentId);
-                      setReviewPageOffset(0);
-                    }}
-                  >
-                    <span>{agent.label}</span>
-                    <Badge status="muted" className="text-xs">{agent.count}</Badge>
-                  </button>
-                ))}
-              </div>
-            )}
-            <MetaText size="xs" className="block mt-2">
-              Click an agent to isolate its queue.
-            </MetaText>
-          </Card>
-        </div>
-
-        <div className="list-page-toolbar reviews-search-row" style={{ padding: "0 0 8px" }}>
+      <PageBody className="reviews-page-body">
+        <div className="list-page-toolbar">
           <SearchInput
             value={textSearch}
             onChange={(v) => { setTextSearch(v); setReviewPageOffset(0); }}
-            placeholder="Search title, details, agent, or content..."
+            placeholder="Search reviews..."
             resultCount={textSearch.trim() || typeFilter !== "all" || agentFilter !== "all" || tagFilter ? filteredReviews.length : undefined}
-            className="list-page-search"
           />
-        </div>
-
-        <Card className="reviews-controls-card">
-          <SectionLabel className="mb-2">Workflow</SectionLabel>
-          <FilterGroup
-            options={REVIEW_SCOPE_OPTIONS}
-            value={scope}
-            onChange={(v) => { setScope(v as ReviewScope); setReviewPageOffset(0); }}
-            labelFn={(value) => {
-              if (value === "pending") return "Needs Review";
-              if (value === "approved") return "Approved";
-              if (value === "rejected") return "Dismissed";
-              return "All";
-            }}
-            className="reviews-toolbar-row flex-wrap"
-          />
-          <FilterGroup
-            options={REVIEW_VIEW_OPTIONS}
-            value={viewMode}
-            onChange={(v) => setViewMode(v as ReviewViewMode)}
-            labelFn={(value) => value === "kanban" ? "Board View" : "Table View"}
-            className="reviews-toolbar-row flex-wrap mt-2"
-          />
-
-          <Row gap={2} wrap className="reviews-toolbar-row mt-2">
-            {scope === "pending" && (
-              <>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setShowOlderPending((v) => !v)}
-                  disabled={resolving}
-                >
-                  {showOlderPending ? "Hide >24h Backlog" : "Include >24h Backlog"}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setShowP0Noise((v) => !v)}
-                  disabled={resolving}
-                >
-                  {showP0Noise ? "Hide P0 Noise" : "Include P0 Noise"}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setPendingSort((v) => (v === "newest" ? "oldest" : "newest"))}
-                  disabled={resolving}
-                  title="Pending sort order"
-                >
-                  Sort: {pendingSort === "newest" ? "newest first" : "oldest first"}
-                </Button>
-              </>
-            )}
-            {scope === "pending" && bulkNoiseCount > 0 && (
+          <div className="list-page-toolbar-right">
+            {nextPendingReview && (
               <Button
                 size="sm"
-                variant="ghost"
-                onClick={handleBulkNoiseReject}
-                disabled={resolving}
+                variant="primary"
+                onClick={() => setSelectedId(nextPendingReview.id)}
               >
-                Dismiss low-signal ({Math.min(bulkNoiseCount, 120)})
+                Next Review
               </Button>
             )}
-          </Row>
+            <ViewToggle
+              modes={[
+                { value: "kanban", label: "Board", icon: "board" },
+                { value: "list", label: "Table", icon: "list" },
+              ]}
+              value={viewMode}
+              onChange={(v) => setViewMode(v as ReviewViewMode)}
+            />
+          </div>
+        </div>
 
-          {scope === "pending" && (
-            <MetaText size="xs" className="block mt-2">
-              {"Default queue shows last 24h and priority >0. Use toggles to include old backlog and low-signal noise."}
-            </MetaText>
-          )}
-        </Card>
+        <ChipGroup
+          variant="pill"
+          options={REVIEW_SCOPE_OPTIONS.map((s) => ({
+            value: s,
+            label: s === "pending" ? "Needs Review" : s === "approved" ? "Approved" : s === "rejected" ? "Dismissed" : "All",
+            count: s === "pending" ? pendingCount : s === "approved" ? approvedCount : s === "rejected" ? dismissedCount : pendingCount + approvedCount + dismissedCount,
+          }))}
+          value={scope}
+          onChange={(v) => { setScope(v as ReviewScope); setReviewPageOffset(0); }}
+        />
 
-        <Card className="reviews-controls-card">
-          <SectionLabel className="mb-2">Filters</SectionLabel>
+        <div className="list-page-toolbar">
           <FilterGroup
             options={["all", ...allTypes]}
             value={typeFilter}
@@ -1104,7 +962,6 @@ export default function Reviews({ ws }: { ws: { on: (type: string, handler: (fra
               setReviewPageOffset(0);
             }}
             labelFn={(type) => (type === "all" ? "All types" : (TYPE_LABEL[type] || type))}
-            className="reviews-toolbar-row flex-wrap"
           />
           <FilterGroup
             options={["all", ...allAgents]}
@@ -1114,7 +971,6 @@ export default function Reviews({ ws }: { ws: { on: (type: string, handler: (fra
               setReviewPageOffset(0);
             }}
             labelFn={(agent) => agent === "all" ? "All agents" : getAgentLabel(agent)}
-            className="reviews-toolbar-row flex-wrap mt-2"
           />
           {allTags.length > 0 && (
             <FilterGroup
@@ -1125,33 +981,68 @@ export default function Reviews({ ws }: { ws: { on: (type: string, handler: (fra
                 setReviewPageOffset(0);
               }}
               labelFn={(tag) => (tag === "all" ? "All tags" : tag)}
-              className="reviews-toolbar-row flex-wrap mt-2"
             />
           )}
 
-          {(typeFilter !== "all" || agentFilter !== "all" || tagFilter || textSearch.trim()) && (
-            <Row gap={2} className="reviews-toolbar-row mt-2">
+          {scope === "pending" && (
+            <>
               <Button
                 size="sm"
                 variant="ghost"
-                onClick={() => {
-                  setTypeFilter("all");
-                  setAgentFilter("all");
-                  setTagFilter(null);
-                  setTextSearch("");
-                  setReviewPageOffset(0);
-                }}
+                onClick={() => setShowOlderPending((v) => !v)}
+                disabled={resolving}
               >
-                Reset Filters
+                {showOlderPending ? "Hide >24h" : "+24h"}
               </Button>
-            </Row>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setShowP0Noise((v) => !v)}
+                disabled={resolving}
+              >
+                {showP0Noise ? "Hide P0" : "+P0"}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setPendingSort((v) => (v === "newest" ? "oldest" : "newest"))}
+                disabled={resolving}
+                title="Pending sort order"
+              >
+                {pendingSort === "newest" ? "Newest" : "Oldest"}
+              </Button>
+            </>
           )}
-        </Card>
-      </div>
+          {scope === "pending" && bulkNoiseCount > 0 && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={handleBulkNoiseReject}
+              disabled={resolving}
+            >
+              Dismiss noise ({Math.min(bulkNoiseCount, 120)})
+            </Button>
+          )}
 
-      <PageBody className="reviews-page-body">
+          {(typeFilter !== "all" || agentFilter !== "all" || tagFilter || textSearch.trim()) && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setTypeFilter("all");
+                setAgentFilter("all");
+                setTagFilter(null);
+                setTextSearch("");
+                setReviewPageOffset(0);
+              }}
+            >
+              Reset
+            </Button>
+          )}
+        </div>
+
         {viewMode === "kanban" ? (
-          <>
+          <div className="reviews-content-row">
             <div className={`reviews-kanban${selectedReview ? " reviews-kanban-with-detail" : ""}`}>
               {visibleColumns.map((col) => (
                 <div
@@ -1204,7 +1095,7 @@ export default function Reviews({ ws }: { ws: { on: (type: string, handler: (fra
                 />
               </div>
             )}
-          </>
+          </div>
         ) : (
           <div className={`reviews-list-layout${selectedReview ? " reviews-list-layout-with-detail" : ""}`}>
             <div>

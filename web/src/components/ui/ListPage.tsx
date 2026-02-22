@@ -127,7 +127,7 @@ export function ListPage<T>({
           {toolbar}
           <ViewToggle
             value={view}
-            onChange={setView}
+            onChange={(m) => setView(m as ViewMode)}
             storageKey={viewStorageKey}
           />
         </div>

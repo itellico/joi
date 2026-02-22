@@ -404,14 +404,16 @@ export default function Cron() {
           </Card>
         )}
 
-        <Row gap={3} className="mb-3">
+        <div className="list-page-toolbar">
           <SearchInput
             value={searchQuery}
             onChange={(v) => { setSearchQuery(v); setPageOffset(0); }}
             placeholder="Search jobs..."
           />
-          <ViewToggle storageKey="cron" value={viewMode} onChange={setViewMode} />
-        </Row>
+          <div className="list-page-toolbar-right">
+            <ViewToggle storageKey="cron" value={viewMode} onChange={(v) => setViewMode(v as "list" | "cards")} />
+          </div>
+        </div>
 
         {filteredJobs.length === 0 ? (
           <EmptyState message={searchQuery ? "No jobs match your search." : "No cron jobs yet. Create one to schedule recurring agent tasks."} />

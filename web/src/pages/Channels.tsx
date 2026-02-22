@@ -27,8 +27,18 @@ interface Channel {
   last_connected_at: string | null;
   scope: string | null;
   scope_metadata: Record<string, unknown> | null;
+  language: string | null;
   created_at: string;
 }
+
+const LANGUAGE_OPTIONS: { value: string; label: string; flag: string }[] = [
+  { value: "en", label: "English", flag: "\uD83C\uDDEC\uD83C\uDDE7" },
+  { value: "de", label: "Deutsch", flag: "\uD83C\uDDE6\uD83C\uDDF9" },
+  { value: "fr", label: "Fran\u00E7ais", flag: "\uD83C\uDDEB\uD83C\uDDF7" },
+  { value: "es", label: "Espa\u00F1ol", flag: "\uD83C\uDDEA\uD83C\uDDF8" },
+  { value: "it", label: "Italiano", flag: "\uD83C\uDDEE\uD83C\uDDF9" },
+  { value: "pt", label: "Portugu\u00EAs", flag: "\uD83C\uDDF5\uD83C\uDDF9" },
+];
 
 interface GoogleAccount {
   id: string;
@@ -555,6 +565,12 @@ function ChannelCard({
             {channel.scope && (
               <Badge status="warning">{channel.scope}</Badge>
             )}
+            {channel.language && channel.language !== "en" && (
+              <Badge status="warning">
+                {LANGUAGE_OPTIONS.find((l) => l.value === channel.language)?.flag || ""}{" "}
+                {LANGUAGE_OPTIONS.find((l) => l.value === channel.language)?.label || channel.language}
+              </Badge>
+            )}
             <StatusDot status={channelStatusToDot(channel.status)} pulse={isConnecting} />
             <MetaText size="xs">{channel.status}</MetaText>
           </Row>
@@ -805,6 +821,7 @@ function AddChannelModal({
   const [type, setType] = useState<ChannelTypeOption>("whatsapp");
   const [name, setName] = useState("");
   const [scope, setScope] = useState("");
+  const [language, setLanguage] = useState("en");
   const [saving, setSaving] = useState(false);
 
   // Type-specific fields
@@ -859,6 +876,7 @@ function AddChannelModal({
           config,
           display_name: channelName,
           scope: scope.trim() || undefined,
+          language: language || "en",
         }),
       });
       onAdded();
@@ -924,6 +942,20 @@ function AddChannelModal({
               placeholder="e.g. itellico-at, personal"
               className="channels-input"
             />
+          </FormField>
+
+          <FormField label="Language" hint="JOI will respond, transcribe speech, and format dates in this language.">
+            <select
+              value={language}
+              onChange={(e) => setLanguage(e.target.value)}
+              className="channels-input"
+            >
+              {LANGUAGE_OPTIONS.map((lang) => (
+                <option key={lang.value} value={lang.value}>
+                  {lang.flag} {lang.label}
+                </option>
+              ))}
+            </select>
           </FormField>
 
           {type === "telegram" && (

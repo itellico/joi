@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Badge, PageHeader, PageBody, Button, EmptyState, FilterGroup, MetaText, Pagination, Row, UnifiedList, type UnifiedListColumn } from "../components/ui";
+import { Badge, PageHeader, PageBody, Button, EmptyState, FilterGroup, MetaText, Pagination, SearchInput, UnifiedList, ViewToggle, type UnifiedListColumn } from "../components/ui";
 
 interface LogEntry {
   id: number;
@@ -15,8 +15,6 @@ type Level = "all" | "debug" | "info" | "warn" | "error";
 type Source = "all" | "gateway" | "agent" | "cron" | "knowledge" | "obsidian" | "outline" | "pty" | "autolearn" | "access";
 const LEVEL_OPTIONS: readonly Level[] = ["all", "debug", "info", "warn", "error"];
 const SOURCE_OPTIONS: readonly Source[] = ["all", "gateway", "agent", "cron", "knowledge", "obsidian", "outline", "pty", "autolearn", "access"];
-const VIEW_OPTIONS = ["list", "stream"] as const;
-
 function isLevel(value: string | null): value is Level {
   return value !== null && (LEVEL_OPTIONS as readonly string[]).includes(value);
 }
@@ -189,12 +187,12 @@ export default function Logs() {
 
       <PageBody gap={12} className="logs-page-body">
         {/* Filters */}
-        <Row gap={3} className="flex-shrink-0">
-          <FilterGroup
-            options={VIEW_OPTIONS}
-            value={viewMode}
-            onChange={(v) => setViewMode(v as "list" | "stream")}
-            labelFn={(v) => v === "list" ? "List View" : "Stream View"}
+        <div className="list-page-toolbar flex-shrink-0">
+          <SearchInput
+            value={searchQuery}
+            onChange={setSearchQuery}
+            placeholder="Search logs…"
+            resultCount={searchQuery.trim() ? filteredLogs.length : undefined}
           />
           <FilterGroup
             options={LEVEL_OPTIONS}
@@ -208,17 +206,17 @@ export default function Logs() {
             onChange={(v) => setSource(v as Source)}
             labelFn={(s) => s === "all" ? "All Sources" : s}
           />
-          <input
-            type="text"
-            name="log_search"
-            aria-label="Search logs"
-            autoComplete="off"
-            placeholder="Search logs…"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="knowledge-search-input"
-          />
-        </Row>
+          <div className="list-page-toolbar-right">
+            <ViewToggle
+              modes={[
+                { value: "list", label: "List view", icon: "list" },
+                { value: "stream", label: "Stream view", icon: "stream" },
+              ]}
+              value={viewMode}
+              onChange={(v) => setViewMode(v as "list" | "stream")}
+            />
+          </div>
+        </div>
 
         {/* Log viewer */}
         {loading ? (
