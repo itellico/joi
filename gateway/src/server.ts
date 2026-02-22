@@ -17,7 +17,7 @@ import {
 } from "./pty/manager.js";
 import { runAgent, saveMessage, ensureConversation } from "./agent/runtime.js";
 import { runClaudeCode } from "./agent/claude-code.js";
-import { query } from "./db/client.js";
+import { query, recordSuccess, recordFailure } from "./db/client.js";
 import { checkOllama, pullModel, embed } from "./knowledge/embeddings.js";
 import { AVAILABLE_MODELS, resetClients, getOllamaUrl, utilityCall, resolveModel } from "./agent/model-router.js";
 // Cost calculation is now handled inside runtime.ts (totalCostUsd)
@@ -44,6 +44,7 @@ import { transcribeYouTube, transcribeAudioFile } from "./youtube/transcriber.js
 import { executeTriageActions, handleTriageRejection } from "./channels/triage-actions.js";
 import { processFeedback } from "./knowledge/learner.js";
 import { applyFactReviewResolution } from "./knowledge/fact-reviews.js";
+import { getMem0RuntimeStatus } from "./knowledge/mem0-engine.js";
 import { syncToThings3, readThings3Progress } from "./okr/things3-sync.js";
 import { configureAPNs, closeAPNs } from "./notifications/apns.js";
 import { createPushDispatcher, getNotificationLog, getDeviceCount } from "./notifications/dispatcher.js";
@@ -64,6 +65,275 @@ const TOOL_ANNOUNCEMENT_RULES: Array<{ pattern: RegExp; phrase: string }> = [
   { pattern: /(notion)/i, phrase: "checking Notion" },
   { pattern: /(code|autodev|terminal|shell|command|git)/i, phrase: "running that task" },
 ];
+const VOICE_TOOL_FILLER_INITIAL_DELAY_MS = Math.max(
+  200,
+  Number.parseInt(process.env.JOI_VOICE_TOOL_FILLER_DELAY_MS || "900", 10) || 900,
+);
+const VOICE_TOOL_FILLER_PROGRESS_DELAY_MS = Math.max(
+  1200,
+  Number.parseInt(process.env.JOI_VOICE_TOOL_FILLER_PROGRESS_DELAY_MS || "4200", 10) || 4200,
+);
+const VOICE_TOOL_FILLER_LONG_DELAY_MS = Math.max(
+  2500,
+  Number.parseInt(process.env.JOI_VOICE_TOOL_FILLER_LONG_DELAY_MS || "8000", 10) || 8000,
+);
+const VOICE_TOOL_FILLER_STAGE_DELAYS_MS = [
+  VOICE_TOOL_FILLER_INITIAL_DELAY_MS,
+  VOICE_TOOL_FILLER_PROGRESS_DELAY_MS,
+  VOICE_TOOL_FILLER_LONG_DELAY_MS,
+];
+const VOICE_PRE_TOOL_PROGRESS_DELAY_MS = Math.max(
+  300,
+  Number.parseInt(process.env.JOI_VOICE_PRE_TOOL_PROGRESS_DELAY_MS || "1200", 10) || 1200,
+);
+const VOICE_PRE_TOOL_LONG_DELAY_MS = Math.max(
+  1500,
+  Number.parseInt(process.env.JOI_VOICE_PRE_TOOL_LONG_DELAY_MS || "5200", 10) || 5200,
+);
+
+type VoiceToolFillerRule = {
+  pattern: RegExp;
+  startVariants: string[];
+  progressVariants?: string[];
+  longVariants?: string[];
+};
+
+const VOICE_TOOL_FILLER_RULES: VoiceToolFillerRule[] = [
+  {
+    pattern: /(calendar|event|schedule)/i,
+    startVariants: [
+      "Give me a second while I check your calendar.",
+      "One moment, I am pulling your calendar details.",
+      "Let me quickly check your schedule.",
+      "Checking your calendar now.",
+    ],
+    progressVariants: [
+      "Still on it. I am checking cached calendar context and verifying the latest updates.",
+      "This is taking a bit longer. I am still comparing your calendar details.",
+      "I am still working on your schedule and validating the timing now.",
+    ],
+    longVariants: [
+      "This calendar check is taking longer than usual, but I am still on it.",
+      "Thanks for waiting. I am still finishing your schedule check.",
+    ],
+  },
+  {
+    pattern: /(gmail|email|inbox|mail)/i,
+    startVariants: [
+      "One moment while I check your inbox.",
+      "Let me pull your latest emails.",
+      "Checking your inbox now.",
+      "Give me a second to review your emails.",
+    ],
+    progressVariants: [
+      "Still on it. I am checking cached inbox context first, then pulling fresh messages.",
+      "This is taking a bit longer. I am still reviewing your latest emails.",
+      "I am still working through your inbox updates now.",
+    ],
+    longVariants: [
+      "This inbox check is taking longer than usual, but I am still working on it.",
+      "Still on it. I am finishing the email scan now.",
+    ],
+  },
+  {
+    pattern: /(task|todo|things|okr)/i,
+    startVariants: [
+      "One moment while I check your tasks.",
+      "Let me pull your task list.",
+      "Checking your tasks now.",
+      "Give me a second to review your tasks.",
+    ],
+    progressVariants: [
+      "Still on it. I am checking cached task context and syncing the latest items.",
+      "This is taking a bit longer. I am still verifying your task details.",
+      "I am still working through your task list now.",
+    ],
+    longVariants: [
+      "This task check is taking longer than usual, but I am still working on it.",
+      "Thanks for waiting. I am still finalizing your task update.",
+    ],
+  },
+  {
+    pattern: /(contact|person|people)/i,
+    startVariants: [
+      "One moment while I look that contact up.",
+      "Let me check your contacts.",
+      "Checking your contacts now.",
+      "Give me a second to find that person.",
+    ],
+    progressVariants: [
+      "Still on it. I am checking cached contact context and validating the latest details.",
+      "This is taking a bit longer. I am still searching for the right contact.",
+      "I am still working on that contact lookup.",
+    ],
+    longVariants: [
+      "This contact lookup is taking longer than usual, but I am still on it.",
+      "Thanks for waiting. I am still narrowing down the contact details.",
+    ],
+  },
+  {
+    pattern: /(search|lookup|find|memory|knowledge)/i,
+    startVariants: [
+      "Give me a second while I look up {hint}.",
+      "Let me search that for you.",
+      "I am checking that now.",
+      "One moment while I pull that up.",
+    ],
+    progressVariants: [
+      "Still on it. I am checking cached context for {hint} and then refreshing with live data.",
+      "This is taking a bit longer. I am still validating details for {hint}.",
+      "I am still working on that lookup and cross-checking context now.",
+    ],
+    longVariants: [
+      "This lookup is taking longer than usual, but I am still working on {hint}.",
+      "Thanks for waiting. I am still finishing the lookup for {hint}.",
+    ],
+  },
+  {
+    pattern: /(channel_send|whatsapp|telegram|imessage|sms|message)/i,
+    startVariants: [
+      "One moment while I prepare that message.",
+      "Let me set that message up.",
+      "I am preparing that message now.",
+      "Give me a second to handle that message.",
+    ],
+    progressVariants: [
+      "Still on it. I am drafting and checking context before sending.",
+      "This is taking a bit longer. I am still preparing that message carefully.",
+      "I am still working on the message and validating details now.",
+    ],
+    longVariants: [
+      "Message prep is taking longer than usual, but I am still on it.",
+      "Thanks for waiting. I am still finalizing the message.",
+    ],
+  },
+  {
+    pattern: /(code|autodev|terminal|shell|command|git)/i,
+    startVariants: [
+      "One moment while I run that.",
+      "Let me execute that now.",
+      "I am running that for you.",
+      "Give me a second to process that command.",
+    ],
+    progressVariants: [
+      "Still on it. I am running the command and checking intermediate results.",
+      "This is taking a bit longer. I am still executing that task.",
+      "I am still working on that run and validating output.",
+    ],
+    longVariants: [
+      "This run is taking longer than usual, but I am still on it.",
+      "Thanks for waiting. I am still finishing that command sequence.",
+    ],
+  },
+];
+const VOICE_TOOL_FILLER_START_FALLBACK = [
+  "One moment while I handle {hint}.",
+  "Give me a second, I am on it.",
+  "Working on that now.",
+  "Let me pull that up for you.",
+];
+const VOICE_TOOL_FILLER_PROGRESS_FALLBACK = [
+  "Still on it. I am checking cached context where possible and refreshing the rest now.",
+  "This is taking a bit longer, but I am still working on {hint}.",
+  "I am still working on that and validating details before I answer.",
+];
+const VOICE_TOOL_FILLER_LONG_FALLBACK = [
+  "This is taking longer than usual, but I am still working on it.",
+  "Thanks for waiting. I am still on it and will answer as soon as it is ready.",
+  "Still working on {hint}. I am finishing the last step now.",
+];
+
+function pickSeededVariant(seed: string, variants: string[]): string {
+  if (variants.length === 0) return "";
+  const digest = crypto.createHash("sha1").update(seed).digest("hex");
+  const value = Number.parseInt(digest.slice(0, 8), 16);
+  const idx = Number.isFinite(value) ? value % variants.length : 0;
+  return variants[idx];
+}
+
+function getVoiceIntentLabel(message: string): string {
+  const text = message.toLowerCase();
+  if (/(task|todo|things|okr)/.test(text)) return "task";
+  if (/(email|inbox|mail|gmail)/.test(text)) return "inbox";
+  if (/(calendar|schedule|event)/.test(text)) return "calendar";
+  if (/(contact|person|people)/.test(text)) return "contact";
+  if (/(weather|forecast)/.test(text)) return "weather";
+  if (/(message|whatsapp|telegram|imessage|sms)/.test(text)) return "message";
+  if (/(memory|knowledge|search|lookup|find)/.test(text)) return "lookup";
+  return "request";
+}
+
+function getPreToolProgressFiller(message: string, stage: 0 | 1): string {
+  const label = getVoiceIntentLabel(message);
+  const earlyVariants = [
+    `On it, I am preparing your ${label} check now.`,
+    `Working on your ${label} request now.`,
+    `I am starting your ${label} lookup now.`,
+  ];
+  const longVariants = [
+    `Still working on your ${label} request. I am checking cached context first, then refreshing live data.`,
+    `This is taking a bit longer. I am still processing your ${label} request now.`,
+    `Thanks for waiting. I am still working on your ${label} check.`,
+  ];
+  return pickSeededVariant(
+    `${message.trim().toLowerCase()}:pretool:${stage}`,
+    stage === 0 ? earlyVariants : longVariants,
+  );
+}
+
+function getVoiceToolInputHint(toolInput: unknown): string | null {
+  const hintKeys = [
+    "query",
+    "q",
+    "search",
+    "term",
+    "name",
+    "title",
+    "contact",
+    "person",
+    "subject",
+    "topic",
+    "collection",
+    "event",
+    "location",
+    "city",
+  ] as const;
+  for (const key of hintKeys) {
+    const value = firstStringField(toolInput, key);
+    if (value) {
+      const compact = value.replace(/\s+/g, " ").trim();
+      if (compact.length <= 48) return compact;
+      return `${compact.slice(0, 45).trimEnd()}...`;
+    }
+  }
+  return null;
+}
+
+function renderVoiceToolFillerTemplate(template: string, hint: string | null): string {
+  const subject = hint ? `"${hint}"` : "that";
+  return template.replace(/\{hint\}/g, subject).replace(/\s+/g, " ").trim();
+}
+
+function getDelayedVoiceToolFiller(toolName: string, toolInput: unknown, toolUseId: string, stage: number): string {
+  const key = (toolName || "tool").trim().toLowerCase();
+  const rule = VOICE_TOOL_FILLER_RULES.find((r) => r.pattern.test(key));
+  const variants = stage <= 0
+    ? (rule?.startVariants ?? VOICE_TOOL_FILLER_START_FALLBACK)
+    : stage === 1
+      ? (rule?.progressVariants ?? VOICE_TOOL_FILLER_PROGRESS_FALLBACK)
+      : (rule?.longVariants ?? VOICE_TOOL_FILLER_LONG_FALLBACK);
+  const hint = getVoiceToolInputHint(toolInput);
+  const template = pickSeededVariant(`${toolUseId}:${key}:stage:${stage}`, variants);
+  return renderVoiceToolFillerTemplate(template, hint);
+}
+
+// Voice-specific tool intent gate. Keep narrow so small-talk stays fast.
+const VOICE_TOOL_INTENT_REGEX = /\b(task|todo|things|okr|email|inbox|calendar|event|schedule|contact|weather|forecast|search|find|lookup|check|show|list|open|send|message|whatsapp|telegram|imessage|sms|notion|memory|knowledge)\b/i;
+function shouldEnableVoiceTools(message: string): boolean {
+  const trimmed = message.trim();
+  if (!trimmed) return false;
+  return VOICE_TOOL_INTENT_REGEX.test(trimmed);
+}
 
 function firstStringField(input: unknown, key: string): string | null {
   const obj = asRecord(input);
@@ -219,6 +489,26 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
+// DB-aware health check (no auth) — used by watchdog to detect poisoned pools
+app.get("/health/db", async (_req, res) => {
+  try {
+    const result = await Promise.race([
+      query("SELECT 1 as ok"),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 5000)),
+    ]);
+    if (result.rows.length > 0) {
+      recordSuccess();
+      res.json({ status: "ok" });
+    } else {
+      await recordFailure();
+      res.status(503).json({ status: "error", detail: "no rows" });
+    }
+  } catch (err) {
+    await recordFailure();
+    res.status(503).json({ status: "error", detail: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 // Outline webhook has its own signature verification (no Bearer auth)
 // (registered below at /api/webhooks/outline)
 
@@ -307,7 +597,7 @@ app.get("/api/livekit/voices", async (req, res) => {
 
 // Generate a short voice preview
 app.post("/api/livekit/voices/preview", async (req, res) => {
-  const { voiceId, text, provider: reqProvider } = req.body;
+  const { voiceId, text, provider: reqProvider, language: reqLanguage } = req.body;
   const provider = reqProvider || config.livekit.ttsProvider;
   const rules = config.livekit.pronunciations ?? [];
 
@@ -347,7 +637,7 @@ app.post("/api/livekit/voices/preview", async (req, res) => {
           transcript: previewText,
           voice: { mode: "id", id: voiceId },
           output_format: { container: "mp3", bit_rate: 128000, sample_rate: 44100 },
-          language: "en",
+          language: reqLanguage || "en",
         }),
       });
 
@@ -456,6 +746,7 @@ app.post("/api/voice/chat", async (req, res) => {
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
     });
+    res.flushHeaders?.();
 
     const convId = await ensureConversation(conversationId, agentId || "personal");
     const voiceModel = config.livekit.voiceModel || process.env.JOI_VOICE_MODEL || "openai/gpt-4o-mini";
@@ -468,12 +759,106 @@ app.post("/api/voice/chat", async (req, res) => {
       : 8;
     const voiceToolsEnabled = config.livekit.voiceEnableTools ?? (process.env.JOI_VOICE_ENABLE_TOOLS === "1");
     const voiceMemoryEnabled = config.livekit.voiceIncludeMemory ?? (process.env.JOI_VOICE_INCLUDE_MEMORY === "1");
+    const hasToolIntent = shouldEnableVoiceTools(String(message || ""));
+    const effectiveVoiceToolsEnabled = voiceToolsEnabled && hasToolIntent;
+    const effectiveVoiceMemoryEnabled = voiceMemoryEnabled && hasToolIntent;
+    const effectiveVoiceHistoryLimit = hasToolIntent
+      ? voiceHistoryLimit
+      : Math.max(2, Math.min(4, voiceHistoryLimit));
+    const voiceExecutionGuardSuffix = [
+      "Voice execution rules:",
+      "- For requests about personal data or status (contacts, tasks, calendar, inbox, messages, weather, memory, knowledge), call the relevant tools before giving a factual answer.",
+      "- Never claim you are checking, searching, or working on something unless a tool call is actually being executed in this turn.",
+      "- If tool execution is unavailable or fails, say exactly what is blocked instead of implying completion.",
+      "- Keep progress updates short, factual, and natural.",
+    ].join("\n");
+    const effectiveVoicePromptSuffix = [voicePromptSuffix, voiceExecutionGuardSuffix]
+      .filter((part): part is string => typeof part === "string" && part.trim().length > 0)
+      .join("\n\n");
     const stripVoiceTags = (text: string) =>
       text.replace(/\[(?:[a-z][a-z0-9_-]{0,20})\]\s*/gi, "");
     const voiceStartMs = Date.now();
     const emittedToolUseIds = new Set<string>();
+    type VoiceToolFillerState = {
+      toolName: string;
+      toolInput: unknown;
+      stage: number;
+      timer?: NodeJS.Timeout;
+    };
+    const pendingVoiceToolFillers = new Map<string, VoiceToolFillerState>();
+    let voiceClosed = false;
+    let preToolActivityStarted = false;
+    let preToolProgressTimer: NodeJS.Timeout | null = null;
+    let preToolLongTimer: NodeJS.Timeout | null = null;
+    const clearPreToolProgressTimers = () => {
+      if (preToolProgressTimer) clearTimeout(preToolProgressTimer);
+      if (preToolLongTimer) clearTimeout(preToolLongTimer);
+      preToolProgressTimer = null;
+      preToolLongTimer = null;
+    };
+    const markPreToolActivityStarted = () => {
+      if (preToolActivityStarted) return;
+      preToolActivityStarted = true;
+      clearPreToolProgressTimers();
+    };
+    const clearPendingVoiceToolFillers = () => {
+      for (const state of pendingVoiceToolFillers.values()) {
+        if (state.timer) clearTimeout(state.timer);
+      }
+      pendingVoiceToolFillers.clear();
+    };
+    const emitVoiceStreamDelta = (delta: string) => {
+      if (voiceClosed) return;
+      const cleanDelta = stripVoiceTags(delta);
+      if (!cleanDelta) return;
+      res.write(`data: ${JSON.stringify({ type: "stream", delta: cleanDelta })}\n\n`);
+      wsBroadcast("chat.stream", {
+        conversationId: convId,
+        delta: cleanDelta,
+      });
+    };
+    req.on("close", () => {
+      voiceClosed = true;
+      clearPreToolProgressTimers();
+      clearPendingVoiceToolFillers();
+    });
+    if (hasToolIntent) {
+      preToolProgressTimer = setTimeout(() => {
+        if (voiceClosed || preToolActivityStarted) return;
+        emitVoiceStreamDelta(`${getPreToolProgressFiller(String(message || ""), 0)} `);
+      }, VOICE_PRE_TOOL_PROGRESS_DELAY_MS);
+      preToolLongTimer = setTimeout(() => {
+        if (voiceClosed || preToolActivityStarted) return;
+        emitVoiceStreamDelta(`${getPreToolProgressFiller(String(message || ""), 1)} `);
+      }, VOICE_PRE_TOOL_LONG_DELAY_MS);
+    }
+    const scheduleVoiceToolFiller = (toolUseId: string) => {
+      const state = pendingVoiceToolFillers.get(toolUseId);
+      if (!state || voiceClosed) return;
+      const delayMs = VOICE_TOOL_FILLER_STAGE_DELAYS_MS[state.stage];
+      if (!Number.isFinite(delayMs) || delayMs <= 0) {
+        pendingVoiceToolFillers.delete(toolUseId);
+        return;
+      }
+      state.timer = setTimeout(() => {
+        const current = pendingVoiceToolFillers.get(toolUseId);
+        if (!current || voiceClosed) return;
+        const filler = getDelayedVoiceToolFiller(current.toolName, current.toolInput, toolUseId, current.stage);
+        if (filler) emitVoiceStreamDelta(`${filler} `);
+        const nextStage = current.stage + 1;
+        if (nextStage >= VOICE_TOOL_FILLER_STAGE_DELAYS_MS.length) {
+          pendingVoiceToolFillers.delete(toolUseId);
+          return;
+        }
+        current.stage = nextStage;
+        pendingVoiceToolFillers.set(toolUseId, current);
+        scheduleVoiceToolFiller(toolUseId);
+      }, delayMs);
+      pendingVoiceToolFillers.set(toolUseId, state);
+    };
+
     console.log(
-      `[voice/chat] conv=${convId} model=${voiceModel} tools=${voiceToolsEnabled} memory=${voiceMemoryEnabled} history=${voiceHistoryLimit}`,
+      `[voice/chat] conv=${convId} model=${voiceModel} tools=${effectiveVoiceToolsEnabled} memory=${effectiveVoiceMemoryEnabled} history=${effectiveVoiceHistoryLimit} tool_intent=${hasToolIntent}`,
     );
 
     const result = await runAgent({
@@ -484,30 +869,79 @@ app.post("/api/voice/chat", async (req, res) => {
       model: voiceModel,
       toolTask: "voice",
       chatTask: "voice",
-      enableTools: voiceToolsEnabled,
-      historyLimit: voiceHistoryLimit,
-      includeMemoryContext: voiceMemoryEnabled,
-      systemPromptSuffix: voicePromptSuffix,
-      onStream: (delta: string) => {
-        const cleanDelta = stripVoiceTags(delta);
-        if (cleanDelta) {
-          res.write(`data: ${JSON.stringify({ type: "stream", delta: cleanDelta })}\n\n`);
+      enableTools: effectiveVoiceToolsEnabled,
+      includeSkillsPrompt: false,
+      forceToolUse: hasToolIntent,
+      historyLimit: effectiveVoiceHistoryLimit,
+      includeMemoryContext: effectiveVoiceMemoryEnabled,
+      systemPromptSuffix: effectiveVoicePromptSuffix,
+      onToolPlan: (toolCalls) => {
+        const steps = toolCalls.map((tc) => getToolPlanStep(tc.name, tc.input));
+        if (steps.length > 0) {
+          wsBroadcast("chat.plan", {
+            conversationId: convId,
+            steps,
+          });
         }
       },
+      onStream: (delta: string) => {
+        markPreToolActivityStarted();
+        emitVoiceStreamDelta(delta);
+      },
       onToolUse: (toolName, toolInput, toolUseId) => {
-        if (toolUseId && emittedToolUseIds.has(toolUseId)) return;
-        if (toolUseId) emittedToolUseIds.add(toolUseId);
-        const filler = getToolAnnouncement(toolName, toolInput);
-        const cleanFiller = stripVoiceTags(filler);
-        if (cleanFiller) {
-          res.write(`data: ${JSON.stringify({ type: "stream", delta: `${cleanFiller} ` })}\n\n`);
+        markPreToolActivityStarted();
+        const normalizedToolUseId = toolUseId || crypto.randomUUID();
+        if (emittedToolUseIds.has(normalizedToolUseId)) return;
+        emittedToolUseIds.add(normalizedToolUseId);
+        wsBroadcast("chat.tool_use", {
+          conversationId: convId,
+          toolName,
+          toolInput,
+          toolUseId: normalizedToolUseId,
+        });
+        if (pendingVoiceToolFillers.has(normalizedToolUseId)) return;
+        pendingVoiceToolFillers.set(normalizedToolUseId, {
+          toolName,
+          toolInput,
+          stage: 0,
+        });
+        scheduleVoiceToolFiller(normalizedToolUseId);
+      },
+      onToolResult: (toolUseId, resultData) => {
+        if (toolUseId) {
+          const state = pendingVoiceToolFillers.get(toolUseId);
+          if (state?.timer) clearTimeout(state.timer);
+          pendingVoiceToolFillers.delete(toolUseId);
         }
+        wsBroadcast("chat.tool_result", {
+          conversationId: convId,
+          toolUseId,
+          result: resultData,
+        });
       },
     });
 
+    clearPreToolProgressTimers();
+    clearPendingVoiceToolFillers();
     const cleanContent = stripVoiceTags(result.content);
     const latencyMs = Date.now() - voiceStartMs;
-    res.write(`data: ${JSON.stringify({ type: "done", messageId: result.messageId, content: cleanContent, model: result.model, usage: result.usage, costUsd: result.costUsd, latencyMs })}\n\n`);
+    wsBroadcast("chat.done", {
+      conversationId: convId,
+      messageId: result.messageId,
+      content: cleanContent,
+      model: result.model,
+      provider: result.provider,
+      toolModel: result.toolModel,
+      toolProvider: result.toolProvider,
+      usage: result.usage,
+      costUsd: result.costUsd,
+      latencyMs,
+      timings: result.timings,
+    });
+    if (!voiceClosed) {
+      res.write(`data: ${JSON.stringify({ type: "done", messageId: result.messageId, content: cleanContent, model: result.model, usage: result.usage, costUsd: result.costUsd, latencyMs })}\n\n`);
+    }
+    voiceClosed = true;
     res.end();
   } catch (err) {
     console.error("[voice/chat] Error:", err);
@@ -679,7 +1113,26 @@ app.get("/api/conversations/:id/messages", async (req, res) => {
        ORDER BY created_at ASC`,
       [req.params.id],
     );
-    res.json({ messages: result.rows });
+    // Attach media records to messages that have them
+    const messageIds = result.rows.map((m: any) => m.id);
+    let mediaByMessage: Record<string, any[]> = {};
+    if (messageIds.length > 0) {
+      const mediaResult = await query(
+        `SELECT id, message_id, media_type, thumbnail_path, storage_path, status, filename, mime_type, size_bytes, width, height
+         FROM media
+         WHERE message_id = ANY($1) AND status = 'ready'`,
+        [messageIds],
+      );
+      for (const m of mediaResult.rows) {
+        if (!mediaByMessage[m.message_id]) mediaByMessage[m.message_id] = [];
+        mediaByMessage[m.message_id].push(m);
+      }
+    }
+    const messages = result.rows.map((msg: any) => ({
+      ...msg,
+      media: mediaByMessage[msg.id] || undefined,
+    }));
+    res.json({ messages });
   } catch (err) {
     console.error("Failed to load messages:", err);
     res.status(500).json({ error: "Failed to load messages" });
@@ -877,6 +1330,29 @@ app.get("/api/status", async (_req, res) => {
 });
 
 const PROJECT_ROOT = path.resolve(process.cwd(), "..");
+const WATCHDOG_AUTORESTART_FILE = "/tmp/joi-watchdog.enabled";
+
+function parseWatchdogAutoRestart(raw: string): boolean | null {
+  const value = raw.trim().toLowerCase();
+  if (!value) return null;
+  if (["1", "true", "yes", "on", "enabled"].includes(value)) return true;
+  if (["0", "false", "no", "off", "disabled"].includes(value)) return false;
+  return null;
+}
+
+function readWatchdogAutoRestartEnabled(): boolean {
+  try {
+    const raw = fs.readFileSync(WATCHDOG_AUTORESTART_FILE, "utf-8");
+    const parsed = parseWatchdogAutoRestart(raw);
+    return parsed ?? true;
+  } catch {
+    return true;
+  }
+}
+
+function writeWatchdogAutoRestartEnabled(enabled: boolean): void {
+  fs.writeFileSync(WATCHDOG_AUTORESTART_FILE, enabled ? "1\n" : "0\n", { encoding: "utf-8" });
+}
 
 function isProcessPatternRunning(pattern: string): boolean {
   try {
@@ -887,17 +1363,36 @@ function isProcessPatternRunning(pattern: string): boolean {
   }
 }
 
+function isPidRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isWatchdogPidRunning(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0 || !isPidRunning(pid)) {
+    return false;
+  }
+
+  try {
+    const cmd = execFileSync("ps", ["-p", String(pid), "-o", "command="], {
+      encoding: "utf-8",
+    }).trim();
+    return /(^|[\\/ ])watchdog\.sh(\s|$)/.test(cmd);
+  } catch {
+    return false;
+  }
+}
+
 function readWatchdogPid(): number | null {
   try {
     const raw = fs.readFileSync("/tmp/joi-watchdog.pid", "utf-8").trim();
     const pid = Number(raw);
     if (!Number.isFinite(pid) || pid <= 0) return null;
-    try {
-      process.kill(pid, 0);
-      return pid;
-    } catch {
-      return null;
-    }
+    return isWatchdogPidRunning(pid) ? pid : null;
   } catch {
     return null;
   }
@@ -988,19 +1483,28 @@ function startServiceDetached(service: StartableService): {
 // Health overview for sidebar indicators
 app.get("/api/health", async (_req, res) => {
   const services: Record<string, { status: "green" | "orange" | "red"; detail?: string }> = {};
+  const watchdogAutoRestartDefault = readWatchdogAutoRestartEnabled();
 
   // Gateway — always green if we're responding
   services.gateway = { status: "green", detail: "HTTP responsive" };
 
-  // Database
+  // Database — 5s cap, auto-reset pool after repeated failures
   try {
-    const dbCheck = await query("SELECT 1 as ok");
-    services.database = {
-      status: dbCheck.rows.length > 0 ? "green" : "red",
-      detail: dbCheck.rows.length > 0 ? "Connected" : "No response",
-    };
-  } catch {
-    services.database = { status: "red", detail: "Connection failed" };
+    const dbCheck = await Promise.race([
+      query("SELECT 1 as ok"),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("DB timeout")), 5000)),
+    ]);
+    if (dbCheck.rows.length > 0) {
+      recordSuccess();
+      services.database = { status: "green", detail: "Connected" };
+    } else {
+      await recordFailure();
+      services.database = { status: "red", detail: "No response" };
+    }
+  } catch (dbErr) {
+    await recordFailure();
+    const msg = dbErr instanceof Error ? dbErr.message : String(dbErr);
+    services.database = { status: "red", detail: msg.slice(0, 80) };
   }
 
   // AutoDev worker
@@ -1021,8 +1525,10 @@ app.get("/api/health", async (_req, res) => {
     const wd = JSON.parse(raw) as {
       timestamp: string;
       watchdogPid: number;
+      autoRestartEnabled?: boolean;
       services: Record<string, { status: string; failures: number; backoff: number }>;
     };
+    const autoRestartEnabled = watchdogAutoRestartDefault;
     const ageMs = Date.now() - new Date(wd.timestamp).getTime();
     const fresh = ageMs < 90_000;
 
@@ -1030,18 +1536,21 @@ app.get("/api/health", async (_req, res) => {
     const webSvc = wd.services.web;
     if (webSvc?.status === "healthy" && fresh) {
       services.web = { status: "green", detail: "Serving on :5173" };
+    } else if (webSvc && fresh) {
+      services.web = webSvc.failures > 0
+        ? { status: "red", detail: `Down (${webSvc.failures} failures)` }
+        : { status: "orange", detail: "Starting..." };
     } else if (webSvc) {
-      services.web = { status: "red", detail: `Down (${webSvc.failures} failures)` };
+      services.web = { status: "red", detail: "Status stale" };
     } else {
       services.web = { status: "orange", detail: "Unknown" };
     }
 
     // Watchdog itself: running + fresh data
-    const isProcessRunning = (pid: number): boolean => {
-      try { process.kill(pid, 0); return true; } catch { return false; }
-    };
-    if (isProcessRunning(wd.watchdogPid) && fresh) {
-      services.watchdog = { status: "green", detail: `PID ${wd.watchdogPid}` };
+    if (isWatchdogPidRunning(wd.watchdogPid) && fresh) {
+      services.watchdog = autoRestartEnabled
+        ? { status: "green", detail: `PID ${wd.watchdogPid} (auto-restart on)` }
+        : { status: "orange", detail: `PID ${wd.watchdogPid} (auto-restart paused)` };
     } else if (fresh) {
       services.watchdog = { status: "orange", detail: "PID gone, data fresh" };
     } else {
@@ -1054,7 +1563,9 @@ app.get("/api/health", async (_req, res) => {
       if (adSvc.status === "healthy" && fresh) {
         services.autodev = { status: "orange", detail: "Process up, awaiting gateway link" };
       } else if (fresh) {
-        services.autodev = { status: "red", detail: `Down (${adSvc.failures} failures)` };
+        services.autodev = adSvc.failures > 0
+          ? { status: "red", detail: `Down (${adSvc.failures} failures)` }
+          : { status: "orange", detail: "Starting..." };
       } else {
         services.autodev = { status: "red", detail: "Status stale" };
       }
@@ -1066,28 +1577,44 @@ app.get("/api/health", async (_req, res) => {
       if (lkSvc.status === "healthy" && fresh) {
         services.livekit = { status: "green", detail: "Worker healthy" };
       } else if (lkConfigured && fresh) {
-        services.livekit = { status: "orange", detail: `Worker down (${lkSvc.failures} failures)` };
+        services.livekit = lkSvc.failures > 0
+          ? { status: "orange", detail: `Worker down (${lkSvc.failures} failures)` }
+          : { status: "orange", detail: "Worker starting..." };
       } else if (lkConfigured) {
         services.livekit = { status: "red", detail: "Worker status stale" };
       }
     }
   } catch {
     services.web = { status: "orange", detail: "Watchdog not running" };
-    services.watchdog = { status: "red", detail: "No status file" };
+    const mode = watchdogAutoRestartDefault ? "auto-restart on" : "auto-restart paused";
+    services.watchdog = { status: "red", detail: `No status file (${mode})` };
   }
 
-  // Memory (Ollama)
+  // Memory (Ollama) — hard 3s cap so health endpoint never hangs
   try {
-    const ollama = await checkOllama(config);
+    const ollama = await Promise.race([
+      checkOllama(config),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Health check timeout")), 3000)),
+    ]);
+    const mem0 = getMem0RuntimeStatus(config);
     if (ollama.available && ollama.modelLoaded) {
-      services.memory = { status: "green", detail: "Ollama ready" };
+      if (!mem0.configured) {
+        services.memory = { status: "green", detail: "Ollama ready" };
+      } else if (mem0.active) {
+        services.memory = { status: "green", detail: "Ollama + Mem0 ready" };
+      } else {
+        services.memory = {
+          status: "orange",
+          detail: `Ollama ready, Mem0 fallback (${mem0.error || "init failed"})`,
+        };
+      }
     } else if (ollama.available) {
       services.memory = { status: "orange", detail: "Model not loaded" };
     } else {
       services.memory = { status: "red", detail: ollama.error || "Unavailable" };
     }
   } catch {
-    services.memory = { status: "orange", detail: "Ollama unreachable" };
+    services.memory = { status: "red", detail: "Timeout" };
   }
 
   res.json({ services, uptime: process.uptime() });
@@ -1117,6 +1644,73 @@ app.post("/api/services/:service/start", async (req, res) => {
   }
 
   res.json({ service, ...result });
+});
+
+// Restart a service (kill existing process, then start fresh)
+app.post("/api/services/:service/restart", async (req, res) => {
+  const requested = String(req.params.service || "").toLowerCase();
+  const restartable = ["watchdog", "autodev", "livekit", "gateway"];
+  const service =
+    requested === "watchdog" ? "watchdog"
+    : requested === "autodev" ? "autodev"
+    : (requested === "livekit" || requested === "livekit-worker") ? "livekit"
+    : requested === "gateway" ? "gateway"
+    : null;
+
+  if (!service) {
+    res.status(400).json({ error: `Unknown service. Use: ${restartable.join(", ")}` });
+    return;
+  }
+
+  // Gateway: respond first, then exit — watchdog will restart us
+  if (service === "gateway") {
+    res.json({ service, restarted: true, detail: "Exiting — watchdog will restart" });
+    setTimeout(() => process.exit(0), 500);
+    return;
+  }
+
+  // Kill existing process(es)
+  const killPatterns: Record<string, string[]> = {
+    watchdog: ["scripts/watchdog.sh"],
+    autodev: ["scripts/dev-autodev.sh", "src/autodev/worker.ts"],
+    livekit: ["infra/livekit-worker/run.sh", "livekit-worker/agent.py"],
+  };
+
+  for (const pat of killPatterns[service]) {
+    try { execFileSync("pkill", ["-f", pat], { stdio: "ignore" }); } catch { /* not running */ }
+  }
+
+  // Brief pause so port/resources release
+  await new Promise((r) => setTimeout(r, 1500));
+
+  const result = startServiceDetached(service as StartableService);
+  res.json({ service, restarted: result.ok, ...result });
+});
+
+app.get("/api/services/watchdog/mode", (_req, res) => {
+  res.json({
+    autoRestartEnabled: readWatchdogAutoRestartEnabled(),
+    source: WATCHDOG_AUTORESTART_FILE,
+  });
+});
+
+app.put("/api/services/watchdog/mode", (req, res) => {
+  const enabled = req.body?.autoRestartEnabled;
+  if (typeof enabled !== "boolean") {
+    res.status(400).json({ error: "Body must include boolean autoRestartEnabled" });
+    return;
+  }
+  try {
+    writeWatchdogAutoRestartEnabled(enabled);
+    res.json({
+      ok: true,
+      autoRestartEnabled: enabled,
+      source: WATCHDOG_AUTORESTART_FILE,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message || "Failed to write watchdog mode" });
+  }
 });
 
 // ─── Settings API ───
@@ -1269,7 +1863,7 @@ app.get("/api/settings/models", (_req, res) => {
 
 // GET /api/settings/ollama/llm-status — Check if an Ollama LLM model is available
 app.get("/api/settings/ollama/llm-status", async (req, res) => {
-  const model = (req.query.model as string) || "qwen3.5";
+  const model = (req.query.model as string) || "qwen3";
   const ollamaUrl = getOllamaUrl(config);
   const status = await checkOllamaModel(ollamaUrl, model);
   res.json(status);
@@ -1996,13 +2590,13 @@ async function getKnowledgeAuditSnapshot(): Promise<KnowledgeAuditSnapshot> {
     facts.duplicateGroups = dupes.rows[0]?.duplicate_groups ?? 0;
   }
 
-  const memoryCounts = await query<{ area: string; count: number }>(
-    `SELECT area, count(*)::int AS count
+  const memoryCounts = await query<{ area: string; source: string; count: number }>(
+    `SELECT area, COALESCE(source, '') AS source, count(*)::int AS count
      FROM memories
      WHERE superseded_by IS NULL
        AND (expires_at IS NULL OR expires_at > NOW())
        AND confidence > 0.05
-     GROUP BY area`,
+     GROUP BY area, COALESCE(source, '')`,
   );
   const memories = {
     operationalActive: 0,
@@ -2012,10 +2606,10 @@ async function getKnowledgeAuditSnapshot(): Promise<KnowledgeAuditSnapshot> {
   for (const row of memoryCounts.rows) {
     if (row.area === "knowledge" || row.area === "solutions" || row.area === "episodes") {
       memories.operationalActive += row.count;
-    } else if (row.area === "identity") {
-      memories.legacyIdentityActive = row.count;
-    } else if (row.area === "preferences") {
-      memories.legacyPreferencesActive = row.count;
+    } else if (row.area === "identity" && row.source !== "user") {
+      memories.legacyIdentityActive += row.count;
+    } else if (row.area === "preferences" && row.source !== "user") {
+      memories.legacyPreferencesActive += row.count;
     }
   }
 
@@ -3475,7 +4069,7 @@ app.get("/api/autodev/log", (_req, res) => {
 app.get("/api/channels", async (_req, res) => {
   try {
     const result = await query(
-      "SELECT id, channel_type, config, enabled, status, display_name, error_message, last_connected_at, scope, scope_metadata, created_at, updated_at FROM channel_configs ORDER BY created_at",
+      "SELECT id, channel_type, config, enabled, status, display_name, error_message, last_connected_at, scope, scope_metadata, language, created_at, updated_at FROM channel_configs ORDER BY created_at",
     );
     // Merge live adapter statuses
     const liveStatuses = getAllStatuses();
@@ -3497,23 +4091,24 @@ app.get("/api/channels", async (_req, res) => {
 
 app.post("/api/channels", async (req, res) => {
   try {
-    const { id, channel_type, config: channelConfig, display_name, scope, scope_metadata } = req.body as {
+    const { id, channel_type, config: channelConfig, display_name, scope, scope_metadata, language } = req.body as {
       id: string;
       channel_type: string;
       config: Record<string, unknown>;
       display_name?: string;
       scope?: string;
       scope_metadata?: Record<string, unknown>;
+      language?: string;
     };
     if (!id || !channel_type) {
       res.status(400).json({ error: "id and channel_type are required" });
       return;
     }
     await query(
-      `INSERT INTO channel_configs (id, channel_type, config, display_name, scope, scope_metadata)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (id) DO UPDATE SET config = $3, display_name = $4, scope = $5, scope_metadata = $6, updated_at = NOW()`,
-      [id, channel_type, JSON.stringify(channelConfig || {}), display_name || null, scope || null, scope_metadata ? JSON.stringify(scope_metadata) : "{}"],
+      `INSERT INTO channel_configs (id, channel_type, config, display_name, scope, scope_metadata, language)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (id) DO UPDATE SET config = $3, display_name = $4, scope = $5, scope_metadata = $6, language = $7, updated_at = NOW()`,
+      [id, channel_type, JSON.stringify(channelConfig || {}), display_name || null, scope || null, scope_metadata ? JSON.stringify(scope_metadata) : "{}", language || "en"],
     );
     res.json({ created: true, id });
   } catch (err) {
@@ -3524,7 +4119,7 @@ app.post("/api/channels", async (req, res) => {
 
 app.put("/api/channels/:id", async (req, res) => {
   try {
-    const { config: channelConfig, display_name, enabled, scope, scope_metadata } = req.body;
+    const { config: channelConfig, display_name, enabled, scope, scope_metadata, language } = req.body;
     const updates: string[] = ["updated_at = NOW()"];
     const params: unknown[] = [];
     let idx = 1;
@@ -3548,6 +4143,10 @@ app.put("/api/channels/:id", async (req, res) => {
     if (scope_metadata !== undefined) {
       updates.push(`scope_metadata = $${idx++}`);
       params.push(JSON.stringify(scope_metadata));
+    }
+    if (language !== undefined) {
+      updates.push(`language = $${idx++}`);
+      params.push(language || "en");
     }
 
     params.push(req.params.id);
@@ -4773,6 +5372,151 @@ app.delete("/api/logs", async (_req, res) => {
   }
 });
 
+// ── Media API ──
+
+app.get("/api/media", async (req, res) => {
+  try {
+    const { type, channel, q, sort = "created_at", dir = "DESC", limit = "50", offset = "0" } = req.query as Record<string, string>;
+    const conditions: string[] = ["status != 'deleted'"];
+    const params: unknown[] = [];
+    let idx = 1;
+
+    if (type && type !== "all") {
+      conditions.push(`media_type = $${idx++}`);
+      params.push(type);
+    }
+    if (channel && channel !== "all") {
+      conditions.push(`channel_type = $${idx++}`);
+      params.push(channel);
+    }
+    if (q) {
+      conditions.push(`fts @@ plainto_tsquery('english', $${idx++})`);
+      params.push(q);
+    }
+
+    const allowedSorts: Record<string, string> = {
+      created_at: "created_at", date: "created_at", filename: "filename",
+      size: "size_bytes", type: "media_type",
+    };
+    const sortCol = allowedSorts[sort] || "created_at";
+    const sortDir = dir.toUpperCase() === "ASC" ? "ASC" : "DESC";
+    const lim = Math.min(Math.max(1, parseInt(limit) || 50), 200);
+    const off = Math.max(0, parseInt(offset) || 0);
+
+    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    const [dataResult, countResult] = await Promise.all([
+      query(
+        `SELECT id, message_id, conversation_id, channel_type, channel_id, sender_id,
+                media_type, filename, mime_type, size_bytes, storage_path, thumbnail_path,
+                width, height, duration_seconds, status, caption, created_at
+         FROM media ${where}
+         ORDER BY ${sortCol} ${sortDir}
+         LIMIT $${idx++} OFFSET $${idx++}`,
+        [...params, lim, off],
+      ),
+      query(`SELECT COUNT(*)::int AS total FROM media ${where}`, params),
+    ]);
+
+    res.json({ media: dataResult.rows, total: countResult.rows[0]?.total || 0 });
+  } catch (err) {
+    console.error("[Media] List failed:", err);
+    res.status(500).json({ error: "Failed to list media" });
+  }
+});
+
+app.get("/api/media/stats", async (_req, res) => {
+  try {
+    const [byType, byChannel, totals] = await Promise.all([
+      query("SELECT media_type, COUNT(*)::int AS count FROM media WHERE status = 'ready' GROUP BY media_type ORDER BY count DESC"),
+      query("SELECT channel_type, COUNT(*)::int AS count FROM media WHERE status = 'ready' GROUP BY channel_type ORDER BY count DESC"),
+      query("SELECT COUNT(*)::int AS total, COALESCE(SUM(size_bytes), 0)::bigint AS total_bytes FROM media WHERE status = 'ready'"),
+    ]);
+    res.json({
+      byType: byType.rows,
+      byChannel: byChannel.rows,
+      total: totals.rows[0]?.total || 0,
+      totalBytes: parseInt(totals.rows[0]?.total_bytes || "0"),
+    });
+  } catch (err) {
+    console.error("[Media] Stats failed:", err);
+    res.status(500).json({ error: "Failed to get media stats" });
+  }
+});
+
+app.get("/api/media/:id", async (req, res) => {
+  try {
+    const result = await query("SELECT * FROM media WHERE id = $1", [req.params.id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: "Not found" });
+    res.json({ media: result.rows[0] });
+  } catch (err) {
+    console.error("[Media] Get failed:", err);
+    res.status(500).json({ error: "Failed to get media" });
+  }
+});
+
+app.get("/api/media/:id/file", async (req, res) => {
+  try {
+    const result = await query("SELECT storage_path, mime_type, filename FROM media WHERE id = $1 AND status = 'ready'", [req.params.id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: "Not found" });
+    const { storage_path, mime_type, filename } = result.rows[0];
+    const filePath = path.join(config.media.storagePath, storage_path);
+    if (mime_type) res.type(mime_type);
+    if (filename) res.set("Content-Disposition", `inline; filename="${filename}"`);
+    res.sendFile(filePath);
+  } catch (err) {
+    console.error("[Media] File serve failed:", err);
+    res.status(500).json({ error: "Failed to serve file" });
+  }
+});
+
+app.get("/api/media/:id/thumbnail", async (req, res) => {
+  try {
+    const result = await query("SELECT thumbnail_path, storage_path, mime_type FROM media WHERE id = $1 AND status = 'ready'", [req.params.id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: "Not found" });
+    const { thumbnail_path, storage_path, mime_type } = result.rows[0];
+    const thumbPath = thumbnail_path
+      ? path.join(config.media.storagePath, thumbnail_path)
+      : null;
+    if (thumbPath && fs.existsSync(thumbPath)) {
+      res.type("image/webp");
+      res.sendFile(thumbPath);
+    } else if (mime_type?.startsWith("image/")) {
+      // Fallback to original for images without thumbnails
+      res.type(mime_type);
+      res.sendFile(path.join(config.media.storagePath, storage_path));
+    } else {
+      res.status(404).json({ error: "No thumbnail available" });
+    }
+  } catch (err) {
+    console.error("[Media] Thumbnail serve failed:", err);
+    res.status(500).json({ error: "Failed to serve thumbnail" });
+  }
+});
+
+app.delete("/api/media/:id", async (req, res) => {
+  try {
+    const result = await query("SELECT storage_path, thumbnail_path FROM media WHERE id = $1", [req.params.id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: "Not found" });
+    const { storage_path, thumbnail_path } = result.rows[0];
+
+    // Remove files from disk
+    try {
+      const filePath = path.join(config.media.storagePath, storage_path);
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      if (thumbnail_path) {
+        const thumbPath = path.join(config.media.storagePath, thumbnail_path);
+        if (fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
+      }
+    } catch { /* file cleanup is best-effort */ }
+
+    await query("UPDATE media SET status = 'deleted', updated_at = NOW() WHERE id = $1", [req.params.id]);
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error("[Media] Delete failed:", err);
+    res.status(500).json({ error: "Failed to delete media" });
+  }
+});
+
 // WebSocket Server
 const wss = new WebSocketServer({ noServer: true });
 
@@ -5021,6 +5765,7 @@ wss.on("connection", (ws) => {
               usage: result.usage,
               costUsd: result.costUsd,
               latencyMs: Date.now() - apiStartMs,
+              timings: result.timings,
             }, msg.id));
           }
 
@@ -5058,7 +5803,7 @@ wss.on("connection", (ws) => {
         case "session.load": {
           const loadData = msg.data as { conversationId: string };
           const result = await query(
-            `SELECT id, role, content, tool_calls, tool_results, model, created_at
+            `SELECT id, role, content, tool_calls, tool_results, model, token_usage, created_at
              FROM messages
              WHERE conversation_id = $1
              ORDER BY created_at ASC`,

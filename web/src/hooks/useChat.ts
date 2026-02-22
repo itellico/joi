@@ -16,6 +16,10 @@ export interface Attachment {
   filename?: string;
   mimeType?: string;
   size?: number;
+  mediaId?: string;
+  thumbnailUrl?: string;
+  fileUrl?: string;
+  status?: string;
 }
 
 export interface ChatMessage {
@@ -26,6 +30,7 @@ export interface ChatMessage {
   provider?: string;
   toolModel?: string;
   toolProvider?: string;
+  plannedSteps?: string[];
   toolCalls?: ToolCall[];
   attachments?: Attachment[];
   usage?: {
@@ -44,6 +49,14 @@ export interface ChatMessage {
   };
   latencyMs?: number;
   ttftMs?: number;
+  timings?: {
+    setupMs: number;
+    memoryMs: number;
+    promptMs: number;
+    historyMs: number;
+    llmMs: number;
+    totalMs: number;
+  };
   streamStartedAt?: number;
   isStreaming?: boolean;
   createdAt?: string;
@@ -80,6 +93,11 @@ export function useChat({ send, on }: UseChatOptions) {
     const unsubs = [
       on("chat.stream", (frame) => {
         const data = frame.data as { delta: string; conversationId?: string };
+        const incomingConversationId = data.conversationId;
+
+        if (conversationId && incomingConversationId && incomingConversationId !== conversationId) {
+          return;
+        }
 
         // Capture time-to-first-token
         if (!firstTokenRef.current && streamStartRef.current) {
@@ -93,6 +111,8 @@ export function useChat({ send, on }: UseChatOptions) {
           setConversationId(data.conversationId as string);
         }
 
+        setIsStreaming(true);
+
         setMessages((prev) => {
           const last = prev[prev.length - 1];
           if (last?.isStreaming) {
@@ -102,10 +122,20 @@ export function useChat({ send, on }: UseChatOptions) {
                 ...last,
                 content: stripInternalTags(streamBufferRef.current),
                 ttftMs: firstTokenRef.current || undefined,
-              },
-            ];
+                },
+              ];
           }
-          return prev;
+          const startedAt = Date.now();
+          return [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: stripInternalTags(streamBufferRef.current),
+              isStreaming: true,
+              streamStartedAt: startedAt,
+            },
+          ];
         });
       }),
 
@@ -134,7 +164,13 @@ export function useChat({ send, on }: UseChatOptions) {
           };
           latencyMs?: number;
           costUsd?: number;
+          timings?: ChatMessage["timings"];
         };
+        const incomingConversationId = data.conversationId;
+
+        if (conversationId && incomingConversationId && incomingConversationId !== conversationId) {
+          return;
+        }
 
         // Update conversation ID if server provided one
         if (data.conversationId) {
@@ -161,11 +197,29 @@ export function useChat({ send, on }: UseChatOptions) {
                 costUsd: data.costUsd,
                 latencyMs,
                 ttftMs,
+                timings: data.timings,
                 isStreaming: false,
               },
             ];
           }
-          return prev;
+          return [
+            ...prev,
+            {
+              id: data.messageId || crypto.randomUUID(),
+              role: "assistant",
+              content: stripInternalTags(data.content || streamBufferRef.current),
+              model: data.model,
+              provider: data.provider,
+              toolModel: data.toolModel,
+              toolProvider: data.toolProvider,
+              usage: data.usage,
+              costUsd: data.costUsd,
+              latencyMs,
+              ttftMs,
+              timings: data.timings,
+              isStreaming: false,
+            },
+          ];
         });
 
         setIsStreaming(false);
@@ -173,31 +227,117 @@ export function useChat({ send, on }: UseChatOptions) {
         firstTokenRef.current = 0;
       }),
 
+      on("chat.plan", (frame) => {
+        const data = frame.data as {
+          steps?: string[];
+          conversationId?: string;
+        };
+        const incomingConversationId = data.conversationId;
+
+        if (conversationId && incomingConversationId && incomingConversationId !== conversationId) {
+          return;
+        }
+
+        if (data.conversationId && !conversationId) {
+          setConversationId(data.conversationId as string);
+        }
+
+        const incomingSteps = (data.steps || [])
+          .map((s) => (typeof s === "string" ? s.trim() : ""))
+          .filter((s) => s.length > 0);
+        if (incomingSteps.length === 0) return;
+
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last?.isStreaming) {
+            const merged = [...(last.plannedSteps || [])];
+            for (const step of incomingSteps) {
+              if (!merged.includes(step)) merged.push(step);
+            }
+            return [...prev.slice(0, -1), { ...last, plannedSteps: merged }];
+          }
+          const startedAt = Date.now();
+          return [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: "",
+              isStreaming: true,
+              streamStartedAt: startedAt,
+              plannedSteps: incomingSteps,
+            },
+          ];
+        });
+        setIsStreaming(true);
+      }),
+
       on("chat.tool_use", (frame) => {
         const data = frame.data as {
           toolName: string;
           toolInput: unknown;
           toolUseId: string;
+          conversationId?: string;
         };
+        const incomingConversationId = data.conversationId;
+
+        if (conversationId && incomingConversationId && incomingConversationId !== conversationId) {
+          return;
+        }
+
+        if (data.conversationId && !conversationId) {
+          setConversationId(data.conversationId as string);
+        }
 
         setMessages((prev) => {
           const last = prev[prev.length - 1];
+          const newCall: ToolCall = {
+            name: data.toolName,
+            input: data.toolInput,
+            id: data.toolUseId,
+            startedAt: Date.now(),
+          };
           if (last?.isStreaming) {
+            if ((last.toolCalls || []).some((tc) => tc.id === data.toolUseId)) {
+              return prev;
+            }
             const toolCalls: ToolCall[] = [
               ...(last.toolCalls || []),
-              { name: data.toolName, input: data.toolInput, id: data.toolUseId, startedAt: Date.now() },
+              newCall,
             ];
             return [...prev.slice(0, -1), { ...last, toolCalls }];
           }
-          return prev;
+          const startedAt = Date.now();
+          return [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: "",
+              isStreaming: true,
+              streamStartedAt: startedAt,
+              toolCalls: [newCall],
+            },
+          ];
         });
+        setIsStreaming(true);
       }),
 
       on("chat.tool_result", (frame) => {
         const data = frame.data as {
           toolUseId: string;
           result: unknown;
+          conversationId?: string;
         };
+        const incomingConversationId = data.conversationId;
+
+        if (conversationId && incomingConversationId && incomingConversationId !== conversationId) {
+          return;
+        }
+
+        if (data.conversationId && !conversationId) {
+          setConversationId(data.conversationId as string);
+        }
 
         setMessages((prev) => {
           const last = prev[prev.length - 1];
@@ -309,6 +449,15 @@ export function useChat({ send, on }: UseChatOptions) {
                 };
               };
               attachments?: Attachment[];
+              media?: Array<{
+                id: string;
+                media_type: string;
+                thumbnail_path: string | null;
+                status: string;
+                filename: string | null;
+                mime_type: string | null;
+                size_bytes: number | null;
+              }>;
               created_at: string;
             }
             const raw: RawMsg[] = data.messages;
@@ -327,6 +476,24 @@ export function useChat({ send, on }: UseChatOptions) {
               raw
                 .filter((m) => m.role !== "tool")
                 .map((m) => {
+                  // Enrich attachments with media download info
+                  let enrichedAttachments = m.attachments || undefined;
+                  if (enrichedAttachments && m.media?.length) {
+                    enrichedAttachments = enrichedAttachments.map((att, idx) => {
+                      // Match media records to attachments by index (same order)
+                      const mediaRec = m.media?.[idx];
+                      if (mediaRec && mediaRec.status === "ready") {
+                        return {
+                          ...att,
+                          mediaId: mediaRec.id,
+                          thumbnailUrl: `/api/media/${mediaRec.id}/thumbnail`,
+                          fileUrl: `/api/media/${mediaRec.id}/file`,
+                          status: mediaRec.status,
+                        };
+                      }
+                      return att;
+                    });
+                  }
                   const msg: ChatMessage = {
                     id: m.id,
                     role: m.role as ChatMessage["role"],
@@ -334,7 +501,7 @@ export function useChat({ send, on }: UseChatOptions) {
                     model: m.model,
                     usage: m.token_usage || undefined,
                     latencyMs: typeof m.token_usage?.latencyMs === "number" ? m.token_usage.latencyMs : undefined,
-                    attachments: m.attachments || undefined,
+                    attachments: enrichedAttachments,
                     createdAt: m.created_at,
                   };
                   // Attach tool calls with their results

@@ -61,7 +61,11 @@ export function createSlackAdapter(channelId: string): ChannelAdapter {
       if (mime.startsWith("image/")) type = "photo";
       else if (mime.startsWith("video/")) type = "video";
       else if (mime.startsWith("audio/")) type = "audio";
-      return { type, filename: f.name, mimeType: mime, size: f.size };
+      return {
+        type, filename: f.name, mimeType: mime, size: f.size,
+        _slackUrl: f.url_private,
+        _slackToken: webClient?.token,
+      };
     });
   }
 

@@ -40,7 +40,7 @@ export function createDiscordAdapter(channelId: string): ChannelAdapter {
       if (ct.startsWith("image/")) type = "photo";
       else if (ct.startsWith("video/")) type = "video";
       else if (ct.startsWith("audio/")) type = "audio";
-      return { type, filename: a.name, mimeType: ct, size: a.size };
+      return { type, filename: a.name, mimeType: ct, size: a.size, _discordUrl: a.url };
     });
   }
 

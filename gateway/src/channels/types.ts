@@ -9,6 +9,17 @@ export interface ChannelAttachment {
   filename?: string;
   mimeType?: string;
   size?: number;
+  // Per-channel source data for media downloading (see media/types.ts ChannelAttachmentWithSource)
+  _waMessage?: unknown;
+  _tgMessage?: unknown;
+  _tgChannelId?: string;
+  _imessagePath?: string;
+  _slackUrl?: string;
+  _slackToken?: string;
+  _discordUrl?: string;
+  _emailMessageId?: string;
+  _emailAttachmentId?: string;
+  _emailAccountId?: string;
 }
 
 export interface ChannelMessage {

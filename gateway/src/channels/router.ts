@@ -8,6 +8,7 @@ import type { ChannelMessage } from "./types.js";
 import type { JoiConfig } from "../config/schema.js";
 import { matchContact } from "../contacts/match.js";
 import { triageInboundMessage } from "./triage.js";
+import { downloadMessageMedia } from "../media/downloader.js";
 
 export async function routeInboundMessage(
   msg: ChannelMessage,
@@ -43,11 +44,13 @@ export async function routeInboundMessage(
   }
 
   // Store the inbound message
-  await query(
+  const msgResult = await query<{ id: string }>(
     `INSERT INTO messages (conversation_id, role, content, channel_id, sender_id, attachments)
-     VALUES ($1, 'user', $2, $3, $4, $5)`,
+     VALUES ($1, 'user', $2, $3, $4, $5)
+     RETURNING id`,
     [conversationId, msg.content, msg.channelId, msg.senderId, msg.attachments ? JSON.stringify(msg.attachments) : null],
   );
+  const messageId = msgResult.rows[0].id;
 
   // Broadcast inbound message to web UI
   broadcast?.("channel.message", {
@@ -65,18 +68,26 @@ export async function routeInboundMessage(
   // Fire-and-forget: link message to CRM contact
   linkMessageToContact(msg, "inbound");
 
-  // Load scope from channel_configs for triage context
+  // Fire-and-forget: download media attachments
+  if (msg.attachments?.length && config.media?.downloadEnabled !== false) {
+    downloadMessageMedia(messageId, conversationId, msg, config.media)
+      .catch((err) => console.warn("[Router] Media download failed:", err));
+  }
+
+  // Load scope and language from channel_configs for triage context
   let scope: string | undefined;
+  let language: string = "en";
   try {
-    const scopeResult = await query<{ scope: string | null }>(
-      "SELECT scope FROM channel_configs WHERE id = $1",
+    const channelResult = await query<{ scope: string | null; language: string | null }>(
+      "SELECT scope, language FROM channel_configs WHERE id = $1",
       [msg.channelId],
     );
-    scope = scopeResult.rows[0]?.scope ?? undefined;
+    scope = channelResult.rows[0]?.scope ?? undefined;
+    language = channelResult.rows[0]?.language || "en";
   } catch { /* non-critical */ }
 
   // Fire-and-forget: triage the inbound message
-  triageInboundMessage(conversationId, msg, config, broadcast, scope)
+  triageInboundMessage(conversationId, msg, config, broadcast, scope, language)
     .catch((err) => console.error("[Router] Triage failed:", err));
 }
 

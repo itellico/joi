@@ -22,7 +22,9 @@ import Store from "./pages/Store";
 import OKRs from "./pages/OKRs";
 import Reports from "./pages/Reports";
 import AutoDev from "./pages/AutoDev";
+import Media from "./pages/Media";
 import AssistantChat from "./components/AssistantChat";
+import JoiOrb from "./components/JoiOrb";
 
 type ChatMode = "api" | "claude-code";
 
@@ -36,6 +38,25 @@ function App() {
   const navigate = useNavigate();
   const [autodevState, setAutodevState] = useState<string>("waiting");
   const [health, setHealth] = useState<ServiceHealth>({});
+  const [watchdogAutoRestart, setWatchdogAutoRestart] = useState(true);
+  const [restartingService, setRestartingService] = useState<string | null>(null);
+
+  const restartService = async (service: string) => {
+    setRestartingService(service);
+    try {
+      await fetch(`/api/services/${service}/restart`, { method: "POST" });
+      // Refresh health after a brief delay
+      setTimeout(() => {
+        fetch("/api/health")
+          .then((r) => r.json())
+          .then((data) => { if (data.services) setHealth(data.services); })
+          .catch(() => {});
+        setRestartingService(null);
+      }, 3000);
+    } catch {
+      setRestartingService(null);
+    }
+  };
 
   // Fetch health + autodev state on WS connect/reconnect
   useEffect(() => {
@@ -47,6 +68,10 @@ function App() {
     fetch("/api/autodev/status")
       .then((r) => r.json())
       .then((data) => { if (data.state) setAutodevState(data.state); })
+      .catch(() => {});
+    fetch("/api/services/watchdog/mode")
+      .then((r) => r.json())
+      .then((data) => { if (typeof data.autoRestartEnabled === "boolean") setWatchdogAutoRestart(data.autoRestartEnabled); })
       .catch(() => {});
   }, [ws.status]);
 
@@ -80,7 +105,16 @@ function App() {
       <aside className="sidebar">
         <div className="sidebar-brand">
           <div className="sidebar-brand-row">
-            <img src="/joi-avatar.jpg" alt="JOI" className="sidebar-avatar" />
+            <JoiOrb
+              className="sidebar-avatar"
+              size={30}
+              active={ws.status === "connected"}
+              intensity={ws.status === "connected" ? 0.18 : 0.08}
+              variant="transparent"
+              rings={2}
+              animated={false}
+              ariaLabel="JOI"
+            />
             <div>
               <h1>JOI</h1>
               <p>Personal AI Assistant</p>
@@ -103,6 +137,9 @@ function App() {
           </NavLink>
           <NavLink to="/knowledge">
             Knowledge
+          </NavLink>
+          <NavLink to="/media">
+            Media
           </NavLink>
           <NavLink to="/store">
             Store
@@ -184,27 +221,85 @@ function App() {
             Debug
           </span>
         </div>
+        <div
+          className="sidebar-mode-toggle"
+          onClick={() => {
+            const next = !watchdogAutoRestart;
+            setWatchdogAutoRestart(next);
+            fetch("/api/services/watchdog/mode", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ autoRestartEnabled: next }),
+            }).catch(() => setWatchdogAutoRestart(!next));
+          }}
+        >
+          <div
+            className="sidebar-toggle-track"
+            style={{ background: watchdogAutoRestart ? "var(--accent)" : "var(--bg-tertiary)" }}
+          >
+            <div
+              className="sidebar-toggle-thumb"
+              style={{ left: watchdogAutoRestart ? 16 : 2 }}
+            />
+          </div>
+          <span style={{ fontWeight: watchdogAutoRestart ? 600 : 400 }}>
+            Watchdog
+          </span>
+        </div>
         <div className="sidebar-health">
           <div className="sidebar-health-row">
             <span className={`sidebar-health-dot ${ws.status === "connected" ? "green" : "red"}`} />
             <span>Gateway</span>
+            <button
+              className={`sidebar-health-restart ${restartingService === "gateway" ? "spinning" : ""}`}
+              title="Restart Gateway (watchdog will auto-start)"
+              onClick={() => restartService("gateway")}
+            >↻</button>
           </div>
           <div className="sidebar-health-row">
             <span className={`sidebar-health-dot ${health.database?.status || "red"}`} />
             <span>Database</span>
+            {health.database?.status !== "green" && health.database?.detail && (
+              <span className="sidebar-health-detail">{health.database.detail}</span>
+            )}
           </div>
           <div className="sidebar-health-row sidebar-health-clickable" onClick={() => navigate("/autodev")}>
             <span className={`sidebar-health-dot ${health.autodev?.status || "red"}`} />
             <span>AutoDev</span>
             <span className="sidebar-health-detail">{autodevState}</span>
+            <button
+              className={`sidebar-health-restart ${restartingService === "autodev" ? "spinning" : ""}`}
+              title="Restart AutoDev"
+              onClick={(e) => { e.stopPropagation(); restartService("autodev"); }}
+            >↻</button>
           </div>
           <div className="sidebar-health-row">
             <span className={`sidebar-health-dot ${health.livekit?.status || "red"}`} />
             <span>LiveKit</span>
+            <button
+              className={`sidebar-health-restart ${restartingService === "livekit" ? "spinning" : ""}`}
+              title="Restart LiveKit"
+              onClick={() => restartService("livekit")}
+            >↻</button>
           </div>
           <div className="sidebar-health-row">
             <span className={`sidebar-health-dot ${health.memory?.status || "orange"}`} />
             <span>Memory</span>
+            {health.memory?.status !== "green" && health.memory?.detail && (
+              <span className="sidebar-health-detail">{health.memory.detail}</span>
+            )}
+          </div>
+          <div className="sidebar-health-row">
+            <span className={`sidebar-health-dot ${health.watchdog?.status || "red"}`} />
+            <span>Watchdog</span>
+            {health.watchdog?.detail && (
+              <span className="sidebar-health-detail">{health.watchdog.detail}</span>
+            )}
+            <button
+              className={`sidebar-health-restart ${restartingService === "watchdog" ? "spinning" : ""}`}
+              title="Restart Watchdog"
+              onClick={() => restartService("watchdog")}
+            >↻</button>
           </div>
         </div>
       </aside>
@@ -217,6 +312,7 @@ function App() {
           <Route path="/contacts/:id" element={<ContactDetail />} />
           <Route path="/agents" element={<Agents />} />
           <Route path="/knowledge" element={<Knowledge />} />
+          <Route path="/media" element={<Media />} />
           <Route path="/store" element={<Store />} />
           <Route path="/okrs" element={<OKRs />} />
           <Route path="/cron" element={<Cron />} />

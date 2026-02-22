@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "pkill -f \"tsx watch --ignore '.claude' --ignore 'node_modules' --ignore '*.log' src/server.ts\" 2>/dev/null || true; lsof -ti:3100 | xargs kill -9 2>/dev/null; tsx watch --ignore '.claude' --ignore 'node_modules' --ignore '*.log' src/server.ts",
-    "dev:nowatch": "pkill -f \"tsx src/server.ts\" 2>/dev/null || true; lsof -ti:3100 | xargs kill -9 2>/dev/null; tsx src/server.ts",
+    "dev": "tsx watch --ignore '.claude' --ignore 'node_modules' --ignore '*.log' src/server.ts",
+    "dev:nowatch": "tsx src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
     "db:migrate": "tsx src/db/migrate.ts",
@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit",
     "dev:autodev": "tsx watch --ignore '.claude' --ignore 'node_modules' --ignore '*.log' src/autodev/worker.ts",
     "dev:autodev:run": "tsx src/autodev/worker.ts",
+    "test": "vitest run",
     "lint": "eslint src/",
     "postinstall": "chmod +x ../node_modules/.pnpm/node-pty@*/node_modules/node-pty/prebuilds/darwin-*/spawn-helper 2>/dev/null || chmod +x node_modules/.pnpm/node-pty@*/node_modules/node-pty/prebuilds/darwin-*/spawn-helper 2>/dev/null || true"
   },
@@ -38,6 +39,7 @@
     "openai": "^6.22.0",
     "pg": "^8.13.1",
     "qrcode": "^1.5.4",
+    "sharp": "^0.33.5",
     "sqlite3": "^5.1.7",
     "telegram": "^2.26.22",
     "ws": "^8.18.0",
@@ -53,6 +55,7 @@
     "@types/qrcode": "^1.5.6",
     "@types/ws": "^8.5.13",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "vitest": "^4.0.18"
   }
 }

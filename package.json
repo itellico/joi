@@ -1,0 +1,31 @@
+{
+  "name": "joi",
+  "private": true,
+  "version": "0.1.0",
+  "description": "JOI - Personal AI Assistant",
+  "scripts": {
+    "dev": "./scripts/dev-all.sh",
+    "dev:lite": "./scripts/dev-all.sh --lite",
+    "dev:full": "./scripts/dev-all.sh --full",
+    "dev:gateway": "./scripts/dev-gateway.sh",
+    "dev:backend": "./scripts/dev-gateway.sh",
+    "dev:backend:stable": "pnpm --filter gateway dev:nowatch",
+    "dev:web": "./scripts/dev-web.sh",
+    "dev:frontend": "./scripts/dev-web.sh",
+    "dev:worker": "cd infra/livekit-worker && ./run.sh",
+    "dev:autodev": "./scripts/dev-autodev.sh",
+    "build": "pnpm -r build",
+    "db:migrate": "pnpm --filter gateway db:migrate",
+    "db:reset": "pnpm --filter gateway db:reset",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["better-sqlite3", "sqlite3", "sharp"]
+  }
+}
