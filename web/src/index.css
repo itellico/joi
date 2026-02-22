@@ -3257,8 +3257,6 @@ code {
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 80px;
-  overflow: hidden;
 }
 
 .t3-row-checklist {
