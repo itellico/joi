@@ -1,5 +1,5 @@
-import { useEffect, useState, useCallback } from "react";
-import { PageHeader, PageBody, Card, Badge, Button, FormField, FormGrid, SectionLabel, EmptyState, MetaText } from "../components/ui";
+import { useEffect, useState, useCallback, useMemo } from "react";
+import { PageHeader, PageBody, Card, Badge, Button, FormField, FormGrid, SectionLabel, EmptyState, MetaText, SearchInput, ViewToggle, Pagination, UnifiedList, Row, type UnifiedListColumn } from "../components/ui";
 
 interface CronJob {
   id: string;
@@ -141,6 +141,13 @@ export default function Cron() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<JobForm>({ ...emptyForm });
   const [runningManual, setRunningManual] = useState<Set<string>>(new Set());
+  const [searchQuery, setSearchQuery] = useState("");
+  const [viewMode, setViewMode] = useState<"list" | "cards">(() => {
+    const stored = localStorage.getItem("view-toggle:cron");
+    return stored === "list" ? "list" : "cards";
+  });
+  const [pageOffset, setPageOffset] = useState(0);
+  const PAGE_SIZE = 50;
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -268,13 +275,114 @@ export default function Cron() {
     </FormGrid>
   );
 
-  const enabledJobs = jobs.filter((j) => j.enabled);
-  const disabledJobs = jobs.filter((j) => !j.enabled);
+  const filteredJobs = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return jobs;
+    return jobs.filter(j =>
+      j.name.toLowerCase().includes(q)
+      || j.agent_id.toLowerCase().includes(q)
+      || (j.description?.toLowerCase().includes(q) ?? false)
+      || j.payload_text.toLowerCase().includes(q)
+    );
+  }, [jobs, searchQuery]);
+
+  const enabledJobs = filteredJobs.filter((j) => j.enabled);
+  const disabledJobs = filteredJobs.filter((j) => !j.enabled);
   const activeCount = enabledJobs.length;
   const errorCount = jobs.filter((j) => j.last_status === "error").length;
   const runningCount = jobs.filter((j) => j.running_at).length;
 
   const subtitle = <>{activeCount} active{runningCount > 0 && <> &middot; <span className="text-cyan">{runningCount} running</span></>}{errorCount > 0 && <> &middot; <span className="text-error">{errorCount} with errors</span></>}</>;
+
+  const allFiltered = [...enabledJobs, ...disabledJobs];
+  const paginatedJobs = allFiltered.slice(pageOffset, pageOffset + PAGE_SIZE);
+  const paginatedEnabled = paginatedJobs.filter((j) => j.enabled);
+  const paginatedDisabled = paginatedJobs.filter((j) => !j.enabled);
+
+  const cronColumns: UnifiedListColumn<CronJob>[] = [
+    {
+      key: "name",
+      header: "Job",
+      render: (job) => {
+        const { icon } = jobMeta(job);
+        return (
+          <Row gap={2}>
+            <span>{icon}</span>
+            <span className="text-primary font-semibold">{job.name.replace(/_/g, " ")}</span>
+            {!job.enabled && <Badge status="error" className="text-xs">Off</Badge>}
+          </Row>
+        );
+      },
+      sortValue: (job) => job.name,
+      width: 240,
+    },
+    {
+      key: "agent",
+      header: "Agent",
+      render: (job) => <Badge status="accent">{job.agent_id}</Badge>,
+      sortValue: (job) => job.agent_id,
+      width: 130,
+    },
+    {
+      key: "schedule",
+      header: "Schedule",
+      render: (job) => {
+        const schedule = job.schedule_kind === "cron"
+          ? describeCron(job.schedule_cron_expr || "")
+          : job.schedule_kind === "every"
+          ? formatEvery(job.schedule_every_ms || 0)
+          : "One-time";
+        return schedule;
+      },
+      sortValue: (job) => job.schedule_kind,
+      width: 150,
+    },
+    {
+      key: "status",
+      header: "Status",
+      render: (job) => {
+        if (job.running_at) return <Badge status="info">Running</Badge>;
+        if (job.last_status === "error") return <Badge status="error">Error</Badge>;
+        return <Badge status={job.enabled ? "success" : "muted"}>{job.enabled ? "Active" : "Disabled"}</Badge>;
+      },
+      sortValue: (job) => job.enabled ? (job.last_status === "error" ? 1 : 0) : 2,
+      width: 100,
+      align: "center",
+    },
+    {
+      key: "last_run",
+      header: "Last Run",
+      render: (job) => job.last_run_at ? (
+        <MetaText size="xs">
+          <span style={{ color: job.last_status === "ok" ? "var(--success)" : "var(--error)" }}>
+            {job.last_status === "ok" ? "✓" : "✗"}
+          </span>
+          {" "}{timeAgo(job.last_run_at)}
+        </MetaText>
+      ) : <MetaText size="xs">—</MetaText>,
+      sortValue: (job) => job.last_run_at ? new Date(job.last_run_at) : null,
+      width: 120,
+    },
+    {
+      key: "next_run",
+      header: "Next Run",
+      render: (job) => job.next_run_at ? (
+        <MetaText size="xs">{timeUntil(job.next_run_at)}</MetaText>
+      ) : <MetaText size="xs">—</MetaText>,
+      sortValue: (job) => job.next_run_at ? new Date(job.next_run_at) : null,
+      width: 110,
+    },
+    {
+      key: "errors",
+      header: "Errors",
+      render: (job) => job.consecutive_errors > 0 ? (
+        <Badge status="error" className="text-xs">{job.consecutive_errors}x</Badge>
+      ) : <MetaText size="xs">0</MetaText>,
+      sortValue: (job) => job.consecutive_errors,
+      width: 80,
+      align: "center",
+    },
+  ];
 
   return (
     <>
@@ -296,19 +404,34 @@ export default function Cron() {
           </Card>
         )}
 
-        {enabledJobs.length === 0 && disabledJobs.length === 0 ? (
-          <EmptyState message="No cron jobs yet. Create one to schedule recurring agent tasks." />
+        <Row gap={3} className="mb-3">
+          <SearchInput
+            value={searchQuery}
+            onChange={(v) => { setSearchQuery(v); setPageOffset(0); }}
+            placeholder="Search jobs..."
+          />
+          <ViewToggle storageKey="cron" value={viewMode} onChange={setViewMode} />
+        </Row>
+
+        {filteredJobs.length === 0 ? (
+          <EmptyState message={searchQuery ? "No jobs match your search." : "No cron jobs yet. Create one to schedule recurring agent tasks."} />
+        ) : viewMode === "list" ? (
+          <>
+            <UnifiedList<CronJob> columns={cronColumns} items={paginatedJobs} rowKey={(j) => j.id} />
+            <Pagination offset={pageOffset} total={allFiltered.length} pageSize={PAGE_SIZE} onOffsetChange={setPageOffset} />
+          </>
         ) : (
           <>
-            {enabledJobs.map((job) => <JobCard key={job.id} job={job} editingId={editingId} runningManual={runningManual} onEdit={startEditing} onToggle={handleToggle} onRun={handleRun} renderForm={renderForm} />)}
-            {disabledJobs.length > 0 && (
+            {paginatedEnabled.map((job) => <JobCard key={job.id} job={job} editingId={editingId} runningManual={runningManual} onEdit={startEditing} onToggle={handleToggle} onRun={handleRun} renderForm={renderForm} />)}
+            {paginatedDisabled.length > 0 && (
               <>
                 <SectionLabel className="cron-disabled-label">
-                  Disabled ({disabledJobs.length})
+                  Disabled ({paginatedDisabled.length})
                 </SectionLabel>
-                {disabledJobs.map((job) => <JobCard key={job.id} job={job} editingId={editingId} runningManual={runningManual} onEdit={startEditing} onToggle={handleToggle} onRun={handleRun} renderForm={renderForm} />)}
+                {paginatedDisabled.map((job) => <JobCard key={job.id} job={job} editingId={editingId} runningManual={runningManual} onEdit={startEditing} onToggle={handleToggle} onRun={handleRun} renderForm={renderForm} />)}
               </>
             )}
+            <Pagination offset={pageOffset} total={allFiltered.length} pageSize={PAGE_SIZE} onOffsetChange={setPageOffset} />
           </>
         )}
       </PageBody>

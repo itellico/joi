@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
+import { useSearchParams } from "react-router-dom";
 import MarkdownField from "../components/MarkdownField";
-import { Badge, Button, Card, EmptyState, MetaText, Modal, PageBody, PageHeader, Row, SectionLabel, Stack, StatusDot, Tabs } from "../components/ui";
+import { Badge, Button, Card, EmptyState, ListPage, MetaText, Modal, PageBody, PageHeader, Row, SectionLabel, Stack, StatusDot, Tabs, type UnifiedListColumn } from "../components/ui";
 import { getCapabilities, getAllCapabilities, CORE_TOOLS, CAPABILITY_TO_SKILLS, getToolCapability } from "../lib/agentCapabilities";
 
 interface Agent {
@@ -75,6 +76,11 @@ const CATEGORY_META: Record<string, { title: string; subtitle: string; icon: str
 };
 
 const CATEGORY_ORDER = ["combined", "operations", "system"];
+const PAGE_VIEWS = ["agents", "matrix", "skills"] as const;
+
+function isPageView(value: string | null): value is (typeof PAGE_VIEWS)[number] {
+  return value !== null && (PAGE_VIEWS as readonly string[]).includes(value);
+}
 
 function getModelShort(model: string): string {
   if (model.includes("opus"))   return "Opus";
@@ -84,6 +90,7 @@ function getModelShort(model: string): string {
 }
 
 export default function Agents() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [status, setStatus] = useState<{
     hasAnthropicKey: boolean;
@@ -91,7 +98,10 @@ export default function Agents() {
     ollama: { available: boolean; modelLoaded: boolean };
   } | null>(null);
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
-  const [pageView, setPageView] = useState("agents");
+  const [pageView, setPageView] = useState(() => {
+    const value = searchParams.get("view");
+    return isPageView(value) ? value : "agents";
+  });
 
   // Soul state
   const [soulContent, setSoulContent] = useState<string>("");
@@ -126,6 +136,16 @@ export default function Agents() {
       if (modelsData.available) setAvailableModels(modelsData.available);
     });
   }, []);
+
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams);
+    if (pageView === "agents") next.delete("view");
+    else next.set("view", pageView);
+
+    if (next.toString() !== searchParams.toString()) {
+      setSearchParams(next, { replace: true });
+    }
+  }, [pageView, searchParams, setSearchParams]);
 
   const openEditModal = useCallback((agent: Agent) => {
     setEditingAgent(agent);
@@ -242,13 +262,13 @@ export default function Agents() {
       <PageBody gap={0}>
         <Tabs
           value={pageView}
-          onValueChange={setPageView}
+          onValueChange={(value) => setPageView(value as (typeof PAGE_VIEWS)[number])}
           tabs={[
             {
               value: "agents",
               label: "Agents",
               content: (
-                <AgentsCardView
+                <AgentsView
                   agents={agents}
                   openEditModal={openEditModal}
                 />
@@ -361,94 +381,172 @@ export default function Agents() {
   );
 }
 
-/* ── Agents Card View ── */
+/* ── Agents View (unified list + card toggle) ── */
 
-function AgentsCardView({ agents, openEditModal }: {
+function AgentsView({ agents, openEditModal }: {
   agents: Agent[];
   openEditModal: (agent: Agent) => void;
 }) {
-  const grouped = agents.reduce<Record<string, Agent[]>>((acc, agent) => {
-    const cat = AGENT_META[agent.id]?.category || "system";
-    (acc[cat] ||= []).push(agent);
-    return acc;
-  }, {});
+  const columns: UnifiedListColumn<Agent>[] = [
+    {
+      key: "name",
+      header: "Agent",
+      render: (agent) => {
+        const meta = AGENT_META[agent.id] || { icon: "🤖", category: "system" as const };
+        return (
+          <Row gap={2}>
+            <span aria-hidden="true">{meta.icon}</span>
+            <span className="text-primary font-semibold">{agent.name}</span>
+            {!agent.enabled && <Badge status="error" className="text-xs">Off</Badge>}
+          </Row>
+        );
+      },
+      sortValue: (agent) => agent.name,
+      className: "min-w-0",
+      width: 260,
+    },
+    {
+      key: "category",
+      header: "Category",
+      render: (agent) => {
+        const category = AGENT_META[agent.id]?.category || "system";
+        return CATEGORY_META[category]?.title || category;
+      },
+      sortValue: (agent) => CATEGORY_META[AGENT_META[agent.id]?.category || "system"]?.title || "System",
+      width: 140,
+    },
+    {
+      key: "model",
+      header: "Model",
+      render: (agent) => (
+        <code>{getModelShort(agent.model)}</code>
+      ),
+      sortValue: (agent) => agent.model,
+      width: 140,
+    },
+    {
+      key: "skills",
+      header: "Skills",
+      render: (agent) => {
+        if (agent.skills === null) return <Badge status="accent" className="text-xs">All Tools</Badge>;
+        const capabilities = getCapabilities(agent.skills || []);
+        if (capabilities.length === 0) return <MetaText size="xs">No capabilities</MetaText>;
+        return (
+          <span className="text-secondary text-sm">
+            {capabilities.slice(0, 2).join(" · ")}
+            {capabilities.length > 2 && ` +${capabilities.length - 2}`}
+          </span>
+        );
+      },
+      sortValue: (agent) => agent.skills === null ? Number.MAX_SAFE_INTEGER : (agent.skills?.length || 0),
+    },
+    {
+      key: "enabled",
+      header: "Status",
+      render: (agent) => (
+        <Badge status={agent.enabled ? "success" : "muted"} className="text-xs">
+          {agent.enabled ? "Active" : "Disabled"}
+        </Badge>
+      ),
+      sortValue: (agent) => agent.enabled,
+      width: 110,
+      align: "center",
+    },
+    {
+      key: "actions",
+      header: "Actions",
+      render: (agent) => (
+        <Button
+          size="sm"
+          onClick={(event) => {
+            event.stopPropagation();
+            openEditModal(agent);
+          }}
+        >
+          Edit
+        </Button>
+      ),
+      width: 100,
+      align: "right",
+    },
+  ];
+
+  const searchFilter = (agent: Agent, query: string) => {
+    return agent.name.toLowerCase().includes(query)
+      || (agent.description?.toLowerCase().includes(query) ?? false)
+      || agent.id.toLowerCase().includes(query)
+      || agent.model.toLowerCase().includes(query);
+  };
+
+  const renderCard = (agent: Agent) => {
+    const agentMeta = AGENT_META[agent.id] || { icon: "🤖", color: "#6366f1" };
+    const isAllTools = agent.skills === null;
+    const capabilities = isAllTools ? ["All Tools"] : getCapabilities(agent.skills || []);
+
+    return (
+      <div
+        className={`agent-card ${!agent.enabled ? "agent-card-disabled" : ""}`}
+        style={{ "--agent-color": agentMeta.color } as React.CSSProperties}
+        onClick={() => openEditModal(agent)}
+      >
+        <div className="agent-card-header">
+          <div className="agent-card-icon" style={{ background: `${agentMeta.color}1F` }}>
+            {agentMeta.icon}
+          </div>
+          <div className="agent-card-title">
+            <Row gap={2} className="agent-card-name">
+              {agent.name}
+              {!agent.enabled && <Badge status="error" className="text-xs">Off</Badge>}
+            </Row>
+            <span className="agent-card-model">{getModelShort(agent.model)}</span>
+          </div>
+        </div>
+
+        <p className="agent-card-desc">
+          {agent.description || "No description"}
+        </p>
+
+        {capabilities.length > 0 && (
+          <div className="agent-card-capabilities">
+            {capabilities.map((cap) => (
+              <span key={cap} className={`agent-card-capability ${cap === "All Tools" ? "agent-card-capability-all" : ""}`}>{cap}</span>
+            ))}
+          </div>
+        )}
+
+        <div className="agent-card-footer">
+          <span className="agent-card-skill-count">
+            {isAllTools ? "All tools" : `${(agent.skills || []).length} skill${(agent.skills || []).length !== 1 ? "s" : ""}`}
+          </span>
+          <button
+            className="agent-card-edit"
+            onClick={(e) => { e.stopPropagation(); openEditModal(agent); }}
+          >
+            Edit
+          </button>
+        </div>
+      </div>
+    );
+  };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 28, paddingTop: 8 }}>
-      {CATEGORY_ORDER.map((cat) => {
-        const group = grouped[cat];
-        if (!group?.length) return null;
-        const meta = CATEGORY_META[cat];
-
-        return (
-          <div key={cat}>
-            <div className="agents-category-header">
-              <span className="agents-category-icon">{meta.icon}</span>
-              <h3>{meta.title}</h3>
-              <span className="agents-category-count">{group.length}</span>
-              <MetaText size="sm">{meta.subtitle}</MetaText>
-            </div>
-
-            <div className={cat === "combined" ? "agents-grid-combined" : "agents-grid"}>
-              {group.map((agent) => {
-                const agentMeta = AGENT_META[agent.id] || { icon: "🤖", color: "#6366f1" };
-                const isAllTools = agent.skills === null;
-                const capabilities = isAllTools ? ["All Tools"] : getCapabilities(agent.skills || []);
-
-                return (
-                  <div
-                    key={agent.id}
-                    className={`agent-card ${!agent.enabled ? "agent-card-disabled" : ""}`}
-                    style={{ "--agent-color": agentMeta.color } as React.CSSProperties}
-                  >
-                    <div className="agent-card-header">
-                      <div className="agent-card-icon" style={{ background: `${agentMeta.color}1F` }}>
-                        {agentMeta.icon}
-                      </div>
-                      <div className="agent-card-title">
-                        <Row gap={2} className="agent-card-name">
-                          {agent.name}
-                          {!agent.enabled && <Badge status="error" className="text-xs">Off</Badge>}
-                        </Row>
-                        <span className="agent-card-model">{getModelShort(agent.model)}</span>
-                      </div>
-                    </div>
-
-                    <p className="agent-card-desc">
-                      {agent.description || "No description"}
-                    </p>
-
-                    {capabilities.length > 0 && (
-                      <div className="agent-card-capabilities">
-                        {capabilities.map((cap) => (
-                          <span key={cap} className={`agent-card-capability ${cap === "All Tools" ? "agent-card-capability-all" : ""}`}>{cap}</span>
-                        ))}
-                      </div>
-                    )}
-
-                    <div className="agent-card-footer">
-                      <span className="agent-card-skill-count">
-                        {isAllTools ? "All tools" : `${(agent.skills || []).length} skill${(agent.skills || []).length !== 1 ? "s" : ""}`}
-                      </span>
-                      <button
-                        className="agent-card-edit"
-                        onClick={() => openEditModal(agent)}
-                      >
-                        Edit
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        );
-      })}
-
-      {agents.length === 0 && (
-        <EmptyState icon="🤖" message="No agents configured." />
-      )}
-    </div>
+    <ListPage
+      items={agents}
+      columns={columns}
+      renderCard={renderCard}
+      rowKey={(agent) => agent.id}
+      searchPlaceholder="Search agents..."
+      searchFilter={searchFilter}
+      defaultView="cards"
+      viewStorageKey="agents"
+      onRowClick={openEditModal}
+      defaultSort={{ key: "name", direction: "asc" }}
+      tableAriaLabel="Agents list"
+      emptyMessage="No agents configured."
+      emptyIcon="🤖"
+      cardMinWidth={280}
+      pageSize={50}
+    />
   );
 }
 
