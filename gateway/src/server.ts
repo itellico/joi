@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -22,7 +23,7 @@ import { AVAILABLE_MODELS, resetClients, getOllamaUrl, utilityCall, resolveModel
 // Cost calculation is now handled inside runtime.ts (totalCostUsd)
 import { checkOllamaModel, pullOllamaLLMModel } from "./agent/ollama-llm.js";
 import { listMemories } from "./knowledge/writer.js";
-import { runConsolidation } from "./knowledge/consolidator.js";
+import { runConsolidation, type ConsolidationReport } from "./knowledge/consolidator.js";
 import { fullSync, startWatching, stopWatching, isSyncActive } from "./knowledge/obsidian-sync.js";
 import { ingestDocument } from "./knowledge/ingest.js";
 import { startScheduler, stopScheduler, listJobs, createJob, updateJob, toggleJob, deleteJob, executeJobNow, listJobRuns } from "./cron/scheduler.js";
@@ -59,7 +60,8 @@ const TOOL_ANNOUNCEMENT_RULES: Array<{ pattern: RegExp; phrase: string }> = [
   { pattern: /(memory|knowledge|search|lookup|find)/i, phrase: "looking that up" },
   { pattern: /(contact|person|people)/i, phrase: "checking that contact" },
   { pattern: /(task|todo|things|okr)/i, phrase: "checking your task list" },
-  { pattern: /(channel_send|whatsapp|telegram|imessage|sms|message)/i, phrase: "preparing that message" },
+  { pattern: /(channel_send|whatsapp|telegram|imessage|slack|discord|sms|message)/i, phrase: "preparing that message" },
+  { pattern: /(notion)/i, phrase: "checking Notion" },
   { pattern: /(code|autodev|terminal|shell|command|git)/i, phrase: "running that task" },
 ];
 
@@ -124,6 +126,16 @@ function getToolAnnouncement(toolName: string, toolInput: unknown): string {
   }
 
   return getGenericToolAnnouncement(key);
+}
+
+function getToolPlanStep(toolName: string, toolInput: unknown): string {
+  const announcement = getToolAnnouncement(toolName, toolInput);
+  const trimmed = announcement
+    .replace(/^I am\s+/i, "")
+    .replace(/\s+now\.?$/i, "")
+    .trim();
+  if (!trimmed) return "Work on requested step";
+  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -864,35 +876,204 @@ app.get("/api/status", async (_req, res) => {
   }
 });
 
+const PROJECT_ROOT = path.resolve(process.cwd(), "..");
+
+function isProcessPatternRunning(pattern: string): boolean {
+  try {
+    execFileSync("pgrep", ["-f", pattern], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readWatchdogPid(): number | null {
+  try {
+    const raw = fs.readFileSync("/tmp/joi-watchdog.pid", "utf-8").trim();
+    const pid = Number(raw);
+    if (!Number.isFinite(pid) || pid <= 0) return null;
+    try {
+      process.kill(pid, 0);
+      return pid;
+    } catch {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
+type StartableService = "watchdog" | "autodev" | "livekit";
+
+function isServiceRunning(service: StartableService): boolean {
+  if (service === "watchdog") {
+    return !!readWatchdogPid() || isProcessPatternRunning("scripts/watchdog.sh");
+  }
+  if (service === "autodev") {
+    const adStatus = autoDevProxy.getStatus();
+    return !!adStatus.workerConnected
+      || isProcessPatternRunning("src/autodev/worker.ts")
+      || isProcessPatternRunning("scripts/dev-autodev.sh");
+  }
+  // livekit
+  return isProcessPatternRunning("infra/livekit-worker/run.sh")
+    || isProcessPatternRunning("livekit-worker");
+}
+
+function startServiceDetached(service: StartableService): {
+  ok: boolean;
+  started: boolean;
+  alreadyRunning: boolean;
+  detail: string;
+  pid?: number;
+} {
+  if (isServiceRunning(service)) {
+    return {
+      ok: true,
+      started: false,
+      alreadyRunning: true,
+      detail: "Already running",
+    };
+  }
+
+  const scriptByService: Record<StartableService, string> = {
+    watchdog: "scripts/watchdog.sh",
+    autodev: "scripts/dev-autodev.sh",
+    livekit: "scripts/dev-worker.sh",
+  };
+  const logByService: Record<StartableService, string> = {
+    watchdog: "/tmp/joi-watchdog.log",
+    autodev: "/tmp/joi-autodev.log",
+    livekit: "/tmp/joi-livekit.log",
+  };
+
+  const scriptPath = path.join(PROJECT_ROOT, scriptByService[service]);
+  if (!fs.existsSync(scriptPath)) {
+    return {
+      ok: false,
+      started: false,
+      alreadyRunning: false,
+      detail: `Script not found: ${scriptByService[service]}`,
+    };
+  }
+
+  try {
+    const outFd = fs.openSync(logByService[service], "a");
+    const child = spawn(scriptPath, [], {
+      cwd: PROJECT_ROOT,
+      detached: true,
+      stdio: ["ignore", outFd, outFd],
+      env: process.env as NodeJS.ProcessEnv,
+    });
+    if (child.pid) child.unref();
+    fs.closeSync(outFd);
+    return {
+      ok: true,
+      started: true,
+      alreadyRunning: false,
+      detail: `Start requested via ${scriptByService[service]}`,
+      pid: child.pid ?? undefined,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      started: false,
+      alreadyRunning: false,
+      detail: `Failed to start: ${message}`,
+    };
+  }
+}
+
 // Health overview for sidebar indicators
 app.get("/api/health", async (_req, res) => {
   const services: Record<string, { status: "green" | "orange" | "red"; detail?: string }> = {};
 
   // Gateway — always green if we're responding
-  services.gateway = { status: "green" };
+  services.gateway = { status: "green", detail: "HTTP responsive" };
 
   // Database
   try {
     const dbCheck = await query("SELECT 1 as ok");
-    services.database = { status: dbCheck.rows.length > 0 ? "green" : "red" };
+    services.database = {
+      status: dbCheck.rows.length > 0 ? "green" : "red",
+      detail: dbCheck.rows.length > 0 ? "Connected" : "No response",
+    };
   } catch {
     services.database = { status: "red", detail: "Connection failed" };
   }
 
   // AutoDev worker
   const adStatus = autoDevProxy.getStatus();
-  if (adStatus.workerConnected) {
-    services.autodev = { status: "green", detail: adStatus.state };
-  } else {
-    services.autodev = { status: "red", detail: "Worker disconnected" };
-  }
+  services.autodev = adStatus.workerConnected
+    ? { status: "green", detail: adStatus.state }
+    : { status: "red", detail: "Worker disconnected" };
 
   // LiveKit
   const lkConfigured = !!(config.livekit.url && config.livekit.apiKey && config.livekit.apiSecret);
-  if (lkConfigured) {
-    services.livekit = { status: "green", detail: "Configured" };
-  } else {
-    services.livekit = { status: "orange", detail: "Not configured" };
+  services.livekit = lkConfigured
+    ? { status: "orange", detail: "Configured, waiting for worker" }
+    : { status: "orange", detail: "Not configured" };
+
+  // Web + Watchdog (from watchdog status file)
+  try {
+    const raw = fs.readFileSync("/tmp/joi-watchdog.json", "utf-8");
+    const wd = JSON.parse(raw) as {
+      timestamp: string;
+      watchdogPid: number;
+      services: Record<string, { status: string; failures: number; backoff: number }>;
+    };
+    const ageMs = Date.now() - new Date(wd.timestamp).getTime();
+    const fresh = ageMs < 90_000;
+
+    // Web status from watchdog
+    const webSvc = wd.services.web;
+    if (webSvc?.status === "healthy" && fresh) {
+      services.web = { status: "green", detail: "Serving on :5173" };
+    } else if (webSvc) {
+      services.web = { status: "red", detail: `Down (${webSvc.failures} failures)` };
+    } else {
+      services.web = { status: "orange", detail: "Unknown" };
+    }
+
+    // Watchdog itself: running + fresh data
+    const isProcessRunning = (pid: number): boolean => {
+      try { process.kill(pid, 0); return true; } catch { return false; }
+    };
+    if (isProcessRunning(wd.watchdogPid) && fresh) {
+      services.watchdog = { status: "green", detail: `PID ${wd.watchdogPid}` };
+    } else if (fresh) {
+      services.watchdog = { status: "orange", detail: "PID gone, data fresh" };
+    } else {
+      services.watchdog = { status: "red", detail: `Stale (${Math.round(ageMs / 1000)}s ago)` };
+    }
+
+    // AutoDev: prefer live WS truth, then watchdog process health fallback.
+    const adSvc = wd.services.autodev;
+    if (!adStatus.workerConnected && adSvc) {
+      if (adSvc.status === "healthy" && fresh) {
+        services.autodev = { status: "orange", detail: "Process up, awaiting gateway link" };
+      } else if (fresh) {
+        services.autodev = { status: "red", detail: `Down (${adSvc.failures} failures)` };
+      } else {
+        services.autodev = { status: "red", detail: "Status stale" };
+      }
+    }
+
+    // LiveKit: use watchdog worker health, not just static config.
+    const lkSvc = wd.services.livekit;
+    if (lkSvc) {
+      if (lkSvc.status === "healthy" && fresh) {
+        services.livekit = { status: "green", detail: "Worker healthy" };
+      } else if (lkConfigured && fresh) {
+        services.livekit = { status: "orange", detail: `Worker down (${lkSvc.failures} failures)` };
+      } else if (lkConfigured) {
+        services.livekit = { status: "red", detail: "Worker status stale" };
+      }
+    }
+  } catch {
+    services.web = { status: "orange", detail: "Watchdog not running" };
+    services.watchdog = { status: "red", detail: "No status file" };
   }
 
   // Memory (Ollama)
@@ -910,6 +1091,32 @@ app.get("/api/health", async (_req, res) => {
   }
 
   res.json({ services, uptime: process.uptime() });
+});
+
+// Dev service controls — start background services on demand
+app.post("/api/services/:service/start", async (req, res) => {
+  const requested = String(req.params.service || "").toLowerCase();
+  const service: StartableService | null =
+    requested === "watchdog"
+      ? "watchdog"
+      : requested === "autodev"
+        ? "autodev"
+        : (requested === "livekit" || requested === "livekit-worker")
+          ? "livekit"
+          : null;
+
+  if (!service) {
+    res.status(400).json({ error: "Unknown service. Use watchdog, autodev, or livekit." });
+    return;
+  }
+
+  const result = startServiceDetached(service);
+  if (!result.ok) {
+    res.status(500).json(result);
+    return;
+  }
+
+  res.json({ service, ...result });
 });
 
 // ─── Settings API ───
@@ -1674,7 +1881,7 @@ app.get("/api/reports/voice/daily", async (req, res) => {
   }
 });
 
-async function getKnowledgeAuditSnapshot(): Promise<{
+interface KnowledgeAuditSnapshot {
   facts: {
     active: number;
     archived: number;
@@ -1691,7 +1898,57 @@ async function getKnowledgeAuditSnapshot(): Promise<{
     pendingTriage: number;
     pendingVerifyFact: number;
   };
-}> {
+}
+
+interface KnowledgeRepairState {
+  running: boolean;
+  runCount: number;
+  lastStartedAt: string | null;
+  lastFinishedAt: string | null;
+  lastDurationMs: number | null;
+  lastError: string | null;
+  lastReport: ConsolidationReport | null;
+  lastAudit: KnowledgeAuditSnapshot | null;
+}
+
+const knowledgeRepairState: KnowledgeRepairState = {
+  running: false,
+  runCount: 0,
+  lastStartedAt: null,
+  lastFinishedAt: null,
+  lastDurationMs: null,
+  lastError: null,
+  lastReport: null,
+  lastAudit: null,
+};
+
+function knowledgeHealthStatus(audit: KnowledgeAuditSnapshot): "healthy" | "warning" {
+  return knowledgeHealthReasons(audit).length > 0 ? "warning" : "healthy";
+}
+
+function knowledgeHealthReasons(audit: KnowledgeAuditSnapshot): string[] {
+  const reasons: string[] = [];
+
+  if (audit.facts.duplicateRows > 0) {
+    reasons.push(`Fact duplicates (${audit.facts.duplicateRows})`);
+  }
+  if (audit.memories.legacyIdentityActive > 0) {
+    reasons.push(`Legacy identity memories (${audit.memories.legacyIdentityActive})`);
+  }
+  if (audit.memories.legacyPreferencesActive > 0) {
+    reasons.push(`Legacy preference memories (${audit.memories.legacyPreferencesActive})`);
+  }
+  if (audit.reviews.pendingTriage > 250) {
+    reasons.push(`Triage backlog high (${audit.reviews.pendingTriage} pending)`);
+  }
+  if (audit.reviews.pendingVerifyFact > 50) {
+    reasons.push(`Fact verification backlog (${audit.reviews.pendingVerifyFact} pending)`);
+  }
+
+  return reasons.slice(0, 4);
+}
+
+async function getKnowledgeAuditSnapshot(): Promise<KnowledgeAuditSnapshot> {
   const factsCollection = await query<{ id: string }>(
     "SELECT id FROM store_collections WHERE name = 'Facts' LIMIT 1",
   );
@@ -1786,20 +2043,101 @@ async function getKnowledgeAuditSnapshot(): Promise<{
 app.get("/api/knowledge/audit", async (_req, res) => {
   try {
     const audit = await getKnowledgeAuditSnapshot();
-    res.json(audit);
+    const health = knowledgeHealthStatus(audit);
+    const healthReasons = knowledgeHealthReasons(audit);
+    res.json({
+      ...audit,
+      _meta: {
+        generatedAt: new Date().toISOString(),
+        health,
+        healthReasons,
+        repair: {
+          running: knowledgeRepairState.running,
+          runCount: knowledgeRepairState.runCount,
+          lastStartedAt: knowledgeRepairState.lastStartedAt,
+          lastFinishedAt: knowledgeRepairState.lastFinishedAt,
+          lastDurationMs: knowledgeRepairState.lastDurationMs,
+          lastError: knowledgeRepairState.lastError,
+        },
+      },
+    });
   } catch (err) {
     console.error("Failed to build knowledge audit:", err);
     res.status(500).json({ error: "Failed to build knowledge audit" });
   }
 });
 
+// GET /api/knowledge/repair/status — current + last run info
+app.get("/api/knowledge/repair/status", async (_req, res) => {
+  try {
+    const audit = knowledgeRepairState.lastAudit ?? (await getKnowledgeAuditSnapshot());
+    res.json({
+      running: knowledgeRepairState.running,
+      runCount: knowledgeRepairState.runCount,
+      lastStartedAt: knowledgeRepairState.lastStartedAt,
+      lastFinishedAt: knowledgeRepairState.lastFinishedAt,
+      lastDurationMs: knowledgeRepairState.lastDurationMs,
+      lastError: knowledgeRepairState.lastError,
+      lastReport: knowledgeRepairState.lastReport,
+      health: knowledgeHealthStatus(audit),
+      healthReasons: knowledgeHealthReasons(audit),
+    });
+  } catch (err) {
+    console.error("Failed to get knowledge repair status:", err);
+    res.status(500).json({ error: "Failed to get knowledge repair status" });
+  }
+});
+
 // POST /api/knowledge/repair — run consolidation/cleanup now
 app.post("/api/knowledge/repair", async (_req, res) => {
+  if (knowledgeRepairState.running) {
+    res.status(409).json({
+      error: "Knowledge repair is already running",
+      running: true,
+      lastStartedAt: knowledgeRepairState.lastStartedAt,
+    });
+    return;
+  }
+
+  const startedAtIso = new Date().toISOString();
+  const startedAtMs = Date.now();
+  knowledgeRepairState.running = true;
+  knowledgeRepairState.lastStartedAt = startedAtIso;
+  knowledgeRepairState.lastError = null;
+
   try {
     const report = await runConsolidation(config);
     const audit = await getKnowledgeAuditSnapshot();
-    res.json({ repaired: true, report, audit });
+    const finishedAtIso = new Date().toISOString();
+    const durationMs = Date.now() - startedAtMs;
+
+    knowledgeRepairState.running = false;
+    knowledgeRepairState.runCount += 1;
+    knowledgeRepairState.lastFinishedAt = finishedAtIso;
+    knowledgeRepairState.lastDurationMs = durationMs;
+    knowledgeRepairState.lastReport = report;
+    knowledgeRepairState.lastAudit = audit;
+
+    res.json({
+      repaired: true,
+      report,
+      audit,
+      _meta: {
+        startedAt: startedAtIso,
+        finishedAt: finishedAtIso,
+        durationMs,
+      },
+    });
   } catch (err) {
+    const finishedAtIso = new Date().toISOString();
+    const durationMs = Date.now() - startedAtMs;
+    const message = err instanceof Error ? err.message : String(err);
+
+    knowledgeRepairState.running = false;
+    knowledgeRepairState.lastFinishedAt = finishedAtIso;
+    knowledgeRepairState.lastDurationMs = durationMs;
+    knowledgeRepairState.lastError = message;
+
     console.error("Failed to run knowledge repair:", err);
     res.status(500).json({ error: "Failed to run knowledge repair" });
   }
@@ -3137,7 +3475,7 @@ app.get("/api/autodev/log", (_req, res) => {
 app.get("/api/channels", async (_req, res) => {
   try {
     const result = await query(
-      "SELECT id, channel_type, config, enabled, status, display_name, error_message, last_connected_at, created_at, updated_at FROM channel_configs ORDER BY created_at",
+      "SELECT id, channel_type, config, enabled, status, display_name, error_message, last_connected_at, scope, scope_metadata, created_at, updated_at FROM channel_configs ORDER BY created_at",
     );
     // Merge live adapter statuses
     const liveStatuses = getAllStatuses();
@@ -3159,21 +3497,23 @@ app.get("/api/channels", async (_req, res) => {
 
 app.post("/api/channels", async (req, res) => {
   try {
-    const { id, channel_type, config: channelConfig, display_name } = req.body as {
+    const { id, channel_type, config: channelConfig, display_name, scope, scope_metadata } = req.body as {
       id: string;
       channel_type: string;
       config: Record<string, unknown>;
       display_name?: string;
+      scope?: string;
+      scope_metadata?: Record<string, unknown>;
     };
     if (!id || !channel_type) {
       res.status(400).json({ error: "id and channel_type are required" });
       return;
     }
     await query(
-      `INSERT INTO channel_configs (id, channel_type, config, display_name)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (id) DO UPDATE SET config = $3, display_name = $4, updated_at = NOW()`,
-      [id, channel_type, JSON.stringify(channelConfig || {}), display_name || null],
+      `INSERT INTO channel_configs (id, channel_type, config, display_name, scope, scope_metadata)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (id) DO UPDATE SET config = $3, display_name = $4, scope = $5, scope_metadata = $6, updated_at = NOW()`,
+      [id, channel_type, JSON.stringify(channelConfig || {}), display_name || null, scope || null, scope_metadata ? JSON.stringify(scope_metadata) : "{}"],
     );
     res.json({ created: true, id });
   } catch (err) {
@@ -3184,7 +3524,7 @@ app.post("/api/channels", async (req, res) => {
 
 app.put("/api/channels/:id", async (req, res) => {
   try {
-    const { config: channelConfig, display_name, enabled } = req.body;
+    const { config: channelConfig, display_name, enabled, scope, scope_metadata } = req.body;
     const updates: string[] = ["updated_at = NOW()"];
     const params: unknown[] = [];
     let idx = 1;
@@ -3200,6 +3540,14 @@ app.put("/api/channels/:id", async (req, res) => {
     if (enabled !== undefined) {
       updates.push(`enabled = $${idx++}`);
       params.push(enabled);
+    }
+    if (scope !== undefined) {
+      updates.push(`scope = $${idx++}`);
+      params.push(scope || null);
+    }
+    if (scope_metadata !== undefined) {
+      updates.push(`scope_metadata = $${idx++}`);
+      params.push(JSON.stringify(scope_metadata));
     }
 
     params.push(req.params.id);
@@ -4621,6 +4969,15 @@ wss.on("connection", (ws) => {
               config,
               model: data.model,
               broadcast,
+              onToolPlan: (toolCalls) => {
+                const steps = toolCalls.map((tc) => getToolPlanStep(tc.name, tc.input));
+                if (steps.length > 0) {
+                  ws.send(frame("chat.plan", {
+                    conversationId: convId,
+                    steps,
+                  }, msg.id));
+                }
+              },
               onStream: (delta) => {
                 ws.send(frame("chat.stream", {
                   conversationId: convId,
