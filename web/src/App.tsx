@@ -1,10 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Routes, Route, NavLink, Navigate, useNavigate } from "react-router-dom";
 import { TooltipProvider } from "./components/ui";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { useTheme } from "./hooks/useTheme";
 import { useDebug } from "./hooks/useDebug";
+import { useDownloads } from "./hooks/useDownloads";
 import DebugPanel from "./components/DebugPanel";
+import DownloadPanel from "./components/DownloadPanel";
 import Dashboard from "./pages/Dashboard";
 import Chat from "./pages/Chat";
 import Agents from "./pages/Agents";
@@ -36,27 +38,93 @@ function App() {
   const navigate = useNavigate();
   const [autodevState, setAutodevState] = useState<string>("waiting");
   const [health, setHealth] = useState<ServiceHealth>({});
+  const [watchdogAutoRestartEnabled, setWatchdogAutoRestartEnabled] = useState(true);
+  const [watchdogModePending, setWatchdogModePending] = useState(false);
+  const downloads = useDownloads(ws);
+  const [dlPanelOpen, setDlPanelOpen] = useState(false);
+  const dlPanelManualClose = useRef(false);
+
+  const refreshWatchdogMode = async () => {
+    try {
+      const res = await fetch("/api/services/watchdog/mode");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (typeof data.autoRestartEnabled === "boolean") {
+        setWatchdogAutoRestartEnabled(data.autoRestartEnabled);
+      }
+    } catch (err) {
+      console.error("Failed to fetch watchdog mode:", err);
+    }
+  };
+
+  const toggleWatchdogMode = async () => {
+    if (watchdogModePending) return;
+    setWatchdogModePending(true);
+    try {
+      const next = !watchdogAutoRestartEnabled;
+      const res = await fetch("/api/services/watchdog/mode", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoRestartEnabled: next }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (typeof data.autoRestartEnabled === "boolean") {
+        setWatchdogAutoRestartEnabled(data.autoRestartEnabled);
+      } else {
+        setWatchdogAutoRestartEnabled(next);
+      }
+      const healthRes = await fetch("/api/health");
+      if (healthRes.ok) {
+        const healthData = await healthRes.json();
+        if (healthData.services) setHealth(healthData.services as ServiceHealth);
+      }
+    } catch (err) {
+      console.error("Failed to toggle watchdog mode:", err);
+    } finally {
+      setWatchdogModePending(false);
+    }
+  };
 
   // Fetch health + autodev state on WS connect/reconnect
   useEffect(() => {
     if (ws.status !== "connected") return;
+    void refreshWatchdogMode();
     fetch("/api/health")
       .then((r) => r.json())
       .then((data) => { if (data.services) setHealth(data.services); })
       .catch(() => {});
     fetch("/api/autodev/status")
       .then((r) => r.json())
-      .then((data) => { if (data.state) setAutodevState(data.state); })
+      .then((data) => {
+        if (data.workerConnected === false) {
+          setAutodevState("disconnected");
+        } else if (data.state) {
+          setAutodevState(data.state);
+        }
+      })
       .catch(() => {});
   }, [ws.status]);
 
   // Refresh health every 30s
   useEffect(() => {
+    void refreshWatchdogMode();
     const id = setInterval(() => {
       fetch("/api/health")
         .then((r) => r.json())
         .then((data) => { if (data.services) setHealth(data.services); })
         .catch(() => {});
+      fetch("/api/autodev/status")
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.workerConnected === false) {
+            setAutodevState("disconnected");
+          } else if (data.state) {
+            setAutodevState(data.state);
+          }
+        })
+        .catch(() => {});
+      void refreshWatchdogMode();
     }, 30_000);
     return () => clearInterval(id);
   }, []);
@@ -64,7 +132,11 @@ function App() {
   useEffect(() => {
     return ws.on("autodev.status", (frame) => {
       const data = frame.data as { state: string; workerConnected?: boolean };
-      if (data.state) setAutodevState(data.state);
+      if (data.workerConnected === false) {
+        setAutodevState("disconnected");
+      } else if (data.state) {
+        setAutodevState(data.state);
+      }
       setHealth((prev) => ({
         ...prev,
         autodev: data.workerConnected !== false
@@ -73,6 +145,22 @@ function App() {
       }));
     });
   }, [ws]);
+
+  // Auto-open panel when downloads start; respect manual close
+  useEffect(() => {
+    if (downloads.activeCount > 0 && !dlPanelOpen && !dlPanelManualClose.current) {
+      setDlPanelOpen(true);
+    }
+    // Reset manual close flag when all downloads finish
+    if (downloads.activeCount === 0) {
+      dlPanelManualClose.current = false;
+    }
+  }, [downloads.activeCount]);
+
+  const closeDlPanel = () => {
+    setDlPanelOpen(false);
+    dlPanelManualClose.current = true;
+  };
 
   return (
     <TooltipProvider>
@@ -137,6 +225,15 @@ function App() {
           <NavLink to="/settings">
             Settings
           </NavLink>
+          <button
+            className={`sidebar-dl-btn ${dlPanelOpen ? "sidebar-dl-btn--active" : ""}`}
+            onClick={() => dlPanelOpen ? closeDlPanel() : setDlPanelOpen(true)}
+          >
+            Downloads
+            {downloads.activeCount > 0 && (
+              <span className="sidebar-dl-badge">{downloads.activeCount}</span>
+            )}
+          </button>
         </nav>
 
         <button
@@ -184,27 +281,71 @@ function App() {
             Debug
           </span>
         </div>
+        <div
+          className="sidebar-mode-toggle"
+          onClick={() => { void toggleWatchdogMode(); }}
+          style={{ opacity: watchdogModePending ? 0.65 : 1, cursor: watchdogModePending ? "wait" : "pointer" }}
+        >
+          <div
+            className="sidebar-toggle-track"
+            style={{ background: watchdogAutoRestartEnabled ? "var(--accent)" : "var(--bg-tertiary)" }}
+          >
+            <div
+              className="sidebar-toggle-thumb"
+              style={{ left: watchdogAutoRestartEnabled ? 16 : 2 }}
+            />
+          </div>
+          <span style={{ fontWeight: watchdogAutoRestartEnabled ? 600 : 400 }}>
+            {watchdogAutoRestartEnabled ? "Watchdog Auto-Restart" : "Watchdog Paused"}
+          </span>
+        </div>
         <div className="sidebar-health">
           <div className="sidebar-health-row">
             <span className={`sidebar-health-dot ${ws.status === "connected" ? "green" : "red"}`} />
             <span>Gateway</span>
+            <span className="sidebar-health-detail">
+              {ws.status === "connected" ? (health.gateway?.detail || "connected") : "ws disconnected"}
+            </span>
           </div>
           <div className="sidebar-health-row">
             <span className={`sidebar-health-dot ${health.database?.status || "red"}`} />
             <span>Database</span>
+            {health.database?.detail && (
+              <span className="sidebar-health-detail">{health.database.detail}</span>
+            )}
           </div>
           <div className="sidebar-health-row sidebar-health-clickable" onClick={() => navigate("/autodev")}>
             <span className={`sidebar-health-dot ${health.autodev?.status || "red"}`} />
             <span>AutoDev</span>
-            <span className="sidebar-health-detail">{autodevState}</span>
+            <span className="sidebar-health-detail">{health.autodev?.detail || autodevState}</span>
           </div>
           <div className="sidebar-health-row">
             <span className={`sidebar-health-dot ${health.livekit?.status || "red"}`} />
             <span>LiveKit</span>
+            {health.livekit?.detail && (
+              <span className="sidebar-health-detail">{health.livekit.detail}</span>
+            )}
+          </div>
+          <div className="sidebar-health-row">
+            <span className={`sidebar-health-dot ${health.web?.status || "orange"}`} />
+            <span>Web</span>
+            {health.web?.detail && (
+              <span className="sidebar-health-detail">{health.web.detail}</span>
+            )}
           </div>
           <div className="sidebar-health-row">
             <span className={`sidebar-health-dot ${health.memory?.status || "orange"}`} />
             <span>Memory</span>
+            {health.memory?.detail && (
+              <span className="sidebar-health-detail">{health.memory.detail}</span>
+            )}
+          </div>
+          <div className="sidebar-health-row">
+            <span className={`sidebar-health-dot ${health.watchdog?.status || "red"}`} />
+            <span>Watchdog</span>
+            {health.watchdog?.detail && (
+              <span className="sidebar-health-detail">{health.watchdog.detail}</span>
+            )}
           </div>
         </div>
       </aside>
@@ -234,6 +375,17 @@ function App() {
       </main>
       <AssistantChat ws={ws} chatMode={chatMode} />
       <DebugPanel />
+      <DownloadPanel
+        open={dlPanelOpen}
+        onClose={closeDlPanel}
+        active={downloads.active}
+        recentlyCompleted={downloads.recentlyCompleted}
+        stats={downloads.stats}
+        paused={downloads.paused}
+        onPauseAll={downloads.pauseAll}
+        onResumeAll={downloads.resumeAll}
+        onCancel={downloads.cancel}
+      />
     </div>
     </TooltipProvider>
   );
