@@ -1,0 +1,25 @@
+node_modules/
+dist/
+.env
+.env.local
+*.log
+.DS_Store
+.turbo
+coverage/
+*.tsbuildinfo
+
+# Docker volumes
+pgdata/
+ollama_data/
+
+# Credentials / secrets
+*-credentials.json
+client_secret_*.json
+secrets/
+*.p8
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

@@ -1,0 +1,49 @@
+{
+  "" : {
+    "diagnostics" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/JOI_watchOS Extension-primary.dia",
+    "emit-module-dependencies" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/JOI_watchOS Extension-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/JOI_watchOS Extension-primary-emit-module.dia",
+    "pch" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/JOI_watchOS Extension-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/JOI_watchOS Extension-primary.swiftdeps"
+  },
+  "/Users/mm2/dev_mm/joi/app/JOI/Core/Watch/WatchBridgeProtocol.swift" : {
+    "const-values" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/WatchBridgeProtocol.swiftconstvalues",
+    "dependencies" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/WatchBridgeProtocol.d",
+    "diagnostics" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/WatchBridgeProtocol.dia",
+    "index-unit-output-path" : "/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/WatchBridgeProtocol.o",
+    "llvm-bc" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/WatchBridgeProtocol.bc",
+    "object" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/WatchBridgeProtocol.o",
+    "swift-dependencies" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/WatchBridgeProtocol.swiftdeps",
+    "swiftmodule" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/WatchBridgeProtocol~partial.swiftmodule"
+  },
+  "/Users/mm2/dev_mm/joi/app/WatchApp/Extension/JOIWatchExtensionApp.swift" : {
+    "const-values" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/JOIWatchExtensionApp.swiftconstvalues",
+    "dependencies" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/JOIWatchExtensionApp.d",
+    "diagnostics" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/JOIWatchExtensionApp.dia",
+    "index-unit-output-path" : "/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/JOIWatchExtensionApp.o",
+    "llvm-bc" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/JOIWatchExtensionApp.bc",
+    "object" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/JOIWatchExtensionApp.o",
+    "swift-dependencies" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/JOIWatchExtensionApp.swiftdeps",
+    "swiftmodule" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/JOIWatchExtensionApp~partial.swiftmodule"
+  },
+  "/Users/mm2/dev_mm/joi/app/WatchApp/Extension/WatchHomeView.swift" : {
+    "const-values" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/WatchHomeView.swiftconstvalues",
+    "dependencies" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/WatchHomeView.d",
+    "diagnostics" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/WatchHomeView.dia",
+    "index-unit-output-path" : "/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/WatchHomeView.o",
+    "llvm-bc" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/WatchHomeView.bc",
+    "object" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/WatchHomeView.o",
+    "swift-dependencies" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/WatchHomeView.swiftdeps",
+    "swiftmodule" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/WatchHomeView~partial.swiftmodule"
+  },
+  "/Users/mm2/dev_mm/joi/app/WatchApp/Extension/WatchSessionClient.swift" : {
+    "const-values" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/WatchSessionClient.swiftconstvalues",
+    "dependencies" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/WatchSessionClient.d",
+    "diagnostics" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/WatchSessionClient.dia",
+    "index-unit-output-path" : "/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/WatchSessionClient.o",
+    "llvm-bc" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/WatchSessionClient.bc",
+    "object" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/WatchSessionClient.o",
+    "swift-dependencies" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/WatchSessionClient.swiftdeps",
+    "swiftmodule" : "/Users/mm2/dev_mm/joi/app/build/JOI.build/Debug-watchsimulator/JOI_watchOS Extension.build/Objects-normal/x86_64/WatchSessionClient~partial.swiftmodule"
+  }
+}

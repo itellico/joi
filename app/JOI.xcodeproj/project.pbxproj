@@ -1,0 +1,1203 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		02EB57213E3C1DD9865E4838 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F2A2CF1B823426594FC90C6 /* SettingsView.swift */; };
+		042F069F8074DCC874D0BC71 /* FrameProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5701DA03969D92E3ABEDD4 /* FrameProtocol.swift */; };
+		09352A81972A7889A97EB98C /* ChatInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = 888CDC0ACFCBE7035F5187A6 /* ChatInput.swift */; };
+		0A843DD000497AB0922C0548 /* WakeWordGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4BCE31B4137F8674CAC2C41 /* WakeWordGateTests.swift */; };
+		0D2D27862C562ABC87E161B8 /* MenuBarContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80FF5FCB8C138FDCD06D2DEF /* MenuBarContentView.swift */; };
+		0DF2F61E80084D6D72AFFA52 /* FrameProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5701DA03969D92E3ABEDD4 /* FrameProtocol.swift */; };
+		105445BAFC46AD68DC0A1CF9 /* SpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A5619FD51D9227ABED3463E /* SpeechService.swift */; };
+		12E493AC2868EBBE55F23A92 /* PhoneWatchBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2677AE178533C5AC08DCBEB1 /* PhoneWatchBridge.swift */; };
+		13AB0E8274F4A9D938193325 /* JOI_watchOS Extension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 933C04404CCAAD68C5BEAD25 /* JOI_watchOS Extension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		14F49F800C76A8D4FD7E84CC /* SentenceBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CA104D89A62D7D34F12AA40 /* SentenceBuffer.swift */; };
+		1CFD48507BCD10EC9F4DFD37 /* WatchBridgeProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 857C47315E3DFA76B1262DCA /* WatchBridgeProtocol.swift */; };
+		1EC4B738B93F54E8ED05663D /* GlassCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FB92EFFF312FE16FE9E5719 /* GlassCard.swift */; };
+		21542B4F6997511C928F5083 /* JOITypography.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DB61506B86E77CF73493DAD /* JOITypography.swift */; };
+		259CA46779BCFBC5A5E0622A /* StreamingDots.swift in Sources */ = {isa = PBXBuildFile; fileRef = A24937BA5E82D136370A6014 /* StreamingDots.swift */; };
+		27756EBA4A80A90FC16DE88B /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53CF34ACF9A504540094EBC9 /* Models.swift */; };
+		2D1F55E74AE2D0D30D15240C /* MessageBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5111E7F5C724B43EFD6F78C9 /* MessageBubble.swift */; };
+		2DD9698CCD16A9658A6A1431 /* VoiceEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52BBEF25257890DFD22D2BB3 /* VoiceEngine.swift */; };
+		3009EB52C0E1E9F1EFB9BF84 /* WakeWordService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B79143405C3FC2914CF421C9 /* WakeWordService.swift */; };
+		358DCF880310C2F46811F92F /* WakeWordGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4BCE31B4137F8674CAC2C41 /* WakeWordGateTests.swift */; };
+		36A4748C3B13FBAB0A67E12B /* JOIColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6893B47088FFFCC5F95B1D10 /* JOIColors.swift */; };
+		3B61B49211F51B7752CC376E /* JOIAvatarImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1AB112F6C07DA16F2A7F57C /* JOIAvatarImage.swift */; };
+		3E41AF4F948856EDB56BF946 /* TokenService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4060EFB89D34E7640D723857 /* TokenService.swift */; };
+		3EFE694BA94A40C1848C3012 /* JOIApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 657DD49FE34AD00D763A43BD /* JOIApp.swift */; };
+		3FC71F3F5B8614D1E0B66561 /* GlassCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FB92EFFF312FE16FE9E5719 /* GlassCard.swift */; };
+		4547AB3905B687C3A29A54A7 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AB6654C3D4CD8B90A1BE279 /* ChatView.swift */; };
+		4A6A88C67F3ED511AEC0DA75 /* JOIColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6893B47088FFFCC5F95B1D10 /* JOIColors.swift */; };
+		4C149653EEAAB0D12532D519 /* ChatViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4986D22E95E533098FA77B4 /* ChatViewModel.swift */; };
+		4F18B6EBE1F498156C9BA593 /* FrameRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D14359BF4424850B108A82BA /* FrameRouter.swift */; };
+		59FCEF4969989873BE58A26E /* ConnectionStatusPill.swift in Sources */ = {isa = PBXBuildFile; fileRef = F73F729EC97E78C0BB3EC7AE /* ConnectionStatusPill.swift */; };
+		5EA7D90A80E4DB4E0050E8A4 /* VoiceDebugLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 815414F955595FF4ECD1F110 /* VoiceDebugLog.swift */; };
+		5EB6DC5689A4719FE0B5002C /* WatchSessionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80DD50F89D04A37D5BADA917 /* WatchSessionClient.swift */; };
+		5EEAA8D25CBCF6344D09665F /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71D0B6AEF5302C529DD807EF /* RootView.swift */; };
+		6090C5CF26ADCE758DB3A62B /* VoicePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41C1A382475FD84B6A32D34C /* VoicePipeline.swift */; };
+		60F17655402D6F7B5858A169 /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = C9D00215D0CB2BE3F84369DC /* LiveKit */; };
+		65B313174CF85586C5DC5C11 /* SpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A5619FD51D9227ABED3463E /* SpeechService.swift */; };
+		6B30A45193A29BF5093E2806 /* FrameRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D14359BF4424850B108A82BA /* FrameRouter.swift */; };
+		6DC9F964EB7163563D5E5349 /* joi-avatar.jpg in Resources */ = {isa = PBXBuildFile; fileRef = E5A36FB64310B7D7AF16E96B /* joi-avatar.jpg */; };
+		71C1EFD7C398EE95F695635D /* VoiceEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52BBEF25257890DFD22D2BB3 /* VoiceEngine.swift */; };
+		71FD25E23A4925D204DB4564 /* LiveKitVoicePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2219170A5E6539693FD083 /* LiveKitVoicePipeline.swift */; };
+		7262F633BE75177358041E3A /* ChatInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = 888CDC0ACFCBE7035F5187A6 /* ChatInput.swift */; };
+		729D90EE49C39BCA0FDFA0C1 /* PushService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8849A413A5BB7E0E93D91885 /* PushService.swift */; };
+		7665FC36F622F9717FD22DB3 /* WatchBridgeProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 857C47315E3DFA76B1262DCA /* WatchBridgeProtocol.swift */; };
+		7E6B6DFB1F527C3D109EFB0B /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 468E952C6F77BF23F6082339 /* AppDelegate.swift */; };
+		7EE80A81F46B1172E6071E01 /* ConversationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A5FF9EAE21534BF2A2792A1 /* ConversationsView.swift */; };
+		87881159197FC36F548F7792 /* WatchHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0933CC190580B94F48E03E80 /* WatchHomeView.swift */; };
+		8AE55E546BEB338CE9BFD675 /* TokenService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4060EFB89D34E7640D723857 /* TokenService.swift */; };
+		93F7042BF0A1AF76C10AA71E /* ChatViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4986D22E95E533098FA77B4 /* ChatViewModel.swift */; };
+		9586A7348D7D6B3A9EBB8A6A /* ConversationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A5FF9EAE21534BF2A2792A1 /* ConversationsView.swift */; };
+		962B0DE2C88D371ACF95F457 /* JOIIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5144C1CA62B16060F8CBBF3D /* JOIIntents.swift */; };
+		9EC4882DB4FC4C6FD8E7448C /* JOIAvatarImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1AB112F6C07DA16F2A7F57C /* JOIAvatarImage.swift */; };
+		9F5841FCAEA25FC9A89DF00E /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AB6654C3D4CD8B90A1BE279 /* ChatView.swift */; };
+		9FDEA0E06F516828F226FDDD /* JOIApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 657DD49FE34AD00D763A43BD /* JOIApp.swift */; };
+		AF4B43B398E1E52E76F09D83 /* ConnectionStatusPill.swift in Sources */ = {isa = PBXBuildFile; fileRef = F73F729EC97E78C0BB3EC7AE /* ConnectionStatusPill.swift */; };
+		B2D8C1863F0EB044D711604B /* ConnectionBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71E67E9E86D447156F066233 /* ConnectionBanner.swift */; };
+		B7170484AD759F85A54E8B60 /* WakeWordService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B79143405C3FC2914CF421C9 /* WakeWordService.swift */; };
+		BA8D1EBA422A003866ADF2A3 /* WakeWordGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5943D22E7D1DB807673FC573 /* WakeWordGate.swift */; };
+		BE93DBE4968B68F7A2A5854E /* WebSocketClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42FDF36D2C98707D0A08A642 /* WebSocketClient.swift */; };
+		C048F77B352B6DB6852C502F /* StreamingDots.swift in Sources */ = {isa = PBXBuildFile; fileRef = A24937BA5E82D136370A6014 /* StreamingDots.swift */; };
+		C16784A21559A22956BBDC36 /* SentenceBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CA104D89A62D7D34F12AA40 /* SentenceBuffer.swift */; };
+		C18AA0274E4BA08683C622F0 /* JOIIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5144C1CA62B16060F8CBBF3D /* JOIIntents.swift */; };
+		C3F7539B5DF203BAF63AA75F /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F2A2CF1B823426594FC90C6 /* SettingsView.swift */; };
+		C612D535DE004F14DB1A6274 /* WakeWordGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5943D22E7D1DB807673FC573 /* WakeWordGate.swift */; };
+		C6ABBD6FEDAFBDE0014F941E /* VoicePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41C1A382475FD84B6A32D34C /* VoicePipeline.swift */; };
+		CC359FCAB344A0C5F664EC03 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53CF34ACF9A504540094EBC9 /* Models.swift */; };
+		CD1CD5CDFBFDF168FF500AAE /* LiveKitVoicePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2219170A5E6539693FD083 /* LiveKitVoicePipeline.swift */; };
+		D3A34D09576FBA458C75CA79 /* MessageBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5111E7F5C724B43EFD6F78C9 /* MessageBubble.swift */; };
+		D50960D789646CB90500482A /* WebSocketClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42FDF36D2C98707D0A08A642 /* WebSocketClient.swift */; };
+		D99979CD7E0FFAFA946CEADE /* TTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 899DC3216691616001DED75C /* TTSService.swift */; };
+		DA3BDDB55E3320434FBF7B4D /* JOITypography.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DB61506B86E77CF73493DAD /* JOITypography.swift */; };
+		DAEC9EE497207E499BFD6F05 /* JOIWatchExtensionApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BB507245EAF74F0E9866574 /* JOIWatchExtensionApp.swift */; };
+		E15CB56D4E1F0CE5033404EF /* VoiceDebugLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 815414F955595FF4ECD1F110 /* VoiceDebugLog.swift */; };
+		E3F639222AD4B60692F9E65B /* ConnectionBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71E67E9E86D447156F066233 /* ConnectionBanner.swift */; };
+		E8A79CE468A4EF2260F51D1F /* JOI_watchOS.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 950B4357B64423DEC7CE21E7 /* JOI_watchOS.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		EBCF2F8E0925488E8733023C /* PushService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8849A413A5BB7E0E93D91885 /* PushService.swift */; };
+		EE502BBCC4C84EDC41E1A0A9 /* WatchBridgeProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 857C47315E3DFA76B1262DCA /* WatchBridgeProtocol.swift */; };
+		F19C8D7DD0371D302288712B /* joi-avatar.jpg in Resources */ = {isa = PBXBuildFile; fileRef = E5A36FB64310B7D7AF16E96B /* joi-avatar.jpg */; };
+		A1B2C3D4E5F60718293A4B5D /* joi_universe_firestorm.icns in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5C /* joi_universe_firestorm.icns */; };
+		B1C2D3E4F5061728394A5B6D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B1C2D3E4F5061728394A5B6C /* Assets.xcassets */; };
+		F904513B7E26EAA1A05498C8 /* TTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 899DC3216691616001DED75C /* TTSService.swift */; };
+		F9F05AB931A1DDEE02CBD304 /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = EB07E75D1DB69693D7B13495 /* README.md */; };
+		FD4821C2D9C22907CD2E33BD /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 468E952C6F77BF23F6082339 /* AppDelegate.swift */; };
+		FF89E8A236FB857DFEA12546 /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = DACACEDB768AF632E8057216 /* LiveKit */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		5B21E8988505B7BEA09BA705 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 2C01D976107492F06C23DB82 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 8D047244656F2C55F07CDD44;
+			remoteInfo = JOI_iOS;
+		};
+		760631D17957378EF085EE70 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 2C01D976107492F06C23DB82 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B7FDD4AEF3400CE7BB1C4F0E;
+			remoteInfo = JOI_macOS;
+		};
+		B5E5779176FCFBC4C2D9655C /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 2C01D976107492F06C23DB82 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 20B22437D829487672A06183;
+			remoteInfo = JOI_watchOS;
+		};
+		E64149AB88FF3B033DFEA13B /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 2C01D976107492F06C23DB82 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = ED06FB460A9D2F48FA3D01BC;
+			remoteInfo = "JOI_watchOS Extension";
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		0062EB3DD4E1A9E41D5B9341 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				13AB0E8274F4A9D938193325 /* JOI_watchOS Extension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		51CB7FDA0067770C575226C2 /* Embed Watch Content */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
+			dstSubfolderSpec = 16;
+			files = (
+				E8A79CE468A4EF2260F51D1F /* JOI_watchOS.app in Embed Watch Content */,
+			);
+			name = "Embed Watch Content";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		0933CC190580B94F48E03E80 /* WatchHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchHomeView.swift; sourceTree = "<group>"; };
+		0AB6654C3D4CD8B90A1BE279 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+		0DB61506B86E77CF73493DAD /* JOITypography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JOITypography.swift; sourceTree = "<group>"; };
+		2677AE178533C5AC08DCBEB1 /* PhoneWatchBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneWatchBridge.swift; sourceTree = "<group>"; };
+		2FB92EFFF312FE16FE9E5719 /* GlassCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassCard.swift; sourceTree = "<group>"; };
+		349041088914618280F2D345 /* JOITests_iOS.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = JOITests_iOS.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		3CA104D89A62D7D34F12AA40 /* SentenceBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SentenceBuffer.swift; sourceTree = "<group>"; };
+		4060EFB89D34E7640D723857 /* TokenService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenService.swift; sourceTree = "<group>"; };
+		41C1A382475FD84B6A32D34C /* VoicePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicePipeline.swift; sourceTree = "<group>"; };
+		42FDF36D2C98707D0A08A642 /* WebSocketClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketClient.swift; sourceTree = "<group>"; };
+		468E952C6F77BF23F6082339 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		4A5619FD51D9227ABED3463E /* SpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechService.swift; sourceTree = "<group>"; };
+		4BB507245EAF74F0E9866574 /* JOIWatchExtensionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JOIWatchExtensionApp.swift; sourceTree = "<group>"; };
+		4F2A2CF1B823426594FC90C6 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		5111E7F5C724B43EFD6F78C9 /* MessageBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubble.swift; sourceTree = "<group>"; };
+		5144C1CA62B16060F8CBBF3D /* JOIIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JOIIntents.swift; sourceTree = "<group>"; };
+		52BBEF25257890DFD22D2BB3 /* VoiceEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceEngine.swift; sourceTree = "<group>"; };
+		53CF34ACF9A504540094EBC9 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		5943D22E7D1DB807673FC573 /* WakeWordGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WakeWordGate.swift; sourceTree = "<group>"; };
+		5A5FF9EAE21534BF2A2792A1 /* ConversationsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationsView.swift; sourceTree = "<group>"; };
+		657DD49FE34AD00D763A43BD /* JOIApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JOIApp.swift; sourceTree = "<group>"; };
+		6893B47088FFFCC5F95B1D10 /* JOIColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JOIColors.swift; sourceTree = "<group>"; };
+		71D0B6AEF5302C529DD807EF /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		71E67E9E86D447156F066233 /* ConnectionBanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionBanner.swift; sourceTree = "<group>"; };
+		80DD50F89D04A37D5BADA917 /* WatchSessionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchSessionClient.swift; sourceTree = "<group>"; };
+		80FF5FCB8C138FDCD06D2DEF /* MenuBarContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarContentView.swift; sourceTree = "<group>"; };
+		815414F955595FF4ECD1F110 /* VoiceDebugLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceDebugLog.swift; sourceTree = "<group>"; };
+		857C47315E3DFA76B1262DCA /* WatchBridgeProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchBridgeProtocol.swift; sourceTree = "<group>"; };
+		8849A413A5BB7E0E93D91885 /* PushService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushService.swift; sourceTree = "<group>"; };
+		888CDC0ACFCBE7035F5187A6 /* ChatInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatInput.swift; sourceTree = "<group>"; };
+		899DC3216691616001DED75C /* TTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TTSService.swift; sourceTree = "<group>"; };
+		89CFBB9FFCC23675679DA5EE /* JOITests_macOS.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = JOITests_macOS.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		933C04404CCAAD68C5BEAD25 /* JOI_watchOS Extension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "JOI_watchOS Extension.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
+		950B4357B64423DEC7CE21E7 /* JOI_watchOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = JOI_watchOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1AB112F6C07DA16F2A7F57C /* JOIAvatarImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JOIAvatarImage.swift; sourceTree = "<group>"; };
+		A24937BA5E82D136370A6014 /* StreamingDots.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingDots.swift; sourceTree = "<group>"; };
+		A4986D22E95E533098FA77B4 /* ChatViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatViewModel.swift; sourceTree = "<group>"; };
+		AA2219170A5E6539693FD083 /* LiveKitVoicePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveKitVoicePipeline.swift; sourceTree = "<group>"; };
+		AAC41988FB91934C81EAE6FF /* JOI-Debug.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "JOI-Debug.entitlements"; sourceTree = "<group>"; };
+		B79143405C3FC2914CF421C9 /* WakeWordService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WakeWordService.swift; sourceTree = "<group>"; };
+		C75F301B573FE5816632BA09 /* JOI_macOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = JOI_macOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C8EC6B825F63C74DAED984A2 /* JOI.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = JOI.entitlements; sourceTree = "<group>"; };
+		C961648FFC84D464C266E010 /* JOI_iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = JOI_iOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D14359BF4424850B108A82BA /* FrameRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FrameRouter.swift; sourceTree = "<group>"; };
+		E4BCE31B4137F8674CAC2C41 /* WakeWordGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WakeWordGateTests.swift; sourceTree = "<group>"; };
+		E5A36FB64310B7D7AF16E96B /* joi-avatar.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = "joi-avatar.jpg"; sourceTree = "<group>"; };
+		A1B2C3D4E5F60718293A4B5C /* joi_universe_firestorm.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = joi_universe_firestorm.icns; sourceTree = "<group>"; };
+		B1C2D3E4F5061728394A5B6C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		EB07E75D1DB69693D7B13495 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		EF5701DA03969D92E3ABEDD4 /* FrameProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FrameProtocol.swift; sourceTree = "<group>"; };
+		F73F729EC97E78C0BB3EC7AE /* ConnectionStatusPill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionStatusPill.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		270C5DB4889ADA33EC3E350F /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FF89E8A236FB857DFEA12546 /* LiveKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BB257680BFD025342FFFBEAF /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				60F17655402D6F7B5858A169 /* LiveKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		09B7C21C953A59162BC970C7 /* Watch */ = {
+			isa = PBXGroup;
+			children = (
+				857C47315E3DFA76B1262DCA /* WatchBridgeProtocol.swift */,
+			);
+			path = Watch;
+			sourceTree = "<group>";
+		};
+		1A6EA2C443C1FF4F09783FBA /* JOI */ = {
+			isa = PBXGroup;
+			children = (
+				AAC41988FB91934C81EAE6FF /* JOI-Debug.entitlements */,
+				C8EC6B825F63C74DAED984A2 /* JOI.entitlements */,
+				657DD49FE34AD00D763A43BD /* JOIApp.swift */,
+				BE46736192C2E5D44F5502B0 /* Core */,
+				D25A65C2DEAF8F2F0681ED37 /* Features */,
+				6495884BAB5A7B387FE53017 /* iOS */,
+				F7A72C2D2EBDE31A789ABCD4 /* macOS */,
+				EA399B9379B67F4CA5393830 /* Resources */,
+				3DFB65F17C1D785355CA2C1C /* Shared */,
+			);
+			path = JOI;
+			sourceTree = "<group>";
+		};
+		1F65FB8F6D97FB7AEEEDE0F4 /* Extension */ = {
+			isa = PBXGroup;
+			children = (
+				4BB507245EAF74F0E9866574 /* JOIWatchExtensionApp.swift */,
+				0933CC190580B94F48E03E80 /* WatchHomeView.swift */,
+				80DD50F89D04A37D5BADA917 /* WatchSessionClient.swift */,
+			);
+			path = Extension;
+			sourceTree = "<group>";
+		};
+		25EDC6E538669E521E250800 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				C961648FFC84D464C266E010 /* JOI_iOS.app */,
+				C75F301B573FE5816632BA09 /* JOI_macOS.app */,
+				933C04404CCAAD68C5BEAD25 /* JOI_watchOS Extension.appex */,
+				950B4357B64423DEC7CE21E7 /* JOI_watchOS.app */,
+				349041088914618280F2D345 /* JOITests_iOS.xctest */,
+				89CFBB9FFCC23675679DA5EE /* JOITests_macOS.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		2815606D04548C66FD2C70AD /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				4F2A2CF1B823426594FC90C6 /* SettingsView.swift */,
+			);
+			path = Settings;
+			sourceTree = "<group>";
+		};
+		2C54AB4E898AF7C3DDD4EF05 /* WatchApp */ = {
+			isa = PBXGroup;
+			children = (
+				B01ABB4EE25F36771C64A613 /* App */,
+				1F65FB8F6D97FB7AEEEDE0F4 /* Extension */,
+			);
+			path = WatchApp;
+			sourceTree = "<group>";
+		};
+		323CF182F884A5A2D38910A4 /* Conversations */ = {
+			isa = PBXGroup;
+			children = (
+				5A5FF9EAE21534BF2A2792A1 /* ConversationsView.swift */,
+			);
+			path = Conversations;
+			sourceTree = "<group>";
+		};
+		3DFB65F17C1D785355CA2C1C /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				71E67E9E86D447156F066233 /* ConnectionBanner.swift */,
+				F73F729EC97E78C0BB3EC7AE /* ConnectionStatusPill.swift */,
+				2FB92EFFF312FE16FE9E5719 /* GlassCard.swift */,
+				A1AB112F6C07DA16F2A7F57C /* JOIAvatarImage.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		6495884BAB5A7B387FE53017 /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				2677AE178533C5AC08DCBEB1 /* PhoneWatchBridge.swift */,
+				71D0B6AEF5302C529DD807EF /* RootView.swift */,
+			);
+			path = iOS;
+			sourceTree = "<group>";
+		};
+		9A7249B0F512AB1EE6A12F2E /* Voice */ = {
+			isa = PBXGroup;
+			children = (
+				AA2219170A5E6539693FD083 /* LiveKitVoicePipeline.swift */,
+				3CA104D89A62D7D34F12AA40 /* SentenceBuffer.swift */,
+				4A5619FD51D9227ABED3463E /* SpeechService.swift */,
+				899DC3216691616001DED75C /* TTSService.swift */,
+				815414F955595FF4ECD1F110 /* VoiceDebugLog.swift */,
+				52BBEF25257890DFD22D2BB3 /* VoiceEngine.swift */,
+				41C1A382475FD84B6A32D34C /* VoicePipeline.swift */,
+				5943D22E7D1DB807673FC573 /* WakeWordGate.swift */,
+				B79143405C3FC2914CF421C9 /* WakeWordService.swift */,
+			);
+			path = Voice;
+			sourceTree = "<group>";
+		};
+		A60C3AFD191CF8F62E5872DA /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				E4BCE31B4137F8674CAC2C41 /* WakeWordGateTests.swift */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+		B01ABB4EE25F36771C64A613 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				EB07E75D1DB69693D7B13495 /* README.md */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		BD7743AED8376033E12FD32E /* Storage */ = {
+			isa = PBXGroup;
+			children = (
+				53CF34ACF9A504540094EBC9 /* Models.swift */,
+			);
+			path = Storage;
+			sourceTree = "<group>";
+		};
+		BE46736192C2E5D44F5502B0 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				C118803C0015AA55A4BC4436 /* Network */,
+				C7D1589C32BDD91F2A4111EE /* Notifications */,
+				BD7743AED8376033E12FD32E /* Storage */,
+				D57B41E5E5DCF23CD95856DC /* Theme */,
+				09B7C21C953A59162BC970C7 /* Watch */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
+		BFBDC539E9202565EF9E9001 /* Intents */ = {
+			isa = PBXGroup;
+			children = (
+				5144C1CA62B16060F8CBBF3D /* JOIIntents.swift */,
+			);
+			path = Intents;
+			sourceTree = "<group>";
+		};
+		C118803C0015AA55A4BC4436 /* Network */ = {
+			isa = PBXGroup;
+			children = (
+				EF5701DA03969D92E3ABEDD4 /* FrameProtocol.swift */,
+				D14359BF4424850B108A82BA /* FrameRouter.swift */,
+				4060EFB89D34E7640D723857 /* TokenService.swift */,
+				42FDF36D2C98707D0A08A642 /* WebSocketClient.swift */,
+			);
+			path = Network;
+			sourceTree = "<group>";
+		};
+		C7D1589C32BDD91F2A4111EE /* Notifications */ = {
+			isa = PBXGroup;
+			children = (
+				468E952C6F77BF23F6082339 /* AppDelegate.swift */,
+				8849A413A5BB7E0E93D91885 /* PushService.swift */,
+			);
+			path = Notifications;
+			sourceTree = "<group>";
+		};
+		CA065B901F6A5324C1096172 /* Chat */ = {
+			isa = PBXGroup;
+			children = (
+				888CDC0ACFCBE7035F5187A6 /* ChatInput.swift */,
+				0AB6654C3D4CD8B90A1BE279 /* ChatView.swift */,
+				A4986D22E95E533098FA77B4 /* ChatViewModel.swift */,
+				5111E7F5C724B43EFD6F78C9 /* MessageBubble.swift */,
+				A24937BA5E82D136370A6014 /* StreamingDots.swift */,
+			);
+			path = Chat;
+			sourceTree = "<group>";
+		};
+		D25A65C2DEAF8F2F0681ED37 /* Features */ = {
+			isa = PBXGroup;
+			children = (
+				CA065B901F6A5324C1096172 /* Chat */,
+				323CF182F884A5A2D38910A4 /* Conversations */,
+				BFBDC539E9202565EF9E9001 /* Intents */,
+				2815606D04548C66FD2C70AD /* Settings */,
+				9A7249B0F512AB1EE6A12F2E /* Voice */,
+			);
+			path = Features;
+			sourceTree = "<group>";
+		};
+		D57B41E5E5DCF23CD95856DC /* Theme */ = {
+			isa = PBXGroup;
+			children = (
+				6893B47088FFFCC5F95B1D10 /* JOIColors.swift */,
+				0DB61506B86E77CF73493DAD /* JOITypography.swift */,
+			);
+			path = Theme;
+			sourceTree = "<group>";
+		};
+		EA399B9379B67F4CA5393830 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				B1C2D3E4F5061728394A5B6C /* Assets.xcassets */,
+				E5A36FB64310B7D7AF16E96B /* joi-avatar.jpg */,
+				A1B2C3D4E5F60718293A4B5C /* joi_universe_firestorm.icns */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		F7A72C2D2EBDE31A789ABCD4 /* macOS */ = {
+			isa = PBXGroup;
+			children = (
+				80FF5FCB8C138FDCD06D2DEF /* MenuBarContentView.swift */,
+			);
+			path = macOS;
+			sourceTree = "<group>";
+		};
+		FC89F110A45EA9500379DC11 = {
+			isa = PBXGroup;
+			children = (
+				1A6EA2C443C1FF4F09783FBA /* JOI */,
+				A60C3AFD191CF8F62E5872DA /* Tests */,
+				2C54AB4E898AF7C3DDD4EF05 /* WatchApp */,
+				25EDC6E538669E521E250800 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		20B22437D829487672A06183 /* JOI_watchOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 9451045092B842D69BB33BD5 /* Build configuration list for PBXNativeTarget "JOI_watchOS" */;
+			buildPhases = (
+				90333D451F076FFD0F94789A /* Resources */,
+				0062EB3DD4E1A9E41D5B9341 /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				3A67A0E746C8C706D20CDE0E /* PBXTargetDependency */,
+			);
+			name = JOI_watchOS;
+			packageProductDependencies = (
+			);
+			productName = JOI_watchOS;
+			productReference = 950B4357B64423DEC7CE21E7 /* JOI_watchOS.app */;
+			productType = "com.apple.product-type.application.watchapp2";
+		};
+		2E0740FE8AA753884AEA5F5F /* JOITests_iOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 6180EFA20ED78B38F7F9E796 /* Build configuration list for PBXNativeTarget "JOITests_iOS" */;
+			buildPhases = (
+				D6FB6D543F8F227E14F828B4 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B4DA273AB57F0B5A36A730FC /* PBXTargetDependency */,
+			);
+			name = JOITests_iOS;
+			packageProductDependencies = (
+			);
+			productName = JOITests_iOS;
+			productReference = 349041088914618280F2D345 /* JOITests_iOS.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		8D047244656F2C55F07CDD44 /* JOI_iOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 096645326038BEACB97AB53D /* Build configuration list for PBXNativeTarget "JOI_iOS" */;
+			buildPhases = (
+				B4516DA0A877481002C69490 /* Sources */,
+				88507617B604AE800547AF59 /* Resources */,
+				270C5DB4889ADA33EC3E350F /* Frameworks */,
+				51CB7FDA0067770C575226C2 /* Embed Watch Content */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				09CAD350E6482D85494FE6DA /* PBXTargetDependency */,
+			);
+			name = JOI_iOS;
+			packageProductDependencies = (
+				DACACEDB768AF632E8057216 /* LiveKit */,
+			);
+			productName = JOI_iOS;
+			productReference = C961648FFC84D464C266E010 /* JOI_iOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+		B7FDD4AEF3400CE7BB1C4F0E /* JOI_macOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FB384FC15C6184CDB2A70790 /* Build configuration list for PBXNativeTarget "JOI_macOS" */;
+			buildPhases = (
+				7FABCF7169DF1F046AB829A3 /* Sources */,
+				6D91E0D108EE29CA115C55A6 /* Resources */,
+				BB257680BFD025342FFFBEAF /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = JOI_macOS;
+			packageProductDependencies = (
+				C9D00215D0CB2BE3F84369DC /* LiveKit */,
+			);
+			productName = JOI_macOS;
+			productReference = C75F301B573FE5816632BA09 /* JOI_macOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+		E3D06561F38D16A9BD4AE332 /* JOITests_macOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA07D903F0E0A311642321BD /* Build configuration list for PBXNativeTarget "JOITests_macOS" */;
+			buildPhases = (
+				EE5340E09B54D06E4E8DFCCD /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				5480B6495771AD8E0C5A845F /* PBXTargetDependency */,
+			);
+			name = JOITests_macOS;
+			packageProductDependencies = (
+			);
+			productName = JOITests_macOS;
+			productReference = 89CFBB9FFCC23675679DA5EE /* JOITests_macOS.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		ED06FB460A9D2F48FA3D01BC /* JOI_watchOS Extension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A6DC23FE131AD666E72BFE44 /* Build configuration list for PBXNativeTarget "JOI_watchOS Extension" */;
+			buildPhases = (
+				CE6AB08678EB08BE9E216F42 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "JOI_watchOS Extension";
+			packageProductDependencies = (
+			);
+			productName = "JOI_watchOS Extension";
+			productReference = 933C04404CCAAD68C5BEAD25 /* JOI_watchOS Extension.appex */;
+			productType = "com.apple.product-type.watchkit2-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		2C01D976107492F06C23DB82 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 2600;
+				TargetAttributes = {
+					B7FDD4AEF3400CE7BB1C4F0E = {
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 11B569142FE0E7710C20817C /* Build configuration list for PBXProject "JOI" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = FC89F110A45EA9500379DC11;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				480616FF4AC630C90BE9F807 /* XCRemoteSwiftPackageReference "client-sdk-swift" */,
+			);
+			preferredProjectObjectVersion = 77;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				2E0740FE8AA753884AEA5F5F /* JOITests_iOS */,
+				E3D06561F38D16A9BD4AE332 /* JOITests_macOS */,
+				8D047244656F2C55F07CDD44 /* JOI_iOS */,
+				B7FDD4AEF3400CE7BB1C4F0E /* JOI_macOS */,
+				20B22437D829487672A06183 /* JOI_watchOS */,
+				ED06FB460A9D2F48FA3D01BC /* JOI_watchOS Extension */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		6D91E0D108EE29CA115C55A6 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B1C2D3E4F5061728394A5B6D /* Assets.xcassets in Resources */,
+				6DC9F964EB7163563D5E5349 /* joi-avatar.jpg in Resources */,
+				A1B2C3D4E5F60718293A4B5D /* joi_universe_firestorm.icns in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		88507617B604AE800547AF59 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F19C8D7DD0371D302288712B /* joi-avatar.jpg in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		90333D451F076FFD0F94789A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F9F05AB931A1DDEE02CBD304 /* README.md in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		7FABCF7169DF1F046AB829A3 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FD4821C2D9C22907CD2E33BD /* AppDelegate.swift in Sources */,
+				7262F633BE75177358041E3A /* ChatInput.swift in Sources */,
+				9F5841FCAEA25FC9A89DF00E /* ChatView.swift in Sources */,
+				4C149653EEAAB0D12532D519 /* ChatViewModel.swift in Sources */,
+				E3F639222AD4B60692F9E65B /* ConnectionBanner.swift in Sources */,
+				AF4B43B398E1E52E76F09D83 /* ConnectionStatusPill.swift in Sources */,
+				9586A7348D7D6B3A9EBB8A6A /* ConversationsView.swift in Sources */,
+				0DF2F61E80084D6D72AFFA52 /* FrameProtocol.swift in Sources */,
+				4F18B6EBE1F498156C9BA593 /* FrameRouter.swift in Sources */,
+				1EC4B738B93F54E8ED05663D /* GlassCard.swift in Sources */,
+				9FDEA0E06F516828F226FDDD /* JOIApp.swift in Sources */,
+				9EC4882DB4FC4C6FD8E7448C /* JOIAvatarImage.swift in Sources */,
+				4A6A88C67F3ED511AEC0DA75 /* JOIColors.swift in Sources */,
+				C18AA0274E4BA08683C622F0 /* JOIIntents.swift in Sources */,
+				21542B4F6997511C928F5083 /* JOITypography.swift in Sources */,
+				CD1CD5CDFBFDF168FF500AAE /* LiveKitVoicePipeline.swift in Sources */,
+				0D2D27862C562ABC87E161B8 /* MenuBarContentView.swift in Sources */,
+				2D1F55E74AE2D0D30D15240C /* MessageBubble.swift in Sources */,
+				27756EBA4A80A90FC16DE88B /* Models.swift in Sources */,
+				729D90EE49C39BCA0FDFA0C1 /* PushService.swift in Sources */,
+				14F49F800C76A8D4FD7E84CC /* SentenceBuffer.swift in Sources */,
+				02EB57213E3C1DD9865E4838 /* SettingsView.swift in Sources */,
+				65B313174CF85586C5DC5C11 /* SpeechService.swift in Sources */,
+				259CA46779BCFBC5A5E0622A /* StreamingDots.swift in Sources */,
+				F904513B7E26EAA1A05498C8 /* TTSService.swift in Sources */,
+				8AE55E546BEB338CE9BFD675 /* TokenService.swift in Sources */,
+				E15CB56D4E1F0CE5033404EF /* VoiceDebugLog.swift in Sources */,
+				71C1EFD7C398EE95F695635D /* VoiceEngine.swift in Sources */,
+				C6ABBD6FEDAFBDE0014F941E /* VoicePipeline.swift in Sources */,
+				C612D535DE004F14DB1A6274 /* WakeWordGate.swift in Sources */,
+				B7170484AD759F85A54E8B60 /* WakeWordService.swift in Sources */,
+				1CFD48507BCD10EC9F4DFD37 /* WatchBridgeProtocol.swift in Sources */,
+				D50960D789646CB90500482A /* WebSocketClient.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B4516DA0A877481002C69490 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7E6B6DFB1F527C3D109EFB0B /* AppDelegate.swift in Sources */,
+				09352A81972A7889A97EB98C /* ChatInput.swift in Sources */,
+				4547AB3905B687C3A29A54A7 /* ChatView.swift in Sources */,
+				93F7042BF0A1AF76C10AA71E /* ChatViewModel.swift in Sources */,
+				B2D8C1863F0EB044D711604B /* ConnectionBanner.swift in Sources */,
+				59FCEF4969989873BE58A26E /* ConnectionStatusPill.swift in Sources */,
+				7EE80A81F46B1172E6071E01 /* ConversationsView.swift in Sources */,
+				042F069F8074DCC874D0BC71 /* FrameProtocol.swift in Sources */,
+				6B30A45193A29BF5093E2806 /* FrameRouter.swift in Sources */,
+				3FC71F3F5B8614D1E0B66561 /* GlassCard.swift in Sources */,
+				3EFE694BA94A40C1848C3012 /* JOIApp.swift in Sources */,
+				3B61B49211F51B7752CC376E /* JOIAvatarImage.swift in Sources */,
+				36A4748C3B13FBAB0A67E12B /* JOIColors.swift in Sources */,
+				962B0DE2C88D371ACF95F457 /* JOIIntents.swift in Sources */,
+				DA3BDDB55E3320434FBF7B4D /* JOITypography.swift in Sources */,
+				71FD25E23A4925D204DB4564 /* LiveKitVoicePipeline.swift in Sources */,
+				D3A34D09576FBA458C75CA79 /* MessageBubble.swift in Sources */,
+				CC359FCAB344A0C5F664EC03 /* Models.swift in Sources */,
+				12E493AC2868EBBE55F23A92 /* PhoneWatchBridge.swift in Sources */,
+				EBCF2F8E0925488E8733023C /* PushService.swift in Sources */,
+				5EEAA8D25CBCF6344D09665F /* RootView.swift in Sources */,
+				C16784A21559A22956BBDC36 /* SentenceBuffer.swift in Sources */,
+				C3F7539B5DF203BAF63AA75F /* SettingsView.swift in Sources */,
+				105445BAFC46AD68DC0A1CF9 /* SpeechService.swift in Sources */,
+				C048F77B352B6DB6852C502F /* StreamingDots.swift in Sources */,
+				D99979CD7E0FFAFA946CEADE /* TTSService.swift in Sources */,
+				3E41AF4F948856EDB56BF946 /* TokenService.swift in Sources */,
+				5EA7D90A80E4DB4E0050E8A4 /* VoiceDebugLog.swift in Sources */,
+				2DD9698CCD16A9658A6A1431 /* VoiceEngine.swift in Sources */,
+				6090C5CF26ADCE758DB3A62B /* VoicePipeline.swift in Sources */,
+				BA8D1EBA422A003866ADF2A3 /* WakeWordGate.swift in Sources */,
+				3009EB52C0E1E9F1EFB9BF84 /* WakeWordService.swift in Sources */,
+				7665FC36F622F9717FD22DB3 /* WatchBridgeProtocol.swift in Sources */,
+				BE93DBE4968B68F7A2A5854E /* WebSocketClient.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		CE6AB08678EB08BE9E216F42 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				DAEC9EE497207E499BFD6F05 /* JOIWatchExtensionApp.swift in Sources */,
+				EE502BBCC4C84EDC41E1A0A9 /* WatchBridgeProtocol.swift in Sources */,
+				87881159197FC36F548F7792 /* WatchHomeView.swift in Sources */,
+				5EB6DC5689A4719FE0B5002C /* WatchSessionClient.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D6FB6D543F8F227E14F828B4 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0A843DD000497AB0922C0548 /* WakeWordGateTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EE5340E09B54D06E4E8DFCCD /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				358DCF880310C2F46811F92F /* WakeWordGateTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		09CAD350E6482D85494FE6DA /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 20B22437D829487672A06183 /* JOI_watchOS */;
+			targetProxy = B5E5779176FCFBC4C2D9655C /* PBXContainerItemProxy */;
+		};
+		3A67A0E746C8C706D20CDE0E /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = ED06FB460A9D2F48FA3D01BC /* JOI_watchOS Extension */;
+			targetProxy = E64149AB88FF3B033DFEA13B /* PBXContainerItemProxy */;
+		};
+		5480B6495771AD8E0C5A845F /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B7FDD4AEF3400CE7BB1C4F0E /* JOI_macOS */;
+			targetProxy = 760631D17957378EF085EE70 /* PBXContainerItemProxy */;
+		};
+		B4DA273AB57F0B5A36A730FC /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 8D047244656F2C55F07CDD44 /* JOI_iOS */;
+			targetProxy = 5B21E8988505B7BEA09BA705 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+			072D6A468F2BECC16130AC43 /* Release */ = {
+				isa = XCBuildConfiguration;
+				buildSettings = {
+					ASSETCATALOG_COMPILER_COMPLICATION_NAME = Complication;
+					EXTRACT_APP_INTENTS_METADATA = NO;
+					LD_RUNPATH_SEARCH_PATHS = (
+						"$(inherited)",
+						"@executable_path/Frameworks",
+						"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.joi.app.watchkitapp.extension;
+				PRODUCT_NAME = "JOI Watch Extension";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = 4;
+			};
+			name = Release;
+		};
+		3872CC650DFA1ABAFDA36568 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.joi.JOITests-macOS";
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/JOI.app/Contents/MacOS/JOI";
+			};
+			name = Debug;
+		};
+		3C08632DC531F7F146692C69 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.joi.JOITests-iOS";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/JOI_iOS.app/JOI_iOS";
+			};
+			name = Debug;
+		};
+		75F86614C1380ECD23A98918 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				WATCHOS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Release;
+		};
+		77780AE66EFB8BA3CAFD2521 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.joi.JOITests-macOS";
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/JOI.app/Contents/MacOS/JOI";
+			};
+			name = Release;
+		};
+		8181BA89AC78BAE9454A7524 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.joi.app;
+				PRODUCT_BUNDLE_IDENTIFIER = com.joi.app.watchkitapp;
+				PRODUCT_NAME = "JOI Watch";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = 4;
+			};
+			name = Debug;
+		};
+		94C7110420873A2FA8759210 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = JOI/JOI.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "JOI uses the microphone to hear your voice commands.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "JOI uses speech recognition to transcribe what you say.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.joi.app;
+				PRODUCT_NAME = JOI;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		980E20AE750282F62DD38133 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				WATCHOS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Debug;
+		};
+		C9B53AE5751FE42571F09980 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.joi.app;
+				PRODUCT_BUNDLE_IDENTIFIER = com.joi.app.watchkitapp;
+				PRODUCT_NAME = "JOI Watch";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = 4;
+			};
+			name = Release;
+		};
+		CE210F0C06DC7E54C932F59E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = JOI/JOI.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "JOI uses the microphone to hear your voice commands.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "JOI uses speech recognition to transcribe what you say.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.joi.app;
+				PRODUCT_NAME = JOI;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+			DFDDCEE738E1545D1ABB9594 /* Debug */ = {
+				isa = XCBuildConfiguration;
+				buildSettings = {
+					ASSETCATALOG_COMPILER_COMPLICATION_NAME = Complication;
+					EXTRACT_APP_INTENTS_METADATA = NO;
+					LD_RUNPATH_SEARCH_PATHS = (
+						"$(inherited)",
+						"@executable_path/Frameworks",
+						"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.joi.app.watchkitapp.extension;
+				PRODUCT_NAME = "JOI Watch Extension";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = 4;
+			};
+			name = Debug;
+		};
+		E3A272747E36248C484C9330 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "JOI/JOI-Debug.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "JOI uses the microphone to hear your voice commands.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "JOI uses speech recognition to transcribe what you say.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.joi.app.macos;
+				PRODUCT_NAME = JOI;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		E8DA4EFD03907A97FC058AA1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = JOI/JOI.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "JOI uses the microphone to hear your voice commands.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "JOI uses speech recognition to transcribe what you say.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.joi.app.macos;
+				PRODUCT_NAME = JOI;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		F559807CBC985083C225BDB8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.joi.JOITests-iOS";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/JOI_iOS.app/JOI_iOS";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		096645326038BEACB97AB53D /* Build configuration list for PBXNativeTarget "JOI_iOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CE210F0C06DC7E54C932F59E /* Debug */,
+				94C7110420873A2FA8759210 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		11B569142FE0E7710C20817C /* Build configuration list for PBXProject "JOI" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				980E20AE750282F62DD38133 /* Debug */,
+				75F86614C1380ECD23A98918 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		6180EFA20ED78B38F7F9E796 /* Build configuration list for PBXNativeTarget "JOITests_iOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3C08632DC531F7F146692C69 /* Debug */,
+				F559807CBC985083C225BDB8 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		9451045092B842D69BB33BD5 /* Build configuration list for PBXNativeTarget "JOI_watchOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				8181BA89AC78BAE9454A7524 /* Debug */,
+				C9B53AE5751FE42571F09980 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		A6DC23FE131AD666E72BFE44 /* Build configuration list for PBXNativeTarget "JOI_watchOS Extension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DFDDCEE738E1545D1ABB9594 /* Debug */,
+				072D6A468F2BECC16130AC43 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		AA07D903F0E0A311642321BD /* Build configuration list for PBXNativeTarget "JOITests_macOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3872CC650DFA1ABAFDA36568 /* Debug */,
+				77780AE66EFB8BA3CAFD2521 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		FB384FC15C6184CDB2A70790 /* Build configuration list for PBXNativeTarget "JOI_macOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E3A272747E36248C484C9330 /* Debug */,
+				E8DA4EFD03907A97FC058AA1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		480616FF4AC630C90BE9F807 /* XCRemoteSwiftPackageReference "client-sdk-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/livekit/client-sdk-swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		C9D00215D0CB2BE3F84369DC /* LiveKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 480616FF4AC630C90BE9F807 /* XCRemoteSwiftPackageReference "client-sdk-swift" */;
+			productName = LiveKit;
+		};
+		DACACEDB768AF632E8057216 /* LiveKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 480616FF4AC630C90BE9F807 /* XCRemoteSwiftPackageReference "client-sdk-swift" */;
+			productName = LiveKit;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 2C01D976107492F06C23DB82 /* Project object */;
+}

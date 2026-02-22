@@ -1,0 +1,60 @@
+name: joi_app
+description: "JOI - AI voice chat app for macOS menu bar and iOS"
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.10.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+
+  # State management
+  flutter_riverpod: ^2.6.1
+  riverpod_annotation: ^2.6.1
+
+  # Models / codegen
+  freezed_annotation: ^2.4.4
+  json_annotation: ^4.9.0
+
+  # WebSocket
+  web_socket_client: ^0.1.1
+
+  # Local database
+  drift: ^2.22.1
+  sqlite3_flutter_libs: ^0.5.28
+
+  # macOS desktop
+  tray_manager: ^0.2.3
+  window_manager: ^0.4.3
+
+  # UI
+  google_fonts: ^6.2.1
+  phosphor_flutter: ^2.1.0
+  flutter_animate: ^4.5.2
+
+  # Navigation
+  go_router: ^14.8.1
+
+  # Utils
+  uuid: ^4.5.1
+  path_provider: ^2.1.5
+  path: ^1.9.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  build_runner: ^2.4.14
+  freezed: ^2.5.7
+  json_serializable: ^6.9.4
+  riverpod_generator: ^2.6.3
+  drift_dev: ^2.22.1
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/icons/

@@ -1,0 +1,18 @@
+# Cloudflare Tunnel for JOI
+# Exposes the gateway at https://joi.itellico.org
+#
+# Run:
+#   cloudflared tunnel --config ./infra/tunnel/config.yml run
+#
+# Or install as launchd service:
+#   sudo cloudflared service install --config /Users/mm2/dev_mm/joi/infra/tunnel/config.yml
+
+tunnel: 95fec03b-7377-4edd-9c75-84eb070e7434
+credentials-file: /Users/mm2/.cloudflared/95fec03b-7377-4edd-9c75-84eb070e7434.json
+
+ingress:
+  - hostname: joi.itellico.org
+    service: http://localhost:3100
+  - hostname: api.itellico.org
+    service: http://localhost:3702
+  - service: http_status:404

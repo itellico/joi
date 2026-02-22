@@ -239,6 +239,7 @@ export async function triageInboundMessage(
   config: JoiConfig,
   broadcast?: BroadcastFn,
   scope?: string,
+  language?: string,
 ): Promise<void> {
   // 1. Look up matched contact for context
   const contactId = await matchContact(msg);
@@ -275,8 +276,11 @@ export async function triageInboundMessage(
 
   // 2. Call cheap LLM for classification
   const scopeContext = scope ? `\nScope: This message is from the "${scope}" workspace/context.` : "";
+  const langContext = language && language !== "en"
+    ? `\nLanguage: The message is in ${language === "de" ? "German" : language === "fr" ? "French" : language === "es" ? "Spanish" : language === "it" ? "Italian" : language === "pt" ? "Portuguese" : language}. Classify in English but understand the message in its original language.`
+    : "";
   const userMessage = `Channel: ${msg.channelType}
-From: ${msg.senderName || msg.senderId}${contactContext}${scopeContext}
+From: ${msg.senderName || msg.senderId}${contactContext}${scopeContext}${langContext}
 Message: ${msg.content}${msg.attachments?.length ? `\nAttachments: ${msg.attachments.map((a) => a.type).join(", ")}` : ""}${rulesContext}`;
 
   let raw: string;

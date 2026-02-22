@@ -1,0 +1,120 @@
+name: JOI
+options:
+  bundleIdPrefix: com.joi
+  deploymentTarget:
+    iOS: "26.0"
+    macOS: "26.0"
+    watchOS: "26.0"
+  xcodeVersion: "26.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+packages:
+  LiveKit:
+    url: https://github.com/livekit/client-sdk-swift.git
+    from: "2.0.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    GENERATE_INFOPLIST_FILE: YES
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: "1.0.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+
+targets:
+  JOI_iOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: JOI
+        excludes:
+          - macOS/
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.joi.app
+        PRODUCT_NAME: JOI
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "JOI uses the microphone to hear your voice commands."
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "JOI uses speech recognition to transcribe what you say."
+        INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.productivity"
+      configs:
+        debug:
+          CODE_SIGN_IDENTITY: "-"
+        release:
+          CODE_SIGN_IDENTITY: "-"
+    dependencies:
+      - target: JOI_watchOS
+      - package: LiveKit
+        product: LiveKit
+    entitlements:
+      path: JOI/JOI.entitlements
+      properties:
+        aps-environment: development
+
+  JOI_macOS:
+    type: application
+    platform: macOS
+    sources:
+      - path: JOI
+        excludes:
+          - iOS/
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.joi.app.macos
+        PRODUCT_NAME: JOI
+        CODE_SIGN_ENTITLEMENTS: JOI/JOI.entitlements
+        CODE_SIGN_STYLE: Automatic
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "JOI uses the microphone to hear your voice commands."
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "JOI uses speech recognition to transcribe what you say."
+      configs:
+        debug:
+          CODE_SIGN_ENTITLEMENTS: JOI/JOI-Debug.entitlements
+        release:
+          CODE_SIGN_ENTITLEMENTS: JOI/JOI.entitlements
+    dependencies:
+      - package: LiveKit
+        product: LiveKit
+
+  JOI_watchOS:
+    type: application.watchapp2
+    platform: watchOS
+    sources:
+      - path: WatchApp/App
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.joi.app.watchkitapp
+        PRODUCT_NAME: JOI Watch
+        INFOPLIST_KEY_WKCompanionAppBundleIdentifier: com.joi.app
+    dependencies:
+      - target: JOI_watchOS Extension
+
+  JOI_watchOS Extension:
+    type: watchkit2-extension
+    platform: watchOS
+    sources:
+      - path: WatchApp/Extension
+      - path: JOI/Core/Watch
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.joi.app.watchkitapp.extension
+        PRODUCT_NAME: JOI Watch Extension
+
+  JOITests_iOS:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: JOI_iOS
+
+  JOITests_macOS:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests
+    settings:
+      base:
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/JOI.app/Contents/MacOS/JOI"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+    dependencies:
+      - target: JOI_macOS

@@ -1,0 +1,801 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>JOI Universe Preview</title>
+  <style>
+    :root {
+      --bg: #07090e;
+      --bg2: #121826;
+      --panel: #121828;
+      --stroke: #2b3550;
+      --text: #e9eefc;
+      --muted: #95a2c1;
+      --accent: #ff9834;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 15% 10%, #21304a 0%, transparent 30%),
+        radial-gradient(circle at 85% 0%, #2f1b26 0%, transparent 34%),
+        linear-gradient(160deg, var(--bg) 0%, var(--bg2) 100%);
+    }
+    .wrap {
+      max-width: 1250px;
+      margin: 0 auto;
+      padding: 26px 18px 32px;
+      display: grid;
+      grid-template-columns: minmax(380px, 1fr) 360px;
+      gap: 18px;
+    }
+    .panel {
+      background: linear-gradient(180deg, #161e31, var(--panel));
+      border: 1px solid var(--stroke);
+      border-radius: 16px;
+      box-shadow: 0 20px 45px rgba(0, 0, 0, 0.35);
+    }
+    .stage {
+      padding: 16px;
+    }
+    h1 {
+      margin: 2px 0 8px;
+      font-size: 24px;
+      letter-spacing: 0.2px;
+    }
+    .sub {
+      margin: 0 0 12px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .canvas-wrap {
+      border: 1px solid #2e3b57;
+      border-radius: 12px;
+      overflow: hidden;
+      background: #080a11;
+    }
+    .canvas-wrap.transparent-mode {
+      background-color: #0d1320;
+      background-image:
+        linear-gradient(45deg, rgba(255,255,255,0.06) 25%, transparent 25%),
+        linear-gradient(-45deg, rgba(255,255,255,0.06) 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, rgba(255,255,255,0.06) 75%),
+        linear-gradient(-45deg, transparent 75%, rgba(255,255,255,0.06) 75%);
+      background-size: 22px 22px;
+      background-position: 0 0, 0 11px, 11px -11px, -11px 0;
+    }
+    canvas {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      display: block;
+    }
+    .controls {
+      padding: 14px;
+    }
+    .section + .section {
+      margin-top: 14px;
+      padding-top: 14px;
+      border-top: 1px solid #2a3550;
+    }
+    .label {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 8px;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+    }
+    .presets {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    button {
+      border: 1px solid #38527d;
+      background: linear-gradient(180deg, #1a2742, #141d32);
+      color: #dce9ff;
+      border-radius: 10px;
+      padding: 9px 10px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    button.active {
+      border-color: #ffad52;
+      box-shadow: inset 0 0 0 1px rgba(255, 173, 82, 0.35);
+      color: #ffe3c6;
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    input[type="range"] {
+      width: 100%;
+      margin: 0 0 10px;
+      accent-color: var(--accent);
+    }
+    .actions {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .actions button {
+      font-size: 13px;
+      padding: 11px 12px;
+    }
+    .thumbs {
+      margin-top: 14px;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .thumb {
+      border: 1px solid #2c3957;
+      border-radius: 9px;
+      overflow: hidden;
+      background: #0b1019;
+    }
+    .thumb img {
+      width: 100%;
+      display: block;
+      aspect-ratio: 1 / 1;
+    }
+    .thumb span {
+      display: block;
+      font-size: 10px;
+      color: #9eadca;
+      padding: 4px 6px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      border-top: 1px solid #24314d;
+    }
+    @media (max-width: 1040px) {
+      .wrap {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="panel stage">
+      <h1>JOI Moving Universe Orb</h1>
+      <p class="sub">More nebula, more fog, more wave complexity. Tune it live, then export a 1024 PNG frame for AppIcon.</p>
+      <div class="canvas-wrap">
+        <canvas id="stage" width="900" height="900"></canvas>
+      </div>
+      <div class="thumbs" id="thumbs"></div>
+    </section>
+
+    <aside class="panel controls">
+      <div class="section">
+        <div class="label">Presets</div>
+        <div class="presets" id="presets"></div>
+      </div>
+
+      <div class="section">
+        <div class="row"><span>Energy</span><strong id="energyVal">1.00</strong></div>
+        <input id="energy" type="range" min="0.4" max="2.3" step="0.01" value="1.0" />
+        <div class="row"><span>Speed</span><strong id="speedVal">1.00</strong></div>
+        <input id="speed" type="range" min="0.2" max="2.5" step="0.01" value="1.0" />
+        <div class="row"><span>Particle Density</span><strong id="densityVal">1.00</strong></div>
+        <input id="density" type="range" min="0.4" max="2.2" step="0.01" value="1.0" />
+        <div class="row"><span>Fog Intensity</span><strong id="fogVal">1.00</strong></div>
+        <input id="fog" type="range" min="0.4" max="2.2" step="0.01" value="1.0" />
+      </div>
+
+      <div class="section">
+        <div class="label">Export Mode</div>
+        <div class="presets" id="exportModes"></div>
+      </div>
+
+      <div class="section">
+        <div class="label">Audio Drive</div>
+        <div class="presets" id="audioModes"></div>
+        <div class="row" style="margin-top:8px;"><span>Live Audio Level</span><strong id="audioLevelVal">0.00</strong></div>
+        <div class="row"><span>Mic Raw</span><strong id="micRawVal">0.00</strong></div>
+        <div class="row"><span>Mic Status</span><strong id="micStatusVal">Idle</strong></div>
+        <div class="row"><span>Audio Gain</span><strong id="audioGainVal">6.00</strong></div>
+        <input id="audioGain" type="range" min="1.0" max="10.0" step="0.05" value="6.0" />
+        <div class="row"><span>Audio Gate</span><strong id="audioGateVal">0.01</strong></div>
+        <input id="audioGate" type="range" min="0.00" max="0.20" step="0.005" value="0.01" />
+        <div class="row"><span>Audio Influence</span><strong id="audioInfluenceVal">1.55</strong></div>
+        <input id="audioInfluence" type="range" min="0.5" max="2.5" step="0.05" value="1.55" />
+      </div>
+
+      <div class="section actions">
+        <button id="pauseBtn">Pause / Resume</button>
+        <button id="exportBtn">Export Current Frame (1024 PNG)</button>
+      </div>
+    </aside>
+  </div>
+
+  <script>
+    const TAU = Math.PI * 2;
+    const canvas = document.getElementById("stage");
+    const ctx = canvas.getContext("2d");
+
+    const presets = [
+      { key: "orangeFlare", label: "Orange Flare", bg0: "#07090e", bg1: "#171e2b", halo: "#ff5b0a", ringA: "#ff8b2a", ringB: "#ffd48a", core: "#ffe7c5" },
+      { key: "orangePulse", label: "Orange Pulse", bg0: "#06070d", bg1: "#1a1625", halo: "#ff4d00", ringA: "#ff7a1e", ringB: "#ffbe6b", core: "#ffd8a1" },
+      { key: "firestorm", label: "Firestorm", bg0: "#08080a", bg1: "#2a1212", halo: "#ff3e00", ringA: "#ff6b12", ringB: "#ffa45f", core: "#ffd3af" },
+      { key: "goldHolo", label: "Gold Holo", bg0: "#07080b", bg1: "#1e1c12", halo: "#ff8a00", ringA: "#ffad2a", ringB: "#ffe2a2", core: "#fff2d7" },
+      { key: "siriBlue", label: "Siri Blue", bg0: "#05070d", bg1: "#102239", halo: "#137dff", ringA: "#28b0ff", ringB: "#96f0ff", core: "#d8f5ff" },
+      { key: "auroraMix", label: "Aurora Mix", bg0: "#05080e", bg1: "#152c2e", halo: "#14b0a0", ringA: "#31d6bf", ringB: "#9cfbe7", core: "#e4fff7" },
+      { key: "bwLuxe", label: "B/W Luxe", bg0: "#070707", bg1: "#171717", halo: "#a9a9a9", ringA: "#d9d9d9", ringB: "#ffffff", core: "#ffffff" }
+    ];
+    const exportModeOptions = [
+      { key: "scene", label: "Full Scene" },
+      { key: "transparent_circle", label: "Transparent Circle" }
+    ];
+    const audioModeOptions = [
+      { key: "manual", label: "Manual" },
+      { key: "simulate", label: "Simulate Speech" },
+      { key: "microphone", label: "Use Microphone" }
+    ];
+
+    let preset = presets[0];
+    let exportMode = "scene";
+    let audioMode = "manual";
+    let energy = 1.0;
+    let speed = 1.0;
+    let density = 1.0;
+    let fog = 1.0;
+    let audioGain = 6.0;
+    let audioGate = 0.01;
+    let audioInfluence = 1.55;
+    let paused = false;
+    let elapsed = 0;
+    let lastTs = performance.now();
+    let audioLevel = 0;
+
+    const supportsMicrophone = Boolean(
+      navigator.mediaDevices && navigator.mediaDevices.getUserMedia
+    );
+    let micStream = null;
+    let micCtx = null;
+    let micSource = null;
+    let micAnalyser = null;
+    let micData = null;
+    let micFreqData = null;
+    let micState = { noiseFloor: 0.010, peak: 0.080 };
+    let micErrorText = "";
+
+    function hexToRgb(hex) {
+      const n = parseInt(hex.replace("#", ""), 16);
+      return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+    }
+
+    function rgba(hex, a) {
+      const c = hexToRgb(hex);
+      return `rgba(${c.r}, ${c.g}, ${c.b}, ${a})`;
+    }
+
+    function clamp(v, min, max) {
+      return Math.max(min, Math.min(max, v));
+    }
+
+    function setMicStatus(text) {
+      const el = document.getElementById("micStatusVal");
+      if (el) el.textContent = text;
+    }
+
+    async function startMicrophone() {
+      if (!supportsMicrophone) return false;
+      stopMicrophone();
+      try {
+        try {
+          micStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: { ideal: false },
+              noiseSuppression: { ideal: false },
+              autoGainControl: { ideal: false }
+            }
+          });
+        } catch (_) {
+          micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        }
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        micCtx = new AudioCtx();
+        micSource = micCtx.createMediaStreamSource(micStream);
+        micAnalyser = micCtx.createAnalyser();
+        micAnalyser.fftSize = 1024;
+        micAnalyser.smoothingTimeConstant = 0.18;
+        micData = new Uint8Array(micAnalyser.fftSize);
+        micFreqData = new Uint8Array(micAnalyser.frequencyBinCount);
+        micSource.connect(micAnalyser);
+        micState.noiseFloor = 0.010;
+        micState.peak = 0.080;
+        if (micCtx.state === "suspended") await micCtx.resume();
+        micErrorText = "";
+        setMicStatus("Live");
+        return true;
+      } catch (err) {
+        console.error("Microphone start failed:", err);
+        micErrorText = err && err.name ? err.name : "Unavailable";
+        setMicStatus(`Error: ${micErrorText}`);
+        stopMicrophone();
+        return false;
+      }
+    }
+
+    function stopMicrophone() {
+      if (micSource) {
+        try { micSource.disconnect(); } catch (_) {}
+      }
+      if (micStream) {
+        for (const track of micStream.getTracks()) track.stop();
+      }
+      if (micCtx) {
+        try { micCtx.close(); } catch (_) {}
+      }
+      micStream = null;
+      micCtx = null;
+      micSource = null;
+      micAnalyser = null;
+      micData = null;
+      micFreqData = null;
+      micState.noiseFloor = 0.010;
+      micState.peak = 0.080;
+    }
+
+    function getMicrophoneLevel() {
+      if (!micAnalyser || !micData) return 0;
+      micAnalyser.getByteTimeDomainData(micData);
+      let sum = 0;
+      for (let i = 0; i < micData.length; i++) {
+        const sample = (micData[i] - 128) / 128;
+        sum += sample * sample;
+      }
+      const rms = Math.sqrt(sum / micData.length);
+      const quietTarget = rms < micState.noiseFloor * 1.5 ? rms : micState.noiseFloor;
+      micState.noiseFloor = micState.noiseFloor * 0.986 + quietTarget * 0.014;
+      micState.peak = Math.max(rms, micState.peak * 0.986);
+      const span = Math.max(0.006, micState.peak - micState.noiseFloor);
+      const rmsNorm = clamp((rms - micState.noiseFloor) / span, 0, 1);
+
+      let spectral = 0;
+      if (micFreqData) {
+        micAnalyser.getByteFrequencyData(micFreqData);
+        const end = Math.min(96, micFreqData.length);
+        if (end > 3) {
+          let acc = 0;
+          for (let i = 2; i < end; i++) acc += micFreqData[i];
+          spectral = acc / ((end - 2) * 255);
+        }
+      }
+
+      return clamp(rmsNorm * 0.62 + spectral * 0.78, 0, 1);
+    }
+
+    function getSimulatedSpeechLevel(time) {
+      const phrase = Math.max(0, Math.sin(time * 4.1 + Math.sin(time * 0.6) * 0.8));
+      const syllable = Math.max(0, Math.sin(time * 11.8 + 1.1));
+      const chatter = Math.max(0, Math.sin(time * 19.6 + 0.9)) * 0.45;
+      const breaths = Math.max(0, Math.sin(time * 0.85)) * 0.22;
+      return clamp(phrase * 0.52 + syllable * 0.29 + chatter * 0.15 + breaths * 0.12, 0, 1);
+    }
+
+    function makeParticles(count = 240) {
+      const list = [];
+      for (let i = 0; i < count; i++) {
+        list.push({
+          seed: Math.random() * 1000,
+          angle: Math.random() * TAU,
+          radius: Math.pow(Math.random(), 0.56),
+          size: 0.2 + Math.random() * 1.4,
+          tw: 0.2 + Math.random() * 1.6,
+          drift: (Math.random() - 0.5) * 0.18
+        });
+      }
+      return list;
+    }
+
+    function makeFogClouds(count = 160) {
+      const clouds = [];
+      for (let i = 0; i < count; i++) {
+        clouds.push({
+          angle: Math.random() * TAU,
+          radial: Math.pow(Math.random(), 0.62),
+          size: 0.08 + Math.random() * 0.46,
+          drift: (Math.random() - 0.5) * 0.08,
+          sway: 0.4 + Math.random() * 1.3,
+          seed: Math.random() * 1000,
+          tint: Math.random()
+        });
+      }
+      return clouds;
+    }
+
+    let particles = makeParticles();
+    let fogClouds = makeFogClouds();
+
+    function drawNebulaFog(target, cx, cy, orbR, time, drive) {
+      target.save();
+      target.globalCompositeOperation = "screen";
+      const d = Math.max(0, drive);
+      const audioBoost = 1 + d * 1.15;
+
+      for (const cl of fogClouds) {
+        const angle = cl.angle + time * (0.08 + cl.drift);
+        const radial = cl.radial * orbR * 0.97;
+        const x = cx + Math.cos(angle) * radial;
+        const y = cy + Math.sin(angle) * radial;
+        const pulse = 0.72 + Math.sin(time * cl.sway + cl.seed) * 0.28;
+        const r = orbR * cl.size * pulse * fog * audioBoost;
+
+        const g = target.createRadialGradient(x, y, r * 0.06, x, y, r);
+        const tint = cl.tint;
+        const innerColor = tint < 0.25
+          ? preset.halo
+          : tint < 0.55
+            ? preset.ringA
+            : tint < 0.85
+              ? preset.ringB
+              : preset.core;
+        g.addColorStop(0, rgba(innerColor, (0.22 + d * 0.20) * fog));
+        g.addColorStop(1, rgba(innerColor, 0));
+        target.fillStyle = g;
+        target.beginPath();
+        target.arc(x, y, r, 0, TAU);
+        target.fill();
+      }
+
+      target.restore();
+    }
+
+    function drawOrb(target, w, h, time, mode = "scene", drive = 0) {
+      const transparentCircle = mode === "transparent_circle";
+      const cx = w * 0.5;
+      const cy = h * 0.5;
+      const orbR = Math.min(w, h) * 0.365;
+      const d = Math.max(0, drive);
+      const energyFactor = 0.60 + energy * 0.80;
+      const boostedSpeed = speed * (0.68 + energy * 0.24 + d * 1.15);
+      const boostedDensity = density * energyFactor * (0.84 + d * 0.95);
+
+      target.clearRect(0, 0, w, h);
+
+      if (!transparentCircle) {
+        const bgGrad = target.createLinearGradient(0, 0, w, h);
+        bgGrad.addColorStop(0, preset.bg0);
+        bgGrad.addColorStop(1, preset.bg1);
+        target.fillStyle = bgGrad;
+        target.fillRect(0, 0, w, h);
+
+        const distant = [
+          [0.14, 0.20, 0.45, 0.24],
+          [0.83, 0.18, 0.40, 0.20],
+          [0.24, 0.82, 0.36, 0.13],
+          [0.76, 0.80, 0.42, 0.12],
+        ];
+        for (const d of distant) {
+          const gx = w * d[0];
+          const gy = h * d[1];
+          const rr = w * d[2];
+          const g = target.createRadialGradient(gx, gy, rr * 0.06, gx, gy, rr);
+          g.addColorStop(0, rgba(preset.halo, d[3]));
+          g.addColorStop(1, rgba(preset.halo, 0));
+          target.fillStyle = g;
+          target.beginPath();
+          target.arc(gx, gy, rr, 0, TAU);
+          target.fill();
+        }
+
+        const haloLayers = [
+          [1.72, 0.56],
+          [1.34, 0.42],
+          [1.00, 0.30],
+        ];
+        target.globalCompositeOperation = "screen";
+        for (const hLayer of haloLayers) {
+          const halo = target.createRadialGradient(cx, cy, orbR * 0.08, cx, cy, orbR * hLayer[0]);
+          halo.addColorStop(0, rgba(preset.halo, hLayer[1]));
+          halo.addColorStop(1, rgba(preset.halo, 0));
+          target.fillStyle = halo;
+          target.beginPath();
+          target.arc(cx, cy, orbR * hLayer[0], 0, TAU);
+          target.fill();
+        }
+      }
+
+      target.save();
+      target.globalCompositeOperation = "source-over";
+      target.beginPath();
+      target.arc(cx, cy, orbR, 0, TAU);
+      target.clip();
+
+      const coreShadow = target.createRadialGradient(cx, cy, orbR * 0.02, cx, cy, orbR * 1.05);
+      coreShadow.addColorStop(0, "rgba(0,0,0,0.02)");
+      coreShadow.addColorStop(0.48, "rgba(8,10,14,0.30)");
+      coreShadow.addColorStop(1, "rgba(0,0,0,0.88)");
+      target.fillStyle = coreShadow;
+      target.fillRect(cx - orbR, cy - orbR, orbR * 2, orbR * 2);
+
+      const t = time * boostedSpeed;
+
+      drawNebulaFog(target, cx, cy, orbR, t, d * (0.60 + energy * 0.35));
+
+      // No ribbon traces: cloud/plasma motion only.
+
+      // No internal ring traces.
+
+      target.save();
+      target.globalCompositeOperation = "lighter";
+      const count = Math.floor(180 * boostedDensity);
+      for (let i = 0; i < count; i++) {
+        const p = particles[i % particles.length];
+        const particleDrive = 1 + d * 2.1;
+        const angle = p.angle + t * (0.2 + p.drift) * particleDrive;
+        const rad = p.radius * orbR * 0.98;
+        const x = cx + Math.cos(angle) * rad;
+        const y = cy + Math.sin(angle) * rad;
+        const tw = 0.25 + Math.sin(t * p.tw + p.seed) * 0.35 + 0.35;
+        const burst = 1 + d * (0.75 + energy * 0.55);
+        const s = (p.size * orbR * 0.009) * (0.68 + tw * 0.62) * burst;
+        target.fillStyle = i % 3 === 0
+          ? rgba("#ffffff", Math.min(1, tw * (0.50 + d * 0.55)))
+          : rgba(preset.ringB, Math.min(1, tw * (0.70 + d * 0.60)));
+        target.beginPath();
+        target.arc(x, y, s, 0, TAU);
+        target.fill();
+      }
+      target.restore();
+
+      const nucleusRadius = orbR * (0.42 + energy * 0.05 + d * 0.10);
+      const nucleus = target.createRadialGradient(cx, cy, orbR * 0.01, cx, cy, nucleusRadius);
+      nucleus.addColorStop(0, rgba(preset.core, Math.min(1, 0.68 + d * 0.18)));
+      nucleus.addColorStop(0.18, rgba(preset.ringB, Math.min(1, 0.48 + d * 0.24)));
+      nucleus.addColorStop(0.42, rgba(preset.ringA, Math.min(1, 0.28 + d * 0.20)));
+      nucleus.addColorStop(1, rgba(preset.ringA, 0));
+      target.globalCompositeOperation = "screen";
+      target.fillStyle = nucleus;
+      target.beginPath();
+      target.arc(cx, cy, nucleusRadius, 0, TAU);
+      target.fill();
+
+      target.restore();
+
+      if (transparentCircle) {
+        target.globalCompositeOperation = "source-over";
+        target.strokeStyle = rgba(preset.ringB, 0.96);
+        target.shadowBlur = 0;
+        target.lineWidth = orbR * 0.024;
+        target.beginPath();
+        target.arc(cx, cy, orbR * 0.988, 0, TAU);
+        target.stroke();
+      } else {
+        target.globalCompositeOperation = "lighter";
+        target.strokeStyle = rgba(preset.ringB, 0.62);
+        target.shadowBlur = orbR * 0.11;
+        target.shadowColor = rgba(preset.ringB, 0.46);
+        target.lineWidth = orbR * 0.034;
+        target.beginPath();
+        target.arc(cx, cy, orbR * 1.01, 0, TAU);
+        target.stroke();
+        target.shadowBlur = 0;
+        target.globalCompositeOperation = "source-over";
+      }
+    }
+
+    function frame(ts) {
+      const dt = Math.max(0, Math.min((ts - lastTs) / 1000, 0.04));
+      lastTs = ts;
+      if (!paused) elapsed += dt;
+
+      let rawLevel = 0;
+      if (audioMode === "microphone") {
+        rawLevel = getMicrophoneLevel();
+      } else if (audioMode === "simulate") {
+        rawLevel = getSimulatedSpeechLevel(elapsed * Math.max(0.7, speed));
+      }
+      const gated = clamp((rawLevel - audioGate) * audioGain, 0, 1.25);
+      const shaped = Math.pow(gated, 0.74);
+      const influenced = clamp(shaped * audioInfluence, 0, 1.35);
+      const smoothing = influenced > audioLevel ? 0.58 : 0.18;
+      audioLevel = audioLevel + (influenced - audioLevel) * smoothing;
+      const levelEl = document.getElementById("audioLevelVal");
+      if (levelEl) levelEl.textContent = audioLevel.toFixed(2);
+      const rawEl = document.getElementById("micRawVal");
+      if (rawEl) rawEl.textContent = rawLevel.toFixed(2);
+
+      drawOrb(ctx, canvas.width, canvas.height, elapsed, exportMode, audioLevel);
+      requestAnimationFrame(frame);
+    }
+
+    function setPreset(key) {
+      const found = presets.find((p) => p.key === key);
+      if (!found) return;
+      preset = found;
+      fogClouds = makeFogClouds();
+      document.querySelectorAll(".presets button").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.key === key);
+      });
+    }
+
+    function exportPNG() {
+      const off = document.createElement("canvas");
+      off.width = 1024;
+      off.height = 1024;
+      const octx = off.getContext("2d");
+      drawOrb(octx, off.width, off.height, elapsed, exportMode, audioLevel);
+      const a = document.createElement("a");
+      a.href = off.toDataURL("image/png");
+      const suffix = exportMode === "transparent_circle" ? "transparent_circle" : "frame";
+      a.download = `joi_universe_${preset.key}_${suffix}.png`;
+      a.click();
+    }
+
+    function setExportMode(modeKey) {
+      exportMode = modeKey;
+      document.querySelectorAll(".export-mode-btn").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.mode === modeKey);
+      });
+      const wrap = document.querySelector(".canvas-wrap");
+      wrap.classList.toggle("transparent-mode", modeKey === "transparent_circle");
+    }
+
+    async function setAudioMode(modeKey) {
+      audioMode = modeKey;
+      document.querySelectorAll(".audio-mode-btn").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.audioMode === modeKey);
+      });
+
+      if (modeKey === "microphone") {
+        const ok = await startMicrophone();
+        if (!ok) {
+          audioMode = "manual";
+          audioLevel = 0;
+          document.querySelectorAll(".audio-mode-btn").forEach((btn) => {
+            btn.classList.toggle("active", btn.dataset.audioMode === "manual");
+          });
+          setMicStatus(
+            supportsMicrophone
+              ? `Fallback: ${micErrorText || "Mic unavailable"}`
+              : "Unavailable"
+          );
+        }
+      } else {
+        stopMicrophone();
+        if (modeKey === "manual") {
+          audioLevel = 0;
+          setMicStatus("Manual");
+        } else {
+          setMicStatus("Simulated");
+        }
+      }
+    }
+
+    function bindControls() {
+      const presetWrap = document.getElementById("presets");
+      presets.forEach((p, idx) => {
+        const btn = document.createElement("button");
+        btn.textContent = p.label;
+        btn.dataset.key = p.key;
+        if (idx === 0) btn.classList.add("active");
+        btn.addEventListener("click", () => setPreset(p.key));
+        presetWrap.appendChild(btn);
+      });
+      const exportModeWrap = document.getElementById("exportModes");
+      exportModeOptions.forEach((m, idx) => {
+        const btn = document.createElement("button");
+        btn.textContent = m.label;
+        btn.className = "export-mode-btn";
+        btn.dataset.mode = m.key;
+        if (idx === 0) btn.classList.add("active");
+        btn.addEventListener("click", () => setExportMode(m.key));
+        exportModeWrap.appendChild(btn);
+      });
+      const audioModeWrap = document.getElementById("audioModes");
+      audioModeOptions.forEach((m, idx) => {
+        const btn = document.createElement("button");
+        btn.textContent = m.label;
+        btn.className = "audio-mode-btn";
+        btn.dataset.audioMode = m.key;
+        if (idx === 0) btn.classList.add("active");
+        if (m.key === "microphone" && !supportsMicrophone) {
+          btn.disabled = true;
+          btn.title = "Microphone API not available in this browser.";
+        }
+        btn.addEventListener("click", () => {
+          void setAudioMode(m.key);
+        });
+        audioModeWrap.appendChild(btn);
+      });
+      if (!supportsMicrophone) {
+        setMicStatus("No browser support");
+      }
+
+      const energyEl = document.getElementById("energy");
+      const speedEl = document.getElementById("speed");
+      const densityEl = document.getElementById("density");
+      const fogEl = document.getElementById("fog");
+      const audioGainEl = document.getElementById("audioGain");
+      const audioGateEl = document.getElementById("audioGate");
+      const audioInfluenceEl = document.getElementById("audioInfluence");
+
+      const energyVal = document.getElementById("energyVal");
+      const speedVal = document.getElementById("speedVal");
+      const densityVal = document.getElementById("densityVal");
+      const fogVal = document.getElementById("fogVal");
+      const audioGainVal = document.getElementById("audioGainVal");
+      const audioGateVal = document.getElementById("audioGateVal");
+      const audioInfluenceVal = document.getElementById("audioInfluenceVal");
+
+      energyEl.addEventListener("input", () => {
+        energy = Number(energyEl.value);
+        energyVal.textContent = energy.toFixed(2);
+      });
+      speedEl.addEventListener("input", () => {
+        speed = Number(speedEl.value);
+        speedVal.textContent = speed.toFixed(2);
+      });
+      densityEl.addEventListener("input", () => {
+        density = Number(densityEl.value);
+        densityVal.textContent = density.toFixed(2);
+        particles = makeParticles(Math.floor(260 * density));
+      });
+      fogEl.addEventListener("input", () => {
+        fog = Number(fogEl.value);
+        fogVal.textContent = fog.toFixed(2);
+      });
+      audioGainEl.addEventListener("input", () => {
+        audioGain = Number(audioGainEl.value);
+        audioGainVal.textContent = audioGain.toFixed(2);
+      });
+      audioGateEl.addEventListener("input", () => {
+        audioGate = Number(audioGateEl.value);
+        audioGateVal.textContent = audioGate.toFixed(2);
+      });
+      audioInfluenceEl.addEventListener("input", () => {
+        audioInfluence = Number(audioInfluenceEl.value);
+        audioInfluenceVal.textContent = audioInfluence.toFixed(2);
+      });
+
+      document.getElementById("pauseBtn").addEventListener("click", () => {
+        paused = !paused;
+      });
+      document.getElementById("exportBtn").addEventListener("click", exportPNG);
+    }
+
+    function renderThumbs() {
+      const thumbs = document.getElementById("thumbs");
+      const files = [
+        "universe_orange_flare",
+        "universe_orange_pulse",
+        "universe_ember_core",
+        "universe_firestorm",
+        "universe_gold_holo",
+        "universe_siri_blue",
+        "universe_aurora_mix",
+        "universe_bw_luxe"
+      ];
+      files.forEach((name) => {
+        const div = document.createElement("div");
+        div.className = "thumb";
+        div.innerHTML = `<img src="png/${name}_256.png" alt="${name}" /><span>${name}</span>`;
+        thumbs.appendChild(div);
+      });
+    }
+
+    bindControls();
+    setExportMode(exportMode);
+    void setAudioMode(audioMode);
+    renderThumbs();
+    requestAnimationFrame(frame);
+    window.addEventListener("beforeunload", stopMicrophone);
+  </script>
+</body>
+</html>

@@ -8,8 +8,29 @@ const execFileAsync = promisify(execFile);
 const DB_PATH =
   "/Users/mm2/Library/Group Containers/JLMPQHK86H.com.culturedcode.ThingsMac/ThingsData-6J5JX/Things Database.thingsdatabase/main.sqlite";
 
+const MOJIBAKE_TOKENS = ["Ã¤", "Ã¶", "Ã¼", "Ã„", "Ã–", "Ãœ", "ÃŸ", "Â ", "â€™", "â€œ", "â€“", "â€”", "â€"] as const;
+
 function unixSecondsToDate(seconds: number): string {
   return new Date(seconds * 1000).toISOString();
+}
+
+function maybeRepairMojibake(input: string): string {
+  if (!MOJIBAKE_TOKENS.some((token) => input.includes(token))) return input;
+  try {
+    const repaired = Buffer.from(input, "latin1").toString("utf8");
+    const inputHits = MOJIBAKE_TOKENS.reduce((sum, token) => sum + (input.includes(token) ? 1 : 0), 0);
+    const repairedHits = MOJIBAKE_TOKENS.reduce((sum, token) => sum + (repaired.includes(token) ? 1 : 0), 0);
+    return repairedHits < inputHits ? repaired : input;
+  } catch {
+    return input;
+  }
+}
+
+function normalizeThingsText(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string") return maybeRepairMojibake(value).normalize("NFC");
+  if (Buffer.isBuffer(value)) return maybeRepairMojibake(value.toString("utf8")).normalize("NFC");
+  return maybeRepairMojibake(String(value)).normalize("NFC");
 }
 
 // Things3 stores startDate/deadline as bit-packed integers:
@@ -144,9 +165,10 @@ export function getActiveTasks(): ThingsTask[] {
 
     const tagMap = new Map<string, string[]>();
     for (const row of tagRows) {
+      const tagTitle = normalizeThingsText(row.tagTitle);
       const arr = tagMap.get(row.taskUuid);
-      if (arr) arr.push(row.tagTitle);
-      else tagMap.set(row.taskUuid, [row.tagTitle]);
+      if (arr) arr.push(tagTitle);
+      else tagMap.set(row.taskUuid, [tagTitle]);
     }
 
     const taskUuids = rows.map((r) => r.uuid as string);
@@ -154,14 +176,14 @@ export function getActiveTasks(): ThingsTask[] {
 
     return rows.map((r) => ({
       uuid: r.uuid,
-      title: r.title,
-      notes: r.notes || null,
+      title: normalizeThingsText(r.title),
+      notes: r.notes == null ? null : normalizeThingsText(r.notes),
       list: classifyList(r.start, r.startBucket, r.startDate),
       projectUuid: r.projectUuid || null,
-      projectTitle: r.projectTitle || null,
-      headingTitle: r.headingTitle || null,
+      projectTitle: r.projectTitle == null ? null : normalizeThingsText(r.projectTitle),
+      headingTitle: r.headingTitle == null ? null : normalizeThingsText(r.headingTitle),
       areaUuid: r.resolvedAreaUuid || null,
-      areaTitle: r.areaTitle || null,
+      areaTitle: r.areaTitle == null ? null : normalizeThingsText(r.areaTitle),
       tags: tagMap.get(r.uuid) || [],
       checklist: checklistMap.get(r.uuid) || [],
       startDate: r.startDate ? thingsPackedDateToString(r.startDate) : null,
@@ -180,7 +202,7 @@ export function getActiveTasks(): ThingsTask[] {
 export function getProjects(): ThingsProject[] {
   const db = openDb();
   try {
-    return db.prepare(`
+    const rows = db.prepare(`
       SELECT
         p.uuid, p.title, p.notes, p.area AS areaUuid, a.title AS areaTitle,
         (
@@ -195,7 +217,13 @@ export function getProjects(): ThingsProject[] {
         AND p.status = 0
         AND p.trashed = 0
       ORDER BY p."index" ASC
-    `).all() as ThingsProject[];
+    `).all() as Array<Omit<ThingsProject, "title" | "notes" | "areaTitle"> & { title: unknown; notes: unknown; areaTitle: unknown }>;
+    return rows.map((r) => ({
+      ...r,
+      title: normalizeThingsText(r.title),
+      notes: r.notes == null ? null : normalizeThingsText(r.notes),
+      areaTitle: r.areaTitle == null ? null : normalizeThingsText(r.areaTitle),
+    }));
   } finally {
     db.close();
   }
@@ -204,8 +232,8 @@ export function getProjects(): ThingsProject[] {
 export function getTags(): string[] {
   const db = openDb();
   try {
-    const rows = db.prepare(`SELECT title FROM TMTag ORDER BY title`).all() as { title: string }[];
-    return rows.map((r) => r.title);
+    const rows = db.prepare(`SELECT title FROM TMTag ORDER BY title`).all() as { title: unknown }[];
+    return rows.map((r) => normalizeThingsText(r.title));
   } finally {
     db.close();
   }
@@ -214,7 +242,8 @@ export function getTags(): string[] {
 export function getAreas(): ThingsArea[] {
   const db = openDb();
   try {
-    return db.prepare(`SELECT uuid, title FROM TMArea ORDER BY "index" ASC`).all() as ThingsArea[];
+    const rows = db.prepare(`SELECT uuid, title FROM TMArea ORDER BY "index" ASC`).all() as Array<{ uuid: string; title: unknown }>;
+    return rows.map((r) => ({ uuid: r.uuid, title: normalizeThingsText(r.title) }));
   } finally {
     db.close();
   }
@@ -242,9 +271,9 @@ export function getCompletedTasks(limit = 50): CompletedTask[] {
       LIMIT ?
     `).all(limit).map((r: any) => ({
       uuid: r.uuid,
-      title: r.title,
-      projectTitle: r.projectTitle || null,
-      areaTitle: r.areaTitle || null,
+      title: normalizeThingsText(r.title),
+      projectTitle: r.projectTitle == null ? null : normalizeThingsText(r.projectTitle),
+      areaTitle: r.areaTitle == null ? null : normalizeThingsText(r.areaTitle),
       completedAt: r.stopDate ? unixSecondsToDate(r.stopDate) : new Date().toISOString(),
     }));
   } finally {
@@ -275,9 +304,9 @@ export function getCompletedTasksByProject(projectUuid: string, limit = 100): Co
       LIMIT ?
     `).all(projectUuid, projectUuid, limit).map((r: any) => ({
       uuid: r.uuid,
-      title: r.title,
-      projectTitle: r.projectTitle || null,
-      areaTitle: r.areaTitle || null,
+      title: normalizeThingsText(r.title),
+      projectTitle: r.projectTitle == null ? null : normalizeThingsText(r.projectTitle),
+      areaTitle: r.areaTitle == null ? null : normalizeThingsText(r.areaTitle),
       completedAt: r.stopDate ? unixSecondsToDate(r.stopDate) : new Date().toISOString(),
     }));
   } finally {
@@ -297,7 +326,7 @@ function fetchChecklistItems(db: Database.Database, taskUuids: string[]): Map<st
   for (const row of rows) {
     const item: ChecklistItem = {
       uuid: row.uuid,
-      title: row.title,
+      title: normalizeThingsText(row.title),
       completed: row.status !== 0,
       index: row.index,
     };
@@ -459,12 +488,17 @@ export interface ProjectHeading {
 export function getProjectHeadings(projectUuid: string): ProjectHeading[] {
   const db = openDb();
   try {
-    return db.prepare(`
+    const rows = db.prepare(`
       SELECT uuid, title, project AS projectUuid
       FROM TMTask
       WHERE type = 2 AND project = ? AND trashed = 0
       ORDER BY "index" ASC
-    `).all(projectUuid) as ProjectHeading[];
+    `).all(projectUuid) as Array<{ uuid: string; title: unknown; projectUuid: string }>;
+    return rows.map((r) => ({
+      uuid: r.uuid,
+      title: normalizeThingsText(r.title),
+      projectUuid: r.projectUuid,
+    }));
   } finally {
     db.close();
   }
@@ -523,10 +557,15 @@ export function getAllHeadingsForProjects(): Map<string, ProjectHeading[]> {
       FROM TMTask
       WHERE type = 2 AND trashed = 0 AND status = 0
       ORDER BY "index" ASC
-    `).all() as ProjectHeading[];
+    `).all() as Array<{ uuid: string; title: unknown; projectUuid: string }>;
+    const normalizedRows: ProjectHeading[] = rows.map((r) => ({
+      uuid: r.uuid,
+      title: normalizeThingsText(r.title),
+      projectUuid: r.projectUuid,
+    }));
 
     const map = new Map<string, ProjectHeading[]>();
-    for (const h of rows) {
+    for (const h of normalizedRows) {
       const arr = map.get(h.projectUuid);
       if (arr) arr.push(h);
       else map.set(h.projectUuid, [h]);

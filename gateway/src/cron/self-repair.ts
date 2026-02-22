@@ -2,9 +2,12 @@
 // Periodically checks health of all JOI services, analyzes logs for errors,
 // attempts self-repair (restart), creates Things3 tasks, and notifies via Telegram.
 
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import fs from "node:fs";
 import { promisify } from "node:util";
 import http from "node:http";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { query } from "../db/client.js";
 import { createTask } from "../things/client.js";
 import type { JoiConfig } from "../config/schema.js";
@@ -39,6 +42,14 @@ interface SelfRepairReport {
   logIssues: LogIssue[];
   repairs: RepairAction[];
   overallStatus: "healthy" | "degraded" | "down";
+}
+
+interface WatchdogSupervisorState {
+  running: boolean;
+  autoRestartEnabled: boolean;
+  freshStatus: boolean;
+  managing: boolean;
+  detail: string;
 }
 
 // ── Health Checks ──
@@ -121,7 +132,92 @@ async function analyzeRecentLogs(minutesBack = 15): Promise<LogIssue[]> {
 
 // ── Repair Actions ──
 
-const PROJECT_ROOT = new URL("../../../../", import.meta.url).pathname.replace(/\/$/, "");
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const PROJECT_ROOT = path.resolve(MODULE_DIR, "../../..");
+const WATCHDOG_PID_FILE = "/tmp/joi-watchdog.pid";
+const WATCHDOG_STATUS_FILE = "/tmp/joi-watchdog.json";
+const WATCHDOG_AUTORESTART_FILE = "/tmp/joi-watchdog.enabled";
+const WATCHDOG_STATUS_STALE_MS = 90_000;
+
+function parseWatchdogAutoRestart(raw: string): boolean | null {
+  const value = raw.trim().toLowerCase();
+  if (!value) return null;
+  if (["1", "true", "yes", "on", "enabled"].includes(value)) return true;
+  if (["0", "false", "no", "off", "disabled"].includes(value)) return false;
+  return null;
+}
+
+function readWatchdogAutoRestartEnabled(): boolean {
+  try {
+    const raw = fs.readFileSync(WATCHDOG_AUTORESTART_FILE, "utf-8");
+    const parsed = parseWatchdogAutoRestart(raw);
+    return parsed ?? true;
+  } catch {
+    return true;
+  }
+}
+
+function readWatchdogPid(): number | null {
+  try {
+    const raw = fs.readFileSync(WATCHDOG_PID_FILE, "utf-8").trim();
+    const pid = Number(raw);
+    if (!Number.isFinite(pid) || pid <= 0) return null;
+    return pid;
+  } catch {
+    return null;
+  }
+}
+
+function isWatchdogPidRunning(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+
+  try {
+    const cmd = execFileSync("ps", ["-p", String(pid), "-o", "command="], {
+      encoding: "utf-8",
+    }).trim();
+    return /(^|[\\/ ])watchdog\.sh(\s|$)/.test(cmd);
+  } catch {
+    return false;
+  }
+}
+
+function isWatchdogStatusFresh(): boolean {
+  try {
+    const stats = fs.statSync(WATCHDOG_STATUS_FILE);
+    return Date.now() - stats.mtimeMs < WATCHDOG_STATUS_STALE_MS;
+  } catch {
+    return false;
+  }
+}
+
+function getWatchdogSupervisorState(): WatchdogSupervisorState {
+  const autoRestartEnabled = readWatchdogAutoRestartEnabled();
+  const pid = readWatchdogPid();
+  const running = pid !== null && isWatchdogPidRunning(pid);
+  const freshStatus = isWatchdogStatusFresh();
+  const managing = running && autoRestartEnabled && freshStatus;
+
+  const detail = !running
+    ? "not running"
+    : !autoRestartEnabled
+      ? "running with auto-restart paused"
+      : freshStatus
+        ? `active (pid ${pid})`
+        : "running but status stale";
+
+  return {
+    running,
+    autoRestartEnabled,
+    freshStatus,
+    managing,
+    detail,
+  };
+}
 
 async function restartService(name: string, script: string): Promise<RepairAction> {
   try {
@@ -254,12 +350,15 @@ export async function runSelfRepair(config: JoiConfig): Promise<void> {
   console.log("[SelfRepair] Starting health check...");
   const timestamp = new Date().toISOString();
 
+  const watchdogSupervisor = getWatchdogSupervisorState();
+  console.log(`[SelfRepair] Watchdog supervisor: ${watchdogSupervisor.detail}`);
+
   // 1. Run health checks
   const services: ServiceCheck[] = await Promise.all([
     checkHttp("Gateway API", 3100, "/health"),
     checkHttp("Web Dev Server", 5173, "/"),
-    checkProcess("LiveKit Worker", "livekit-worker"),
-    checkProcess("AutoDev Worker", "autodev/worker"),
+    checkProcess("LiveKit Worker", `${PROJECT_ROOT}/infra/livekit-worker`),
+    checkProcess("AutoDev Worker", `${PROJECT_ROOT}/gateway.*autodev/worker`),
     checkDatabase(),
   ]);
 
@@ -284,6 +383,18 @@ export async function runSelfRepair(config: JoiConfig): Promise<void> {
   for (const svc of downServices) {
     const script = serviceRestartMap[svc.name];
     if (script) {
+      const watchdogManagedService = svc.name === "Web Dev Server"
+        || svc.name === "LiveKit Worker"
+        || svc.name === "AutoDev Worker";
+      if (watchdogSupervisor.managing && watchdogManagedService) {
+        repairs.push({
+          service: svc.name,
+          action: "restart_skipped_watchdog_active",
+          success: true,
+          detail: "Skipped restart because watchdog auto-restart is active",
+        });
+        continue;
+      }
       const result = await restartService(svc.name, script);
       repairs.push(result);
     }

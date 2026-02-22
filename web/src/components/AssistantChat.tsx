@@ -4,6 +4,7 @@ import type { ConnectionStatus, Frame } from "../hooks/useWebSocket";
 import { useVoiceSession, type VoiceTranscript } from "../hooks/useVoiceSession";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import JoiOrb from "./JoiOrb";
 
 type AssistantMode = "closed" | "modal" | "docked";
 
@@ -150,6 +151,14 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
     }
   }, [isStreaming, messages.length, mode, historyOpen, fetchConversations]);
 
+  // Auto-start voice globally (including closed bubble mode).
+  useEffect(() => {
+    if (ws.status !== "connected") return;
+    if (voice.state !== "idle") return;
+    if (voice.error) return;
+    void voice.connect();
+  }, [ws.status, voice.state, voice.error, voice.connect]);
+
   // Auto-scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -222,6 +231,7 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
             durationMs: tc.durationMs,
           })),
         } : {}),
+        ...(m.plannedSteps?.length ? { plannedSteps: m.plannedSteps } : {}),
         ...(m.usage ? { usage: m.usage } : {}),
         ...(m.costUsd ? { costUsd: m.costUsd } : {}),
         ...(m.latencyMs ? { latencyMs: m.latencyMs } : {}),
@@ -233,13 +243,28 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
     });
   }, [conversationId, chatMode, messages]);
 
+  const handleVoiceMuteToggle = useCallback(() => {
+    if (voice.state === "idle") {
+      void voice.connect();
+      return;
+    }
+    void voice.toggleMute();
+  }, [voice.state, voice.connect, voice.toggleMute]);
+
   // ── Bubble ──
   if (mode === "closed") {
+    const bubbleActive = voice.state !== "idle" && !voice.isMuted && !voice.error;
+    const bubbleIntensity = Math.max(voice.audioLevel, voice.agentAudioLevel, bubbleActive ? 0.30 : 0.08);
     return (
       <button className="assistant-bubble" onClick={() => setMode("modal")} title="Chat with JOI">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-        </svg>
+        <JoiOrb
+          size={32}
+          active={bubbleActive}
+          intensity={bubbleIntensity}
+          variant={bubbleActive ? "firestorm" : "transparent"}
+          rings={3}
+          ariaLabel="JOI"
+        />
       </button>
     );
   }
@@ -248,7 +273,15 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
     <div className="assistant-messages">
       {messages.length === 0 && (
         <div className="assistant-welcome">
-          <img src="/joi-avatar.jpg" alt="JOI" className="assistant-welcome-avatar" />
+          <JoiOrb
+            className="assistant-welcome-avatar"
+            size={48}
+            active={voice.state !== "idle" && !voice.isMuted}
+            intensity={Math.max(voice.audioLevel, voice.agentAudioLevel, 0.10)}
+            variant={(voice.state !== "idle" && !voice.error && !voice.isMuted) ? "firestorm" : "transparent"}
+            rings={3}
+            ariaLabel="JOI"
+          />
           <p className="assistant-welcome-text">How can I help you?</p>
         </div>
       )}
@@ -286,6 +319,22 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
         ? voiceStatus
         : "Personal Assistant";
 
+  const voiceOrbActive = voice.state !== "idle" && !voice.error && !voice.isMuted;
+  const voiceOrbIntensity = (() => {
+    const level = Math.max(voice.audioLevel, voice.agentAudioLevel);
+    if (voice.state === "idle") return 0.10;
+    switch (voice.activity) {
+      case "agentSpeaking":
+        return Math.max(level, 0.54);
+      case "processing":
+        return Math.max(level, 0.42);
+      case "listening":
+        return Math.max(level, 0.36);
+      default:
+        return Math.max(level, 0.30);
+    }
+  })();
+
   const composeArea = (
     <form className="assistant-compose" onSubmit={handleSubmit}>
       <textarea
@@ -310,7 +359,15 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
       <div className="assistant-modal">
         <div className="assistant-modal-header">
           <div className="assistant-header-left">
-            <img src="/joi-avatar.jpg" alt="JOI" className="assistant-header-avatar" />
+            <JoiOrb
+              className="assistant-header-avatar"
+              size={24}
+              active={voiceOrbActive}
+              intensity={voiceOrbIntensity}
+              variant={voiceOrbActive ? "firestorm" : "transparent"}
+              rings={2}
+              ariaLabel="JOI"
+            />
             <div className="assistant-header-title-wrap">
               <span className="assistant-header-title">JOI</span>
               <span className={`assistant-header-subtitle${voice.state !== "idle" ? " assistant-header-subtitle--live" : ""}`}>
@@ -324,39 +381,25 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
                 {debugCopied ? "ok" : "dbg"}
               </button>
             )}
-            {voice.state !== "idle" && (
-              <button
-                onClick={voice.toggleMute}
-                title={voice.isMuted ? "Unmute" : "Mute"}
-                className={`assistant-header-btn${voice.isMuted ? " assistant-header-btn--active" : ""}`}
-                disabled={voice.state === "connecting" || voice.activity === "waitingForAgent"}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  {voice.isMuted ? (
-                    <>
-                      <line x1="1" y1="1" x2="23" y2="23" />
-                      <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
-                      <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17" />
-                    </>
-                  ) : (
-                    <>
-                      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                    </>
-                  )}
-                </svg>
-              </button>
-            )}
             <button
-              onClick={() => voice.state === "idle" ? voice.connect() : voice.disconnect()}
-              title={voice.state === "idle" ? "Start voice" : "End voice"}
-              className={`assistant-header-btn${voice.state === "connected" ? " assistant-header-btn--active" : ""}`}
-              disabled={ws.status !== "connected"}
+              onClick={handleVoiceMuteToggle}
+              title={voice.state === "idle" ? "Reconnect voice" : (voice.isMuted ? "Unmute mic + speaker" : "Mute mic + speaker")}
+              className={`assistant-header-btn${voice.isMuted ? " assistant-header-btn--active" : ""}`}
+              disabled={ws.status !== "connected" || voice.state === "connecting"}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                <line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" />
+                {voice.isMuted ? (
+                  <>
+                    <line x1="1" y1="1" x2="23" y2="23" />
+                    <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
+                    <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17" />
+                  </>
+                ) : (
+                  <>
+                    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                  </>
+                )}
               </svg>
             </button>
             <button onClick={() => setMode("docked")} title="Dock to side" className="assistant-header-btn">
@@ -379,7 +422,15 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
       <div className="assistant-docked-chat">
         <div className="assistant-docked-header">
           <div className="assistant-header-left">
-            <img src="/joi-avatar.jpg" alt="JOI" className="assistant-docked-avatar" />
+            <JoiOrb
+              className="assistant-docked-avatar"
+              size={32}
+              active={voiceOrbActive}
+              intensity={voiceOrbIntensity}
+              variant={voiceOrbActive ? "firestorm" : "transparent"}
+              rings={2}
+              ariaLabel="JOI"
+            />
             <div>
               <span className="assistant-docked-name">JOI</span>
               <span className={`assistant-docked-subtitle${voice.state !== "idle" ? " assistant-docked-subtitle--live" : ""}`}>
@@ -403,39 +454,26 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
               </svg>
             </button>
             <button
-              onClick={() => voice.state === "idle" ? voice.connect() : voice.disconnect()}
-              title={voice.state === "idle" ? "Start voice" : "End voice"}
-              className={`assistant-header-btn${voice.state === "connected" ? " assistant-header-btn--active" : ""}`}
+              onClick={handleVoiceMuteToggle}
+              title={voice.state === "idle" ? "Reconnect voice" : (voice.isMuted ? "Unmute mic + speaker" : "Mute mic + speaker")}
+              className={`assistant-header-btn${voice.isMuted ? " assistant-header-btn--active" : ""}`}
+              disabled={ws.status !== "connected" || voice.state === "connecting"}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                <line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" />
+                {voice.isMuted ? (
+                  <>
+                    <line x1="1" y1="1" x2="23" y2="23" />
+                    <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
+                    <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17" />
+                  </>
+                ) : (
+                  <>
+                    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                  </>
+                )}
               </svg>
             </button>
-            {voice.state !== "idle" && (
-              <button
-                onClick={voice.toggleMute}
-                title={voice.isMuted ? "Unmute" : "Mute"}
-                className={`assistant-header-btn${voice.isMuted ? " assistant-header-btn--active" : ""}`}
-                disabled={voice.state === "connecting" || voice.activity === "waitingForAgent"}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  {voice.isMuted ? (
-                    <>
-                      <line x1="1" y1="1" x2="23" y2="23" />
-                      <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
-                      <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17" />
-                    </>
-                  ) : (
-                    <>
-                      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                    </>
-                  )}
-                </svg>
-              </button>
-            )}
             <button onClick={() => newConversation()} title="New conversation" className="assistant-header-btn">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
@@ -525,12 +563,22 @@ function AssistantMessageBubble({ message }: { message: ChatMessage }) {
   const filler = getToolAwareFiller(message);
   const hasTextContent = message.content.trim().length > 0;
   const hasToolCalls = Boolean(message.toolCalls?.length);
+  const hasPlannedSteps = Boolean(message.plannedSteps?.length);
   const inlineToolBadges = hasToolCalls && !hasTextContent;
 
   return (
     <div className="assistant-msg assistant">
       <div className={`assistant-msg-avatar-row${inlineToolBadges ? " assistant-msg-avatar-row--inline-tools" : ""}`}>
-        <img src="/joi-avatar.jpg" alt="JOI" className="assistant-msg-avatar" />
+        <JoiOrb
+          className="assistant-msg-avatar"
+          size={18}
+          active={Boolean(message.isStreaming)}
+          intensity={message.isStreaming ? 0.44 : 0.14}
+          variant={message.isStreaming ? "firestorm" : "transparent"}
+          rings={2}
+          animated={Boolean(message.isStreaming)}
+          ariaLabel="JOI"
+        />
         {message.isStreaming && message.streamStartedAt && (
           <ElapsedTimer startedAt={message.streamStartedAt} />
         )}
@@ -560,6 +608,9 @@ function AssistantMessageBubble({ message }: { message: ChatMessage }) {
           ))}
         </div>
       )}
+      {(hasToolCalls || hasPlannedSteps) && (
+        <AssistantToolChecklist toolCalls={message.toolCalls || []} plannedSteps={message.plannedSteps} />
+      )}
       {!message.isStreaming && (hasTextContent || hasToolCalls) && (
         <AssistantMsgMeta message={message} />
       )}
@@ -575,11 +626,69 @@ function LiveTranscriptBubble({ transcript }: { transcript: VoiceTranscript }) {
   );
 }
 
+function AssistantToolChecklist({ toolCalls, plannedSteps }: { toolCalls: ToolCall[]; plannedSteps?: string[] }) {
+  const normalizedPlan = (plannedSteps || [])
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const total = Math.max(normalizedPlan.length, toolCalls.length);
+  if (total === 0) return null;
+
+  const checklist = Array.from({ length: total }, (_, index) => {
+    const tc = toolCalls[index];
+    const name = normalizedPlan[index] || (tc ? formatToolName(tc.name) : `Step ${index + 1}`);
+    if (!tc) {
+      return { id: `plan-${index}`, name, status: "pending" as const, durationMs: null };
+    }
+    const status = tc.error ? "error" : tc.result === undefined ? "pending" : "done";
+    return { id: tc.id, name, status, durationMs: tc.durationMs ?? null };
+  });
+
+  const failed = checklist.filter((item) => item.status === "error").length;
+  const pending = checklist.filter((item) => item.status === "pending").length;
+
+  const title = pending > 0
+    ? `Working checklist · ${pending} remaining`
+    : failed > 0
+      ? `Checklist finished · ${failed} failed`
+      : "Checklist complete";
+
+  return (
+    <div className="assistant-tool-checklist">
+      <div className="assistant-tool-checklist-title">{title}</div>
+      <ul className="assistant-tool-checklist-list">
+        {checklist.map((item) => {
+          return (
+            <li key={item.id} className={`assistant-tool-checklist-item ${item.status}`}>
+              <span className={`assistant-tool-checklist-icon ${item.status}`} />
+              <span className="assistant-tool-checklist-name">{item.name}</span>
+              {item.durationMs != null && (
+                <span className="assistant-tool-checklist-time">{formatDuration(item.durationMs)}</span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function AssistantMsgMeta({ message }: { message: ChatMessage }) {
   const parts: string[] = [];
 
-  if (message.latencyMs) {
-    // Show TTFT → total if both available, otherwise just total
+  if (message.timings) {
+    // Show timing breakdown — only phases >10ms to reduce noise
+    const t = message.timings;
+    const phases: string[] = [];
+    if (t.setupMs > 10) phases.push(`setup ${formatDuration(t.setupMs)}`);
+    if (t.memoryMs > 10) phases.push(`mem ${formatDuration(t.memoryMs)}`);
+    if (t.promptMs > 10) phases.push(`prompt ${formatDuration(t.promptMs)}`);
+    if (t.historyMs > 10) phases.push(`hist ${formatDuration(t.historyMs)}`);
+    if (t.llmMs > 10) phases.push(`llm ${formatDuration(t.llmMs)}`);
+    if (message.ttftMs) phases.push(`ttft ${formatDuration(message.ttftMs)}`);
+    phases.push(`${formatDuration(t.totalMs)} total`);
+    parts.push(phases.join(" · "));
+  } else if (message.latencyMs) {
+    // Fallback: show TTFT → total if both available, otherwise just total
     if (message.ttftMs) {
       parts.push(`${formatDuration(message.ttftMs)} ttft · ${formatDuration(message.latencyMs)} total`);
     } else {

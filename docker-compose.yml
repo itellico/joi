@@ -1,0 +1,59 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: joi-postgres
+    restart: unless-stopped
+    profiles: ["local-infra"]
+    environment:
+      POSTGRES_USER: joi
+      POSTGRES_PASSWORD: joi
+      POSTGRES_DB: joi
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U joi"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: joi-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    # On macOS with Apple Silicon, Ollama runs better natively
+    # Uncomment below if running natively instead:
+    # profiles: ["docker-ollama"]
+
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: joi-livekit
+    restart: unless-stopped
+    ports:
+      - "7880:7880"
+      - "7882:7882"
+      - "50000-50100:50000-50100/udp"
+    volumes:
+      - ./infra/livekit.yaml:/etc/livekit.yaml
+    command: --config /etc/livekit.yaml
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    profiles: ["local-infra"]
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+
+volumes:
+  pgdata:
+  ollama_data:
+  redis_data:

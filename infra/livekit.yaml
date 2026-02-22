@@ -1,0 +1,15 @@
+port: 7880
+bind_addresses:
+  - "0.0.0.0"
+
+# API key/secret pair for authentication
+keys:
+  joi-api-key: joi-api-secret-that-is-at-least-32-chars
+
+rtc:
+  use_external_ip: false
+  port_range_start: 50000
+  port_range_end: 50100
+
+logging:
+  level: info

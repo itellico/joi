@@ -20,6 +20,7 @@ import type { MemoryArea, MemorySource } from "../knowledge/types.js";
 import { embed } from "../knowledge/embeddings.js";
 import { createJob, listJobs, deleteJob, toggleJob } from "../cron/scheduler.js";
 import { queryLogs } from "../logging.js";
+import { buildScopeFilterSql, resolveAllowedScopes } from "../access/scope.js";
 import { getAccountingToolHandlers, getAccountingToolDefinitions } from "../accounting/tools.js";
 import { getCalendarToolHandlers, getCalendarToolDefinitions } from "../google/calendar-tools.js";
 import { getGmailToolHandlers, getGmailToolDefinitions } from "../google/gmail-tools.js";
@@ -35,6 +36,7 @@ import { getSkillScoutToolHandlers, getSkillScoutToolDefinitions } from "../skil
 import { getKnowledgeSyncToolHandlers, getKnowledgeSyncToolDefinitions } from "../knowledge/sync-tools.js";
 import { getStoreToolHandlers, getStoreToolDefinitions } from "../store/tools.js";
 import { getOKRToolHandlers, getOKRToolDefinitions } from "../okr/tools.js";
+import { getSSHToolHandlers, getSSHToolDefinitions } from "../ssh/tools.js";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -45,6 +47,12 @@ export interface ToolContext {
   conversationId: string;
   agentId: string;
   agentConfig?: Record<string, unknown>;
+  scope?: string;
+  scopeMetadata?: Record<string, unknown>;
+  allowedScopes?: string[] | null;
+  allowGlobalDataAccess?: boolean;
+  companyId?: string;
+  contactId?: string;
   depth?: number;
   maxDepth?: number;
   spawnAgent?: (opts: {
@@ -58,6 +66,15 @@ export interface ToolContext {
 type ToolHandler = (input: unknown, ctx: ToolContext) => Promise<unknown>;
 
 const toolRegistry = new Map<string, ToolHandler>();
+const TOOL_CLAUDE_TIMEOUT_MS = readTimeoutFromEnv("JOI_TOOL_CLAUDE_TIMEOUT_MS", 20 * 60 * 1000);
+
+function readTimeoutFromEnv(name: string, fallbackMs: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallbackMs;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallbackMs;
+  return Math.floor(parsed);
+}
 
 // ─── Contact enrichment: auto-update contact records when identity memories mention people ───
 
@@ -140,6 +157,12 @@ toolRegistry.set("memory_search", async (input, ctx) => {
   };
 
   if (isMem0Enabled(ctx.config)) {
+    const allowedScopes = resolveAllowedScopes({
+      scope: ctx.scope,
+      allowedScopes: ctx.allowedScopes,
+      allowGlobalDataAccess: ctx.allowGlobalDataAccess,
+    });
+    const tenantScope = ctx.allowGlobalDataAccess ? undefined : (ctx.scope || allowedScopes?.[0]);
     const hits = await searchMem0(
       ctx.config,
       searchQuery,
@@ -148,6 +171,9 @@ toolRegistry.set("memory_search", async (input, ctx) => {
         limit: limit || 10,
         agentId: ctx.agentId,
         runId: ctx.conversationId,
+        tenantScope,
+        companyId: ctx.allowGlobalDataAccess ? undefined : ctx.companyId,
+        contactId: ctx.allowGlobalDataAccess ? undefined : ctx.contactId,
       },
     );
 
@@ -249,6 +275,12 @@ toolRegistry.set("memory_store", async (input, ctx) => {
   }
 
   if (isMem0Enabled(ctx.config)) {
+    const allowedScopes = resolveAllowedScopes({
+      scope: ctx.scope,
+      allowedScopes: ctx.allowedScopes,
+      allowGlobalDataAccess: ctx.allowGlobalDataAccess,
+    });
+    const tenantScope = ctx.allowGlobalDataAccess ? undefined : (ctx.scope || allowedScopes?.[0]);
     const mem0 = await storeMemoryInMem0(ctx.config, {
       content,
       area: targetArea,
@@ -258,6 +290,9 @@ toolRegistry.set("memory_store", async (input, ctx) => {
       source: source as MemorySource,
       conversationId: ctx.conversationId,
       agentId: ctx.agentId,
+      tenantScope,
+      companyId: ctx.allowGlobalDataAccess ? undefined : ctx.companyId,
+      contactId: ctx.allowGlobalDataAccess ? undefined : ctx.contactId,
     });
 
     if (mem0) {
@@ -369,6 +404,11 @@ toolRegistry.set("document_search", async (input, ctx) => {
   };
 
   const maxResults = limit || 8;
+  const allowedScopes = resolveAllowedScopes({
+    scope: ctx.scope,
+    allowedScopes: ctx.allowedScopes,
+    allowGlobalDataAccess: ctx.allowGlobalDataAccess,
+  });
 
   // Try hybrid: vector + FTS
   let queryEmbedding: number[] | null = null;
@@ -393,6 +433,11 @@ toolRegistry.set("document_search", async (input, ctx) => {
       : "";
     if (source) params.push(source);
 
+    const scopeFilter = allowedScopes
+      ? `AND ${buildScopeFilterSql("d.metadata->>'scope'", paramIdx++)}`
+      : "";
+    if (allowedScopes) params.push(allowedScopes);
+
     params.push(maxResults);
     const limitParam = paramIdx++;
 
@@ -409,6 +454,7 @@ toolRegistry.set("document_search", async (input, ctx) => {
       WHERE (c.fts @@ websearch_to_tsquery('english', $${queryParam})
              OR (c.embedding IS NOT NULL AND 1 - (c.embedding <=> $${embeddingParam}::vector) > 0.3))
         ${sourceFilter}
+        ${scopeFilter}
       ORDER BY
         (CASE WHEN c.embedding IS NOT NULL
           THEN 1 - (c.embedding <=> $${embeddingParam}::vector)
@@ -427,6 +473,11 @@ toolRegistry.set("document_search", async (input, ctx) => {
       : "";
     if (source) params.push(source);
 
+    const scopeFilter = allowedScopes
+      ? `AND ${buildScopeFilterSql("d.metadata->>'scope'", paramIdx++)}`
+      : "";
+    if (allowedScopes) params.push(allowedScopes);
+
     params.push(maxResults);
     const limitParam = paramIdx++;
 
@@ -439,6 +490,7 @@ toolRegistry.set("document_search", async (input, ctx) => {
       JOIN documents d ON d.id = c.document_id
       WHERE c.fts @@ websearch_to_tsquery('english', $${queryParam})
         ${sourceFilter}
+        ${scopeFilter}
       ORDER BY text_score DESC
       LIMIT $${limitParam}
     `;
@@ -822,7 +874,7 @@ toolRegistry.set("run_claude_code", async (input, ctx) => {
       userMessage: prompt,
       cwd: effectiveCwd,
       model: effectiveModel,
-      timeoutMs: 600_000, // 10 minutes for coding tasks
+      timeoutMs: TOOL_CLAUDE_TIMEOUT_MS,
     });
 
     return {
@@ -907,6 +959,11 @@ for (const [name, handler] of getStoreToolHandlers()) {
 
 // Register OKR tools into main registry
 for (const [name, handler] of getOKRToolHandlers()) {
+  toolRegistry.set(name, handler);
+}
+
+// Register SSH/DevOps tools into main registry
+for (const [name, handler] of getSSHToolHandlers()) {
   toolRegistry.set(name, handler);
 }
 
@@ -1314,6 +1371,7 @@ export function getToolDefinitions(allowedSkills?: string[] | null): Anthropic.T
     ...getKnowledgeSyncToolDefinitions(),
     ...getStoreToolDefinitions(),
     ...getOKRToolDefinitions(),
+    ...getSSHToolDefinitions(),
   ];
 
   // No filter = return everything (personal JOI agent)
