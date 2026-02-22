@@ -1343,6 +1343,15 @@ function TaskRow({ task, onComplete, onUpdate, isCompleting, isEditing, onStartE
   const [openPicker, setOpenPicker] = useState<"when" | "tags" | "deadline" | null>(null);
   const [expanded, setExpanded] = useState(false);
   const titleRef = useRef<HTMLInputElement>(null);
+  const notesTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-resize textarea to fit content
+  const autoResizeNotes = useCallback(() => {
+    const el = notesTextareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.max(el.scrollHeight, 60) + "px";
+  }, []);
   const toolbarRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -1354,9 +1363,9 @@ function TaskRow({ task, onComplete, onUpdate, isCompleting, isEditing, onStartE
       setEditDeadline(undefined);
       setNewChecklistItem("");
       setOpenPicker(null);
-      setTimeout(() => titleRef.current?.focus(), 50);
+      setTimeout(() => { titleRef.current?.focus(); autoResizeNotes(); }, 50);
     }
-  }, [isEditing, task.title, task.notes, task.tags]);
+  }, [isEditing, task.title, task.notes, task.tags, autoResizeNotes]);
 
   const handleSave = () => {
     const opts: UpdateOpts = {};
@@ -1393,7 +1402,7 @@ function TaskRow({ task, onComplete, onUpdate, isCompleting, isEditing, onStartE
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) handleSave(); if (e.key === "Escape") onCancelEdit(); }}
             placeholder="New To-Do" />
         </div>
-        <textarea className="t3-edit-notes" value={editNotes} onChange={(e) => setEditNotes(e.target.value)} placeholder="Notes" rows={3} />
+        <textarea ref={notesTextareaRef} className="t3-edit-notes" value={editNotes} onChange={(e) => { setEditNotes(e.target.value); autoResizeNotes(); }} placeholder="Notes" rows={3} />
 
         {/* Checklist */}
         <div className="t3-edit-checklist">
@@ -1529,7 +1538,7 @@ function TaskRow({ task, onComplete, onUpdate, isCompleting, isEditing, onStartE
         {expanded && (
           <div className="t3-row-detail" onClick={(e) => e.stopPropagation()}>
             {hasNotes && (
-              <div className="t3-row-notes-preview">{task.notes!.slice(0, 200)}{task.notes!.length > 200 ? "..." : ""}</div>
+              <div className="t3-row-notes-preview">{task.notes}</div>
             )}
             {task.checklist.length > 0 && (
               <div className="t3-row-checklist">

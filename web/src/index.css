@@ -3362,6 +3362,8 @@ code {
   font-family: inherit;
   line-height: 1.5;
   box-sizing: border-box;
+  overflow: hidden;
+  min-height: 60px;
 }
 
 .t3-edit-notes::placeholder { color: var(--t3-text-faint); }
@@ -4869,6 +4871,77 @@ select.t3-dialog-input {
   border-top-color: transparent;
   border-radius: 50%;
   animation: spin 0.6s linear infinite;
+}
+
+.chat-tool-checklist {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+}
+
+.chat-tool-checklist-title {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.chat-tool-checklist-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.chat-tool-checklist-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.chat-tool-checklist-item.done {
+  color: var(--text-muted);
+}
+
+.chat-tool-checklist-item.error {
+  color: var(--error);
+}
+
+.chat-tool-checklist-icon {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.chat-tool-checklist-icon.done {
+  background: var(--success);
+}
+
+.chat-tool-checklist-icon.error {
+  background: var(--error);
+}
+
+.chat-tool-checklist-icon.pending {
+  background: var(--warning);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.chat-tool-checklist-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-tool-checklist-time {
+  margin-left: auto;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
 }
 
 .chat-msg-meta {
@@ -6574,6 +6647,77 @@ select.t3-dialog-input {
   border-top-color: transparent;
   border-radius: 50%;
   animation: spin 0.6s linear infinite;
+}
+
+.assistant-tool-checklist {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+}
+
+.assistant-tool-checklist-title {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.assistant-tool-checklist-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.assistant-tool-checklist-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.assistant-tool-checklist-item.done {
+  color: var(--text-muted);
+}
+
+.assistant-tool-checklist-item.error {
+  color: var(--error);
+}
+
+.assistant-tool-checklist-icon {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.assistant-tool-checklist-icon.done {
+  background: var(--success);
+}
+
+.assistant-tool-checklist-icon.error {
+  background: var(--error);
+}
+
+.assistant-tool-checklist-icon.pending {
+  background: var(--warning);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.assistant-tool-checklist-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.assistant-tool-checklist-time {
+  margin-left: auto;
+  font-size: 9px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
 }
 
 /* Compose area (shared between modal + sidebar) */
