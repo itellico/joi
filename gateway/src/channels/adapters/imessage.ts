@@ -12,6 +12,7 @@ import type {
   ChannelStatusInfo,
   ChannelStatus,
 } from "../types.js";
+import { checkPermission } from "../../apple/permission-guard.js";
 
 const execFileAsync = promisify(execFile);
 const CHAT_DB = join(homedir(), "Library/Messages/chat.db");
@@ -163,6 +164,15 @@ export function createIMessageAdapter(channelId: string): ChannelAdapter {
     async connect(_config) {
       status = "connecting";
       adapter.onStatusChange?.(adapter.getStatus());
+
+      // Check macOS permission before probing (avoids repeated system dialogs)
+      const hasPermission = await checkPermission("messages");
+      if (!hasPermission) {
+        status = "error";
+        errorMsg = "Messages permission denied. Grant Automation access in System Settings > Privacy & Security.";
+        adapter.onStatusChange?.(adapter.getStatus());
+        throw new Error(errorMsg);
+      }
 
       // Verify we can read the Messages database
       try {

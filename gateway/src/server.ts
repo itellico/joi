@@ -55,6 +55,7 @@ import { createIssuesFromRun, listIssues, updateIssue, pushToAutodev } from "./q
 import { generatePromptCandidate, abTestPrompt, submitForReview, activatePromptVersion } from "./quality/optimizer.js";
 import type { QATestSuite, QATestCase, QATestRun, QATestResult, QAIssue, QAStats } from "./quality/types.js";
 import { getAllHeartbeats, getHeartbeat, createTask as createAgentTask, updateTask as updateAgentTask, listTasks as listAgentTasks } from "./agent/heartbeat.js";
+import { getPermissionStates, resetPermission } from "./apple/permission-guard.js";
 
 const config = loadConfig();
 
@@ -1260,6 +1261,21 @@ Rules:
 });
 
 // ─── Agent Heartbeat & Task API ───
+
+// ─── macOS Permission Status ───
+
+app.get("/api/system/permissions", (_req, res) => {
+  res.json(getPermissionStates());
+});
+
+app.post("/api/system/permissions/:resource/reset", (req, res) => {
+  const resource = req.params.resource as "contacts" | "messages" | "things";
+  if (!["contacts", "messages", "things"].includes(resource)) {
+    return res.status(400).json({ error: "Invalid resource" });
+  }
+  resetPermission(resource);
+  res.json({ ok: true, message: `Permission for ${resource} reset — will re-check on next access` });
+});
 
 app.get("/api/agents/heartbeats", async (_req, res) => {
   try {

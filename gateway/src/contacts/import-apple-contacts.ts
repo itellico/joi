@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import Database from "better-sqlite3";
 import { query } from "../db/client.js";
+import { checkPermission } from "../apple/permission-guard.js";
 
 interface AppleContact {
   id: string;
@@ -84,6 +85,13 @@ export async function importAppleContacts(): Promise<{
   companies: number;
   notes: number;
 }> {
+  // Check macOS permission before spawning the binary (avoids repeated system dialogs)
+  const hasPermission = await checkPermission("contacts");
+  if (!hasPermission) {
+    console.log("[Import] Skipping Apple Contacts import — permission denied. Grant access in System Settings > Privacy & Security.");
+    return { imported: 0, companies: 0, notes: 0 };
+  }
+
   // 1. Run the Swift binary to get contacts JSON
   const binPath = path.resolve(
     import.meta.dirname ?? process.cwd(),

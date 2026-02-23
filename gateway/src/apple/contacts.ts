@@ -2,6 +2,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { withPermission } from "./permission-guard.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -60,125 +61,137 @@ const CONTACT_FIELDS = `{
 }`;
 
 export async function searchContacts(searchTerm: string): Promise<Contact[]> {
-  const escaped = searchTerm.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-  // Use Apple's native .whose() predicates for name/org (indexed and fast).
-  // For email/phone, use bulk property access to scan without per-contact bridge calls.
-  const script = `
-    const app = Application("Contacts");
-    const term = '${escaped}';
-    const termLower = term.toLowerCase();
-    var ids = {};
-    var results = [];
-    function addContact(p) {
-      if (results.length >= 20) return;
-      var pid = p.id();
-      if (ids[pid]) return;
-      ids[pid] = true;
-      results.push(${CONTACT_FIELDS});
-    }
-    function addList(list) {
-      for (var i = 0; i < list.length && results.length < 20; i++) {
-        addContact(list[i]);
+  return await withPermission("contacts", async () => {
+    const escaped = searchTerm.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    // Use Apple's native .whose() predicates for name/org (indexed and fast).
+    // For email/phone, use bulk property access to scan without per-contact bridge calls.
+    const script = `
+      const app = Application("Contacts");
+      const term = '${escaped}';
+      const termLower = term.toLowerCase();
+      var ids = {};
+      var results = [];
+      function addContact(p) {
+        if (results.length >= 20) return;
+        var pid = p.id();
+        if (ids[pid]) return;
+        ids[pid] = true;
+        results.push(${CONTACT_FIELDS});
       }
-    }
-    // Fast indexed searches via .whose()
-    try { addList(app.people.whose({ name: { _contains: term } })()); } catch(e) {}
-    try { addList(app.people.whose({ organization: { _contains: term } })()); } catch(e) {}
-    // If we still need more, use bulk property access for email/phone search
-    if (results.length < 5) {
-      var allEmails = app.people.emails.value();
-      var allPhones = app.people.phones.value();
-      var allIds = app.people.id();
-      var matchIndices = [];
-      for (var i = 0; i < allEmails.length && matchIndices.length < 20; i++) {
-        if (ids[allIds[i]]) continue;
-        var em = allEmails[i];
-        for (var j = 0; j < em.length; j++) {
-          if (em[j].toLowerCase().indexOf(termLower) !== -1) { matchIndices.push(i); break; }
+      function addList(list) {
+        for (var i = 0; i < list.length && results.length < 20; i++) {
+          addContact(list[i]);
         }
       }
-      for (var i = 0; i < allPhones.length && matchIndices.length < 20; i++) {
-        if (ids[allIds[i]]) continue;
-        var ph = allPhones[i];
-        for (var j = 0; j < ph.length; j++) {
-          if (ph[j].indexOf(term) !== -1) { matchIndices.push(i); break; }
+      // Fast indexed searches via .whose()
+      try { addList(app.people.whose({ name: { _contains: term } })()); } catch(e) {}
+      try { addList(app.people.whose({ organization: { _contains: term } })()); } catch(e) {}
+      // If we still need more, use bulk property access for email/phone search
+      if (results.length < 5) {
+        var allEmails = app.people.emails.value();
+        var allPhones = app.people.phones.value();
+        var allIds = app.people.id();
+        var matchIndices = [];
+        for (var i = 0; i < allEmails.length && matchIndices.length < 20; i++) {
+          if (ids[allIds[i]]) continue;
+          var em = allEmails[i];
+          for (var j = 0; j < em.length; j++) {
+            if (em[j].toLowerCase().indexOf(termLower) !== -1) { matchIndices.push(i); break; }
+          }
+        }
+        for (var i = 0; i < allPhones.length && matchIndices.length < 20; i++) {
+          if (ids[allIds[i]]) continue;
+          var ph = allPhones[i];
+          for (var j = 0; j < ph.length; j++) {
+            if (ph[j].indexOf(term) !== -1) { matchIndices.push(i); break; }
+          }
+        }
+        // Fetch full details only for matched indices
+        var people = app.people();
+        for (var k = 0; k < matchIndices.length && results.length < 20; k++) {
+          var p = people[matchIndices[k]];
+          addContact(p);
         }
       }
-      // Fetch full details only for matched indices
-      var people = app.people();
-      for (var k = 0; k < matchIndices.length && results.length < 20; k++) {
-        var p = people[matchIndices[k]];
-        addContact(p);
-      }
-    }
-    JSON.stringify(results);
-  `;
-  const raw = await runJxa(script, 60000);
-  return raw.map(cleanContact);
+      JSON.stringify(results);
+    `;
+    const raw = await runJxa(script, 60000);
+    return raw.map(cleanContact);
+  }) ?? [];
 }
 
 export async function getContact(id: string): Promise<Contact | null> {
-  const escaped = id.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-  const script = `
-    const app = Application("Contacts");
-    const matches = app.people.whose({ id: '${escaped}' })();
-    if (matches.length === 0) { JSON.stringify(null); }
-    else {
-      const p = matches[0];
-      JSON.stringify(${CONTACT_FIELDS});
-    }
-  `;
-  const raw = await runJxa(script);
-  return raw ? cleanContact(raw) : null;
+  return await withPermission("contacts", async () => {
+    const escaped = id.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    const script = `
+      const app = Application("Contacts");
+      const matches = app.people.whose({ id: '${escaped}' })();
+      if (matches.length === 0) { JSON.stringify(null); }
+      else {
+        const p = matches[0];
+        JSON.stringify(${CONTACT_FIELDS});
+      }
+    `;
+    const raw = await runJxa(script);
+    return raw ? cleanContact(raw) : null;
+  }) ?? null;
 }
 
 export async function listContacts(limit = 50): Promise<Array<{ id: string; name: string; organization: string | null }>> {
-  // Use bulk property access — much faster than iterating individual contacts
-  const script = `
-    const app = Application("Contacts");
-    const names = app.people.name();
-    const orgs = app.people.organization();
-    const pids = app.people.id();
-    var results = [];
-    var len = Math.min(names.length, ${limit});
-    for (var i = 0; i < len; i++) {
-      results.push({ id: pids[i], name: names[i], organization: orgs[i] || null });
-    }
-    JSON.stringify(results);
-  `;
-  return runJxa(script);
+  return await withPermission("contacts", async () => {
+    // Use bulk property access — much faster than iterating individual contacts
+    const script = `
+      const app = Application("Contacts");
+      const names = app.people.name();
+      const orgs = app.people.organization();
+      const pids = app.people.id();
+      var results = [];
+      var len = Math.min(names.length, ${limit});
+      for (var i = 0; i < len; i++) {
+        results.push({ id: pids[i], name: names[i], organization: orgs[i] || null });
+      }
+      JSON.stringify(results);
+    `;
+    return runJxa(script);
+  }) ?? [];
 }
 
 export async function listGroups(): Promise<Array<{ id: string; name: string; count: number }>> {
-  const script = `
-    const app = Application("Contacts");
-    const groups = app.groups();
-    JSON.stringify(groups.map(function(g) {
-      return { id: g.id(), name: g.name(), count: g.people().length };
-    }));
-  `;
-  return runJxa(script);
+  return await withPermission("contacts", async () => {
+    const script = `
+      const app = Application("Contacts");
+      const groups = app.groups();
+      JSON.stringify(groups.map(function(g) {
+        return { id: g.id(), name: g.name(), count: g.people().length };
+      }));
+    `;
+    return runJxa(script);
+  }) ?? [];
 }
 
 export async function getGroupMembers(groupName: string, limit = 50): Promise<Contact[]> {
-  const escaped = groupName.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-  const script = `
-    const app = Application("Contacts");
-    const groups = app.groups.whose({ name: '${escaped}' })();
-    if (groups.length === 0) { JSON.stringify([]); }
-    else {
-      const members = groups[0].people();
-      JSON.stringify(members.slice(0, ${limit}).map(function(p) { return ${CONTACT_FIELDS}; }));
-    }
-  `;
-  const raw = await runJxa(script);
-  return raw.map(cleanContact);
+  return await withPermission("contacts", async () => {
+    const escaped = groupName.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    const script = `
+      const app = Application("Contacts");
+      const groups = app.groups.whose({ name: '${escaped}' })();
+      if (groups.length === 0) { JSON.stringify([]); }
+      else {
+        const members = groups[0].people();
+        JSON.stringify(members.slice(0, ${limit}).map(function(p) { return ${CONTACT_FIELDS}; }));
+      }
+    `;
+    const raw = await runJxa(script);
+    return raw.map(cleanContact);
+  }) ?? [];
 }
 
 export async function getContactCount(): Promise<number> {
-  const script = `
-    const app = Application("Contacts");
-    JSON.stringify(app.people().length);
-  `;
-  return runJxa(script);
+  return await withPermission("contacts", async () => {
+    const script = `
+      const app = Application("Contacts");
+      JSON.stringify(app.people().length);
+    `;
+    return runJxa(script);
+  }) ?? 0;
 }

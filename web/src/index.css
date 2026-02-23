@@ -5361,6 +5361,17 @@ select.t3-dialog-input {
   to { transform: rotate(360deg); }
 }
 
+.qa-spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--green);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  flex-shrink: 0;
+}
+
 /* Compose */
 
 .chat-widget-compose {

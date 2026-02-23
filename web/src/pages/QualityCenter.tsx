@@ -190,6 +190,7 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
   const [selectedRun, setSelectedRun] = useState<(TestRun & { results: TestResult[] }) | null>(null);
   const [expandedSuite, setExpandedSuite] = useState<string | null>(null);
   const [runningIds, setRunningIds] = useState<Set<string>>(new Set());
+  const [runProgress, setRunProgress] = useState<Record<string, { runId: string; suiteId: string; total: number; completed: number; currentCase: string; results: Array<{ caseName: string; status: string }> }>>({});
   const [issueFilter, setIssueFilter] = useState<string>("open");
   const [search, setSearch] = useState("");
 
@@ -241,9 +242,46 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
   useEffect(() => {
     if (!ws) return;
     const unsubs = [
-      ws.on("qa.run_started", () => { loadRuns(); loadStats(); }),
-      ws.on("qa.case_result", () => { if (selectedRun) loadRunDetail(selectedRun.id); }),
-      ws.on("qa.run_completed", () => { loadRuns(); loadStats(); loadSuites(); setRunningIds(new Set()); }),
+      ws.on("qa.run_started", (frame) => {
+        const d = frame.data as { runId: string; suiteId: string; suiteName: string; totalCases: number } | undefined;
+        if (d) {
+          setRunProgress((prev) => ({ ...prev, [d.suiteId]: { runId: d.runId, suiteId: d.suiteId, total: d.totalCases, completed: 0, currentCase: "Starting...", results: [] } }));
+          setRunningIds((prev) => new Set([...prev, d.suiteId]));
+        }
+        loadRuns(); loadStats();
+      }),
+      ws.on("qa.case_result", (frame) => {
+        const d = frame.data as { runId: string; caseName: string; status: string } | undefined;
+        if (d) {
+          setRunProgress((prev) => {
+            const updated = { ...prev };
+            for (const [suiteId, prog] of Object.entries(updated)) {
+              if (prog.runId === d.runId) {
+                updated[suiteId] = {
+                  ...prog,
+                  completed: prog.completed + 1,
+                  currentCase: d.caseName,
+                  results: [...prog.results, { caseName: d.caseName, status: d.status }],
+                };
+                break;
+              }
+            }
+            return updated;
+          });
+        }
+        if (selectedRun) loadRunDetail(selectedRun.id);
+      }),
+      ws.on("qa.run_completed", (frame) => {
+        const d = frame.data as { suiteId: string } | undefined;
+        if (d) {
+          setRunProgress((prev) => { const next = { ...prev }; delete next[d.suiteId]; return next; });
+          setRunningIds((prev) => { const next = new Set(prev); next.delete(d.suiteId); return next; });
+        } else {
+          setRunProgress({});
+          setRunningIds(new Set());
+        }
+        loadRuns(); loadStats(); loadSuites();
+      }),
       ws.on("qa.issue_created", () => { loadIssues(); loadStats(); }),
     ];
     return () => unsubs.forEach((fn) => fn());
@@ -396,8 +434,32 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
     { key: "cases", header: "Cases", render: (s) => s.case_count, width: 70, align: "center", sortValue: (s) => s.case_count },
     { key: "tags", header: "Tags", render: (s) => <Row gap={4}>{s.tags.map((t) => <Badge key={t} status="muted">{t}</Badge>)}</Row>, width: 200 },
     {
-      key: "last_run", header: "Last Run", width: 150,
-      render: (s) => s.last_run_at ? <Row gap={6}>{statusBadge(s.last_run_status || "\u2014")}<MetaText>{timeAgo(s.last_run_at)}</MetaText></Row> : <MetaText>never</MetaText>,
+      key: "last_run", header: "Status", width: 220,
+      render: (s) => {
+        const prog = runProgress[s.id];
+        if (prog) {
+          const pct = prog.total > 0 ? Math.round((prog.completed / prog.total) * 100) : 0;
+          const passCount = prog.results.filter((r) => r.status === "passed").length;
+          const failCount = prog.results.filter((r) => r.status !== "passed").length;
+          return (
+            <Stack gap={4} style={{ width: "100%" }}>
+              <Row gap={6} style={{ alignItems: "center" }}>
+                <span className="qa-spinner" />
+                <MetaText style={{ fontWeight: 600 }}>{prog.completed}/{prog.total} cases</MetaText>
+                {passCount > 0 && <span style={{ color: "var(--green)", fontSize: 12 }}>{passCount}P</span>}
+                {failCount > 0 && <span style={{ color: "var(--red)", fontSize: 12 }}>{failCount}F</span>}
+              </Row>
+              <div style={{ height: 4, borderRadius: 2, background: "var(--border)", overflow: "hidden" }}>
+                <div style={{ height: "100%", width: `${pct}%`, background: failCount > 0 ? "var(--orange)" : "var(--green)", borderRadius: 2, transition: "width 0.3s ease" }} />
+              </div>
+              <MetaText style={{ fontSize: 11 }}>{prog.currentCase}</MetaText>
+            </Stack>
+          );
+        }
+        return s.last_run_at
+          ? <Row gap={6}>{statusBadge(s.last_run_status || "\u2014")}<MetaText>{timeAgo(s.last_run_at)}</MetaText></Row>
+          : <MetaText>never run</MetaText>;
+      },
       sortValue: (s) => s.last_run_at || "",
     },
     {
@@ -420,7 +482,25 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
 
   const runColumns: UnifiedListColumn<TestRun>[] = [
     { key: "suite", header: "Suite", render: (r) => <strong>{r.suite_name}</strong>, sortValue: (r) => r.suite_name },
-    { key: "status", header: "Status", width: 100, render: (r) => statusBadge(r.status) },
+    {
+      key: "status", header: "Status", width: 140,
+      render: (r) => {
+        if (r.status === "running") {
+          // Find matching progress by runId
+          const prog = Object.values(runProgress).find((p) => p.runId === r.id);
+          if (prog) {
+            return (
+              <Row gap={6} style={{ alignItems: "center" }}>
+                <span className="qa-spinner" />
+                <MetaText style={{ fontWeight: 600 }}>{prog.completed}/{prog.total}</MetaText>
+              </Row>
+            );
+          }
+          return <Row gap={6}><span className="qa-spinner" /><MetaText>running</MetaText></Row>;
+        }
+        return statusBadge(r.status);
+      },
+    },
     { key: "triggered", header: "Trigger", width: 80, render: (r) => <MetaText>{r.triggered_by}</MetaText> },
     {
       key: "results", header: "Pass/Fail", width: 120,
@@ -488,8 +568,17 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
             </Card>
             <Card style={{ flex: 1, minWidth: 140, textAlign: "center" }}>
               <MetaText>Last Run</MetaText>
-              <div style={{ fontSize: 14 }}>{stats.last_run ? statusBadge(stats.last_run.status) : "\u2014"}</div>
-              {stats.last_run && <MetaText>{timeAgo(stats.last_run.started_at)}</MetaText>}
+              {stats.last_run ? (
+                <>
+                  <div style={{ fontSize: 14 }}>{statusBadge(stats.last_run.status)}</div>
+                  <div style={{ fontSize: 13, marginTop: 2 }}>
+                    <span style={{ color: "var(--green)" }}>{stats.last_run.passed}P</span>
+                    {" / "}
+                    <span style={{ color: stats.last_run.failed > 0 ? "var(--red)" : "inherit" }}>{stats.last_run.failed}F</span>
+                  </div>
+                  <MetaText>{timeAgo(stats.last_run.started_at)}</MetaText>
+                </>
+              ) : <div style={{ fontSize: 24, fontWeight: 700 }}>{"\u2014"}</div>}
             </Card>
           </Row>
         )}
