@@ -1078,6 +1078,34 @@ app.post("/api/voice/cache-metrics", async (req, res) => {
   }
 });
 
+// POST /api/voice/usage — ingest STT/TTS usage metrics from LiveKit worker
+app.post("/api/voice/usage", async (req, res) => {
+  try {
+    const { conversationId, agentId, provider, service, model, durationMs, characters } = req.body;
+    if (!provider || !service) {
+      res.status(400).json({ error: "provider and service required" });
+      return;
+    }
+    await query(
+      `INSERT INTO voice_usage_log (provider, service, model, duration_ms, characters, cost_usd, conversation_id, agent_id)
+       VALUES ($1, $2, $3, $4, $5, 0, $6, $7)`,
+      [
+        provider,
+        service,
+        model || null,
+        Math.round(durationMs || 0),
+        Math.round(characters || 0),
+        conversationId || null,
+        agentId || null,
+      ],
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.warn("[voice/usage] insert failed:", (err as Error).message);
+    res.status(500).json({ error: "Failed to store voice usage" });
+  }
+});
+
 // REST API: List conversations
 app.get("/api/conversations", async (req, res) => {
   try {
@@ -2497,6 +2525,8 @@ app.get("/api/reports/conversations/daily", async (req, res) => {
 
 // Cartesia TTS: 1 credit = 1 character. Startup plan: $49 / 1.25M credits
 const CARTESIA_COST_PER_CHAR = 49 / 1_250_000; // ~$0.0000392
+// DeepGram Nova-3 streaming: $0.0077/min
+const DEEPGRAM_COST_PER_MS = 0.0077 / 60_000; // ~$0.000000128/ms
 
 // GET /api/reports/voice/summary — voice usage totals
 app.get("/api/reports/voice/summary", async (req, res) => {
@@ -2531,16 +2561,20 @@ app.get("/api/reports/voice/summary", async (req, res) => {
     const cacheMissChars = Number(row.cache_miss_chars || 0);
     const ttsCacheCalls = Number(row.tts_cache_calls || 0);
     const ttsCacheTotalChars = Number(row.tts_cache_total_chars || 0);
-    // Estimate TTS cost from cache misses (only misses hit the Cartesia API)
+    const sttDurationMs = Number(row.stt_duration_ms || 0);
+    // Estimate costs from raw metrics when cost_usd is not recorded
     const estimatedTtsCost = cacheMissChars * CARTESIA_COST_PER_CHAR;
+    const estimatedSttCost = sttDurationMs * DEEPGRAM_COST_PER_MS;
     const directTtsCost = Number(row.tts_cost || 0);
     const directSttCost = Number(row.stt_cost || 0);
     const directTotalCost = Number(row.total_cost || 0);
+    const ttsCost = directTtsCost > 0 ? directTtsCost : estimatedTtsCost;
+    const sttCost = directSttCost > 0 ? directSttCost : estimatedSttCost;
     res.json({
       ...row,
-      // Use estimated cost when no direct cost is recorded
-      tts_cost: directTtsCost > 0 ? directTtsCost : estimatedTtsCost,
-      total_cost: directTotalCost > 0 ? directTotalCost : estimatedTtsCost + directSttCost,
+      tts_cost: ttsCost,
+      stt_cost: sttCost,
+      total_cost: directTotalCost > 0 ? directTotalCost : ttsCost + sttCost,
       // Include tts_cache data in totals when no direct tts rows exist
       total_calls: Number(row.total_calls || 0) || ttsCacheCalls,
       total_characters: Number(row.total_characters || 0) || ttsCacheTotalChars,
@@ -2561,19 +2595,27 @@ app.get("/api/reports/voice/daily", async (req, res) => {
   const days = Number(req.query.days) || 30;
   try {
     const result = await query(
-      `SELECT date_trunc('day', created_at)::date AS day,
-        service,
-        COUNT(*)::int AS calls,
-        COALESCE(SUM(cost_usd),0)::float AS cost,
-        COALESCE(SUM(duration_ms),0)::bigint AS duration_ms,
-        COALESCE(SUM(characters),0)::bigint AS characters
-       FROM voice_usage_log
-       WHERE service IN ('stt','tts') AND created_at >= CURRENT_DATE - $1::int
-       GROUP BY 1, 2
+      `SELECT day, service, calls,
+        CASE WHEN cost > 0 THEN cost
+             WHEN service = 'stt' THEN duration_ms * ${DEEPGRAM_COST_PER_MS}
+             WHEN service = 'tts' THEN characters * ${CARTESIA_COST_PER_CHAR}
+             ELSE 0 END::float AS cost,
+        duration_ms, characters
+       FROM (
+         SELECT date_trunc('day', created_at)::date AS day,
+           service,
+           COUNT(*)::int AS calls,
+           COALESCE(SUM(cost_usd),0)::float AS cost,
+           COALESCE(SUM(duration_ms),0)::bigint AS duration_ms,
+           COALESCE(SUM(characters),0)::bigint AS characters
+         FROM voice_usage_log
+         WHERE service IN ('stt','tts') AND created_at >= CURRENT_DATE - $1::int
+         GROUP BY 1, 2
+       ) direct_usage
 
        UNION ALL
 
-       -- Synthesize 'tts' rows from tts_cache data with estimated cost
+       -- Synthesize 'tts' rows from tts_cache data with estimated cost (cache misses only)
        SELECT date_trunc('day', created_at)::date AS day,
          'tts'::text AS service,
          COUNT(*)::int AS calls,

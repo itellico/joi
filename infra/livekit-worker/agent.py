@@ -573,6 +573,37 @@ def get_tts_cache() -> TwoLayerAudioCache:
     return _TTS_CACHE
 
 
+async def post_voice_usage(
+    *,
+    conversation_id: str,
+    agent_id: str,
+    provider: str,
+    service: str,
+    model: str,
+    duration_ms: int = 0,
+    characters: int = 0,
+) -> None:
+    """Post STT/TTS usage metrics to the gateway for cost tracking."""
+    payload = {
+        "conversationId": conversation_id,
+        "agentId": agent_id,
+        "provider": provider,
+        "service": service,
+        "model": model,
+        "durationMs": duration_ms,
+        "characters": characters,
+    }
+    timeout = aiohttp.ClientTimeout(total=1.0, sock_connect=0.4, sock_read=0.6)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(f"{GATEWAY_URL}/api/voice/usage", json=payload) as resp:
+                if resp.status >= 300:
+                    body = await resp.text()
+                    logger.warning(f"voice/usage failed status={resp.status}: {body[:160]}")
+    except Exception as e:
+        logger.warning(f"Failed posting voice usage: {type(e).__name__}: {e}")
+
+
 async def post_voice_cache_metrics(
     *,
     conversation_id: str,
@@ -1091,15 +1122,41 @@ async def entrypoint(ctx: agents.JobContext):
     session.on("error", lambda ev: logger.error(f"Session error: {ev.error}"))
     session.on("close", lambda ev: logger.info(f"Session closed: {ev.reason}"))
     stt.on("error", lambda ev: logger.error(f"STT error: {ev.error} (recoverable={ev.recoverable})"))
-    stt.on(
-        "metrics_collected",
-        lambda ev: logger.info(
+
+    def _on_stt_metrics(ev):
+        logger.info(
             "STT metrics: "
             f"audio_duration={ev.audio_duration:.2f}s, "
             f"streamed={ev.streamed}, "
             f"request_id={ev.request_id or '-'}"
-        ),
-    )
+        )
+        duration_ms = int(ev.audio_duration * 1000)
+        if duration_ms > 0:
+            asyncio.ensure_future(
+                post_voice_usage(
+                    conversation_id=conversation_id,
+                    agent_id=agent_id,
+                    provider="deepgram",
+                    service="stt",
+                    model=stt_model,
+                    duration_ms=duration_ms,
+                )
+            )
+
+    stt.on("metrics_collected", _on_stt_metrics)
+
+    def _on_tts_metrics(ev):
+        chars = getattr(ev, "characters_count", 0)
+        audio_dur = getattr(ev, "audio_duration", 0.0)
+        logger.info(
+            "TTS metrics: "
+            f"chars={chars}, "
+            f"audio_duration={audio_dur:.2f}s, "
+            f"ttfb={getattr(ev, 'ttfb', 0):.3f}s, "
+            f"request_id={getattr(ev, 'request_id', '-')}"
+        )
+
+    base_tts.on("metrics_collected", _on_tts_metrics)
 
     # Non-invasive room diagnostics (safe: does not consume media streams)
     @ctx.room.on("participant_connected")
