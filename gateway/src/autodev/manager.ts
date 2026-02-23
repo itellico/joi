@@ -247,9 +247,7 @@ export class AutoDevManager {
       }
     }
 
-    this.state = "picking";
     this.currentTask = null;
-    this.broadcastStatus();
 
     try {
       const allTasks = getActiveTasks();
@@ -261,6 +259,10 @@ export class AutoDevManager {
         this.schedulePoll();
         return;
       }
+
+      // Only show "picking" when there's actually a task to pick
+      this.state = "picking";
+      this.broadcastStatus();
 
       const task = this.queue.shift()!;
       this.currentTask = task;
