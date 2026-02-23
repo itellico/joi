@@ -57,6 +57,7 @@ interface TestCase {
   id: string;
   suite_id: string;
   name: string;
+  description: string | null;
   input_message: string;
   expected_tools: string[];
   unexpected_tools: string[];
@@ -525,24 +526,62 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
                           </Row>
                           {suite.cases.length === 0 && <MetaText>No test cases yet. Click "Add Case" to create one.</MetaText>}
                           {suite.cases.map((c) => (
-                            <Row key={c.id} gap={8} style={{ padding: "6px 0", borderBottom: "1px solid var(--border)", alignItems: "center" }}>
-                              <div style={{ flex: 1 }}>
-                                <strong>{c.name}</strong>
-                                {c.turns ? (
-                                  <MetaText> — {c.turn_count} turns</MetaText>
-                                ) : (
-                                  <MetaText> — "{c.input_message}"</MetaText>
-                                )}
-                              </div>
-                              {c.category !== "single-turn" && <Badge status="accent">{c.category}</Badge>}
-                              {c.expected_tools.length > 0 && (
-                                <Row gap={4}>{c.expected_tools.map((t) => <Badge key={t} status="info">{t}</Badge>)}</Row>
+                            <div key={c.id} style={{ borderBottom: "1px solid var(--border)", padding: "8px 0" }}>
+                              <Row gap={8} style={{ alignItems: "center" }}>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <strong>{c.name}</strong>
+                                  {c.turns
+                                    ? <MetaText> — {c.turn_count} turns</MetaText>
+                                    : <MetaText style={{ display: "inline", overflow: "hidden", textOverflow: "ellipsis" }}> — "{c.input_message}"</MetaText>
+                                  }
+                                </div>
+                                {c.category !== "single-turn" && <Badge status="accent">{c.category}</Badge>}
+                                {c.max_latency_ms && <MetaText>&lt;{c.max_latency_ms}ms</MetaText>}
+                                <Badge status={c.enabled ? "success" : "muted"}>{c.enabled ? "on" : "off"}</Badge>
+                                <Button size="sm" variant="ghost" onClick={() => openEditCase(c)}>Edit</Button>
+                                <Button size="sm" variant="danger" onClick={() => { if (confirm(`Delete case "${c.name}"?`)) deleteCase(c.id); }}>Del</Button>
+                              </Row>
+
+                              {/* Description */}
+                              {c.description && (
+                                <MetaText style={{ display: "block", marginTop: 4, paddingLeft: 2 }}>{c.description}</MetaText>
                               )}
-                              {c.max_latency_ms && <MetaText>&lt;{c.max_latency_ms}ms</MetaText>}
-                              <Badge status={c.enabled ? "success" : "muted"}>{c.enabled ? "on" : "off"}</Badge>
-                              <Button size="sm" variant="ghost" onClick={() => openEditCase(c)}>Edit</Button>
-                              <Button size="sm" variant="danger" onClick={() => { if (confirm(`Delete case "${c.name}"?`)) deleteCase(c.id); }}>Del</Button>
-                            </Row>
+
+                              {/* Expected tools */}
+                              {c.expected_tools.length > 0 && (
+                                <Row gap={4} style={{ marginTop: 4, flexWrap: "wrap" }}>
+                                  {c.expected_tools.map((t) => <Badge key={t} status="info">{t}</Badge>)}
+                                </Row>
+                              )}
+
+                              {/* Multi-turn: expandable turn list */}
+                              {c.turns && c.turns.length > 0 && (
+                                <details style={{ marginTop: 6 }}>
+                                  <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--text-secondary)" }}>
+                                    Show {c.turns.length} turns
+                                  </summary>
+                                  <Stack gap={2} style={{ marginTop: 4, paddingLeft: 8 }}>
+                                    {c.turns.map((turn, i) => (
+                                      <div key={i} style={{ fontSize: 13, padding: "3px 0", borderLeft: "2px solid var(--border)", paddingLeft: 8 }}>
+                                        <Row gap={6} style={{ flexWrap: "wrap" }}>
+                                          <span style={{ fontWeight: 600, color: "var(--text-secondary)", minWidth: 16 }}>{i + 1}.</span>
+                                          <span style={{ flex: 1, minWidth: 0 }}>{turn.message}</span>
+                                        </Row>
+                                        {turn.description && (
+                                          <MetaText style={{ display: "block", paddingLeft: 24, fontStyle: "italic" }}>{turn.description}</MetaText>
+                                        )}
+                                        {(turn.expected_tools?.length || turn.expected_content_patterns?.length) && (
+                                          <Row gap={4} style={{ paddingLeft: 24, marginTop: 2, flexWrap: "wrap" }}>
+                                            {turn.expected_tools?.map((t) => <Badge key={t} status="info">{t}</Badge>)}
+                                            {turn.expected_content_patterns?.map((p, j) => <Badge key={j} status="muted">/{p}/</Badge>)}
+                                          </Row>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </Stack>
+                                </details>
+                              )}
+                            </div>
                           ))}
                         </Stack>
                       </Card>
