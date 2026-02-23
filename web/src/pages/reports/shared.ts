@@ -4,6 +4,8 @@ export const PROVIDER_COLORS: Record<string, string> = {
   anthropic: "#d97706",
   openrouter: "#6366f1",
   ollama: "#22c55e",
+  deepgram: "#22d3ee",
+  cartesia: "#f472b6",
 };
 
 export const TASK_COLORS: Record<string, string> = {

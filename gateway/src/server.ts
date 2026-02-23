@@ -2495,6 +2495,9 @@ app.get("/api/reports/conversations/daily", async (req, res) => {
   }
 });
 
+// Cartesia TTS: 1 credit = 1 character. Startup plan: $49 / 1.25M credits
+const CARTESIA_COST_PER_CHAR = 49 / 1_250_000; // ~$0.0000392
+
 // GET /api/reports/voice/summary — voice usage totals
 app.get("/api/reports/voice/summary", async (req, res) => {
   const days = Number(req.query.days) || 30;
@@ -2509,6 +2512,8 @@ app.get("/api/reports/voice/summary", async (req, res) => {
         COALESCE(SUM(cost_usd) FILTER (WHERE service='tts'),0)::float AS tts_cost,
         COALESCE(SUM(duration_ms) FILTER (WHERE service='stt'),0)::bigint AS stt_duration_ms,
         COALESCE(SUM(characters) FILTER (WHERE service='tts'),0)::bigint AS tts_characters,
+        COUNT(*) FILTER (WHERE service='tts_cache')::int AS tts_cache_calls,
+        COALESCE(SUM(characters) FILTER (WHERE service='tts_cache'),0)::bigint AS tts_cache_total_chars,
         COALESCE(SUM((metadata->>'cache_hits')::int) FILTER (WHERE service='tts_cache'),0)::bigint AS cache_hits,
         COALESCE(SUM((metadata->>'cache_misses')::int) FILTER (WHERE service='tts_cache'),0)::bigint AS cache_misses,
         COALESCE(SUM((metadata->>'cache_hit_chars')::int) FILTER (WHERE service='tts_cache'),0)::bigint AS cache_hit_chars,
@@ -2523,8 +2528,22 @@ app.get("/api/reports/voice/summary", async (req, res) => {
     const cacheHits = Number(row.cache_hits || 0);
     const cacheMisses = Number(row.cache_misses || 0);
     const cacheTotal = cacheHits + cacheMisses;
+    const cacheMissChars = Number(row.cache_miss_chars || 0);
+    const ttsCacheCalls = Number(row.tts_cache_calls || 0);
+    const ttsCacheTotalChars = Number(row.tts_cache_total_chars || 0);
+    // Estimate TTS cost from cache misses (only misses hit the Cartesia API)
+    const estimatedTtsCost = cacheMissChars * CARTESIA_COST_PER_CHAR;
+    const directTtsCost = Number(row.tts_cost || 0);
+    const directSttCost = Number(row.stt_cost || 0);
+    const directTotalCost = Number(row.total_cost || 0);
     res.json({
       ...row,
+      // Use estimated cost when no direct cost is recorded
+      tts_cost: directTtsCost > 0 ? directTtsCost : estimatedTtsCost,
+      total_cost: directTotalCost > 0 ? directTotalCost : estimatedTtsCost + directSttCost,
+      // Include tts_cache data in totals when no direct tts rows exist
+      total_calls: Number(row.total_calls || 0) || ttsCacheCalls,
+      total_characters: Number(row.total_characters || 0) || ttsCacheTotalChars,
       cache_hit_rate: cacheTotal > 0 ? cacheHits / cacheTotal : 0,
     });
   } catch {
@@ -2551,6 +2570,19 @@ app.get("/api/reports/voice/daily", async (req, res) => {
        FROM voice_usage_log
        WHERE service IN ('stt','tts') AND created_at >= CURRENT_DATE - $1::int
        GROUP BY 1, 2
+
+       UNION ALL
+
+       -- Synthesize 'tts' rows from tts_cache data with estimated cost
+       SELECT date_trunc('day', created_at)::date AS day,
+         'tts'::text AS service,
+         COUNT(*)::int AS calls,
+         (COALESCE(SUM((metadata->>'cache_miss_chars')::int),0) * ${CARTESIA_COST_PER_CHAR})::float AS cost,
+         0::bigint AS duration_ms,
+         COALESCE(SUM(characters),0)::bigint AS characters
+       FROM voice_usage_log
+       WHERE service='tts_cache' AND created_at >= CURRENT_DATE - $1::int
+       GROUP BY 1
 
        UNION ALL
 

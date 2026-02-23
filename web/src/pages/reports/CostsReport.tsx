@@ -47,12 +47,28 @@ interface ModelRow {
   avg_latency_ms: number;
 }
 
+interface VoiceSummary {
+  total_cost: number;
+  stt_cost: number;
+  tts_cost: number;
+  total_calls: number;
+}
+
+interface VoiceDailyRow {
+  day: string;
+  service: string;
+  cost: number;
+  calls: number;
+}
+
 export default function CostsReport({ days }: { days: number }) {
   const [daily, setDaily] = useState<DailyCost[]>([]);
   const [tasks, setTasks] = useState<TaskCost[]>([]);
   const [agents, setAgents] = useState<AgentCost[]>([]);
   const [cumulative, setCumulative] = useState<CumulativeDay[]>([]);
   const [models, setModels] = useState<ModelRow[]>([]);
+  const [voiceSummary, setVoiceSummary] = useState<VoiceSummary | null>(null);
+  const [voiceDaily, setVoiceDaily] = useState<VoiceDailyRow[]>([]);
 
   useEffect(() => {
     fetch(`/api/reports/costs/daily?days=${days}`).then((r) => r.json()).then((d) => setDaily(d.daily || [])).catch(() => {});
@@ -60,23 +76,62 @@ export default function CostsReport({ days }: { days: number }) {
     fetch(`/api/reports/costs/by-agent?days=${days}`).then((r) => r.json()).then((d) => setAgents(d.agents || [])).catch(() => {});
     fetch(`/api/reports/costs/cumulative?days=${days}`).then((r) => r.json()).then((d) => setCumulative(d.cumulative || [])).catch(() => {});
     fetch(`/api/reports/costs/models?days=${days}`).then((r) => r.json()).then((d) => setModels(d.models || [])).catch(() => {});
+    fetch(`/api/reports/voice/summary?days=${days}`).then((r) => r.json()).then((d) => setVoiceSummary(d)).catch(() => {});
+    fetch(`/api/reports/voice/daily?days=${days}`).then((r) => r.json()).then((d) => setVoiceDaily(d.daily || [])).catch(() => {});
   }, [days]);
 
-  const totalCost = tasks.reduce((s, t) => s + t.cost, 0);
+  const llmCost = tasks.reduce((s, t) => s + t.cost, 0);
+  const voiceCost = voiceSummary?.total_cost ?? 0;
+  const totalCost = llmCost + voiceCost;
   const totalCalls = tasks.reduce((s, t) => s + t.calls, 0);
   const dailyAvg = cumulative.length > 0 ? totalCost / cumulative.length : 0;
   const costliestModel = models.length > 0 ? models[0] : null;
   const costliestAgent = agents.length > 0 ? agents[0] : null;
 
-  // Pivot daily data by provider for stacked area
+  // Pivot daily data by provider for stacked area (LLM + voice)
   const dailyByProvider = (() => {
     const byDay = new Map<string, Record<string, number | string>>();
+    const ensureDay = (day: string) => {
+      if (!byDay.has(day)) byDay.set(day, { day, anthropic: 0, openrouter: 0, ollama: 0, deepgram: 0, cartesia: 0 });
+      return byDay.get(day)!;
+    };
     for (const row of daily) {
-      if (!byDay.has(row.day)) byDay.set(row.day, { day: row.day, anthropic: 0, openrouter: 0, ollama: 0 });
-      const entry = byDay.get(row.day)!;
+      const entry = ensureDay(row.day);
       entry[row.provider] = Number(entry[row.provider] || 0) + row.cost;
     }
-    return Array.from(byDay.values());
+    for (const row of voiceDaily) {
+      if (row.service !== "stt" && row.service !== "tts") continue;
+      const provider = row.service === "stt" ? "deepgram" : "cartesia";
+      const entry = ensureDay(row.day);
+      entry[provider] = Number(entry[provider] || 0) + row.cost;
+    }
+    return Array.from(byDay.values()).sort((a, b) => String(a.day).localeCompare(String(b.day)));
+  })();
+
+  // Merge voice costs into cumulative data (client-side)
+  const cumulativeWithVoice = (() => {
+    if (!voiceDaily.length) return cumulative;
+    // Build a map of voice daily costs by day
+    const voiceByDay = new Map<string, number>();
+    for (const row of voiceDaily) {
+      if (row.service !== "stt" && row.service !== "tts") continue;
+      voiceByDay.set(row.day, (voiceByDay.get(row.day) ?? 0) + row.cost);
+    }
+    // Collect all days from both sources
+    const allDays = new Set<string>();
+    for (const row of cumulative) allDays.add(row.day);
+    for (const day of voiceByDay.keys()) allDays.add(day);
+    const sorted = Array.from(allDays).sort();
+    // Build a map of LLM daily costs
+    const llmByDay = new Map<string, number>();
+    for (const row of cumulative) llmByDay.set(row.day, row.daily_cost);
+    // Recalculate cumulative with both
+    let running = 0;
+    return sorted.map((day) => {
+      const dailyCost = (llmByDay.get(day) ?? 0) + (voiceByDay.get(day) ?? 0);
+      running += dailyCost;
+      return { day, daily_cost: dailyCost, cumulative_cost: running };
+    });
   })();
 
   return (
@@ -85,12 +140,16 @@ export default function CostsReport({ days }: { days: number }) {
         <Card className="stat-card ocean">
           <div className="label">Total Cost</div>
           <div className="value">{formatCost(totalCost)}</div>
-          <div className="label">{totalCalls.toLocaleString()} calls</div>
+          <div className="label">
+            {voiceCost > 0
+              ? `LLM ${formatCost(llmCost)} + Voice ${formatCost(voiceCost)}`
+              : `${totalCalls.toLocaleString()} calls`}
+          </div>
         </Card>
         <Card className="stat-card mint">
           <div className="label">Daily Average</div>
           <div className="value">{formatCost(dailyAvg)}</div>
-          <div className="label">over {cumulative.length} days</div>
+          <div className="label">over {cumulativeWithVoice.length} days</div>
         </Card>
         <Card className="stat-card amber">
           <div className="label">Costliest Model</div>
@@ -116,6 +175,8 @@ export default function CostsReport({ days }: { days: number }) {
               <Area type="monotone" dataKey="anthropic" stackId="1" fill="#d97706" stroke="#d97706" fillOpacity={0.4} name="Anthropic" />
               <Area type="monotone" dataKey="openrouter" stackId="1" fill="#6366f1" stroke="#6366f1" fillOpacity={0.4} name="OpenRouter" />
               <Area type="monotone" dataKey="ollama" stackId="1" fill="#22c55e" stroke="#22c55e" fillOpacity={0.4} name="Ollama" />
+              <Area type="monotone" dataKey="deepgram" stackId="1" fill="#22d3ee" stroke="#22d3ee" fillOpacity={0.4} name="Deepgram" />
+              <Area type="monotone" dataKey="cartesia" stackId="1" fill="#f472b6" stroke="#f472b6" fillOpacity={0.4} name="Cartesia" />
             </AreaChart>
           </ResponsiveContainer>
         </Card>
@@ -123,7 +184,7 @@ export default function CostsReport({ days }: { days: number }) {
         <Card>
           <SectionLabel>Cumulative Cost</SectionLabel>
           <ResponsiveContainer width="100%" height={220}>
-            <LineChart data={cumulative}>
+            <LineChart data={cumulativeWithVoice}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
               <XAxis dataKey="day" tick={{ fontSize: 10 }} stroke="var(--text-muted)" tickFormatter={formatDate} />
               <YAxis tick={{ fontSize: 10 }} stroke="var(--text-muted)" tickFormatter={(v) => formatCost(v)} />
