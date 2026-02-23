@@ -24,6 +24,7 @@ import Reports from "./pages/Reports";
 import AutoDev from "./pages/AutoDev";
 import Media from "./pages/Media";
 import QualityCenter from "./pages/QualityCenter";
+import AgentSocial from "./pages/AgentSocial";
 import AssistantChat from "./components/AssistantChat";
 import JoiOrb from "./components/JoiOrb";
 
@@ -135,6 +136,9 @@ function App() {
           </NavLink>
           <NavLink to="/agents">
             Agents
+          </NavLink>
+          <NavLink to="/agent-social">
+            Agent Social
           </NavLink>
           <NavLink to="/knowledge">
             Knowledge
@@ -315,6 +319,7 @@ function App() {
           <Route path="/contacts" element={<Contacts />} />
           <Route path="/contacts/:id" element={<ContactDetail />} />
           <Route path="/agents" element={<Agents />} />
+          <Route path="/agent-social" element={<AgentSocial />} />
           <Route path="/knowledge" element={<Knowledge />} />
           <Route path="/media" element={<Media />} />
           <Route path="/store" element={<Store />} />

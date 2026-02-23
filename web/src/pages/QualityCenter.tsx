@@ -34,6 +34,25 @@ interface Suite {
   cases?: TestCase[];
 }
 
+interface TurnDefinition {
+  role: string;
+  message: string;
+  expected_tools?: string[];
+  unexpected_tools?: string[];
+  expected_content_patterns?: string[];
+  description?: string;
+}
+
+interface TurnResult {
+  turn_index: number;
+  actual_content: string;
+  actual_tools: Array<{ name: string; input: unknown }>;
+  judge_scores: { correctness: number; tool_accuracy: number; response_quality: number; reasoning: string } | null;
+  rule_checks: { tools_ok: boolean; patterns_ok: boolean; latency_ok: boolean; details: string[] } | null;
+  latency_ms: number;
+  model: string | null;
+}
+
 interface TestCase {
   id: string;
   suite_id: string;
@@ -45,6 +64,9 @@ interface TestCase {
   max_latency_ms: number | null;
   min_quality_score: number;
   enabled: boolean;
+  turns: TurnDefinition[] | null;
+  turn_count: number;
+  category: string;
 }
 
 interface TestRun {
@@ -79,6 +101,9 @@ interface TestResult {
   latency_ms: number | null;
   cost_usd: number;
   model: string | null;
+  turn_results: TurnResult[] | null;
+  flow_coherence_score: number | null;
+  flow_reasoning: string | null;
 }
 
 interface Issue {
@@ -503,8 +528,13 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
                             <Row key={c.id} gap={8} style={{ padding: "6px 0", borderBottom: "1px solid var(--border)", alignItems: "center" }}>
                               <div style={{ flex: 1 }}>
                                 <strong>{c.name}</strong>
-                                <MetaText> — "{c.input_message}"</MetaText>
+                                {c.turns ? (
+                                  <MetaText> — {c.turn_count} turns</MetaText>
+                                ) : (
+                                  <MetaText> — "{c.input_message}"</MetaText>
+                                )}
                               </div>
+                              {c.category !== "single-turn" && <Badge status="accent">{c.category}</Badge>}
                               {c.expected_tools.length > 0 && (
                                 <Row gap={4}>{c.expected_tools.map((t) => <Badge key={t} status="info">{t}</Badge>)}</Row>
                               )}
@@ -552,6 +582,9 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
                               <MetaText>"{r.input_message}"</MetaText>
                               {r.latency_ms && <MetaText>{r.latency_ms}ms</MetaText>}
                               {r.model && <Badge status="muted">{r.model}</Badge>}
+                              {r.flow_coherence_score !== null && r.flow_coherence_score !== undefined && (
+                                <Badge status={scoreColor(r.flow_coherence_score)}>Flow: {pct(r.flow_coherence_score)}</Badge>
+                              )}
                             </Row>
 
                             {r.judge_scores && (
@@ -579,7 +612,51 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
                               <MetaText style={{ display: "block", marginTop: 4 }}>Judge: {r.judge_scores.reasoning}</MetaText>
                             )}
 
-                            {r.actual_content && (
+                            {/* Per-turn results accordion for multi-turn tests */}
+                            {r.turn_results && r.turn_results.length > 0 && (
+                              <details style={{ marginTop: 8 }}>
+                                <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--text-secondary)", fontWeight: 600 }}>
+                                  Per-Turn Results ({r.turn_results.length} turns)
+                                </summary>
+                                <Stack gap={6} style={{ marginTop: 6 }}>
+                                  {r.turn_results.map((tr) => (
+                                    <div key={tr.turn_index} style={{ padding: 8, background: "var(--bg-secondary)", borderRadius: 6, fontSize: 13 }}>
+                                      <Row gap={6} style={{ marginBottom: 4 }}>
+                                        <Badge status={tr.rule_checks?.tools_ok !== false && tr.rule_checks?.patterns_ok !== false ? "success" : "error"}>
+                                          Turn {tr.turn_index + 1}
+                                        </Badge>
+                                        <MetaText>{tr.latency_ms}ms</MetaText>
+                                        {tr.model && <MetaText>{tr.model}</MetaText>}
+                                      </Row>
+                                      {tr.judge_scores && (
+                                        <Row gap={6} style={{ marginBottom: 4 }}>
+                                          <Badge status={scoreColor(tr.judge_scores.correctness)}>C: {pct(tr.judge_scores.correctness)}</Badge>
+                                          <Badge status={scoreColor(tr.judge_scores.tool_accuracy)}>T: {pct(tr.judge_scores.tool_accuracy)}</Badge>
+                                          <Badge status={scoreColor(tr.judge_scores.response_quality)}>Q: {pct(tr.judge_scores.response_quality)}</Badge>
+                                        </Row>
+                                      )}
+                                      {tr.actual_tools.length > 0 && (
+                                        <Row gap={4} style={{ marginBottom: 4 }}>
+                                          {tr.actual_tools.map((t, i) => <Badge key={i} status="info">{t.name}</Badge>)}
+                                        </Row>
+                                      )}
+                                      {tr.rule_checks?.details && tr.rule_checks.details.length > 0 && (
+                                        <div style={{ color: "var(--red)", fontSize: 12 }}>
+                                          {tr.rule_checks.details.map((d, i) => <div key={i}>- {d}</div>)}
+                                        </div>
+                                      )}
+                                      <MetaText style={{ display: "block", marginTop: 2 }}>{tr.actual_content.slice(0, 300)}{tr.actual_content.length > 300 ? "..." : ""}</MetaText>
+                                    </div>
+                                  ))}
+                                </Stack>
+                              </details>
+                            )}
+
+                            {r.flow_reasoning && (
+                              <MetaText style={{ display: "block", marginTop: 4 }}>Flow: {r.flow_reasoning}</MetaText>
+                            )}
+
+                            {r.actual_content && !r.turn_results && (
                               <details style={{ marginTop: 6 }}>
                                 <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--text-secondary)" }}>Response preview</summary>
                                 <pre style={{ fontSize: 12, whiteSpace: "pre-wrap", maxHeight: 200, overflow: "auto", marginTop: 4, padding: 8, background: "var(--bg-secondary)", borderRadius: 6 }}>

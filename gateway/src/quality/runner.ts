@@ -3,7 +3,7 @@
 
 import { query } from "../db/client.js";
 import { runAgent, ensureConversation } from "../agent/runtime.js";
-import { evaluateResponse, runRuleChecks } from "./evaluator.js";
+import { evaluateResponse, runRuleChecks, evaluateTurn, runTurnRuleChecks, evaluateConversationFlow } from "./evaluator.js";
 import type { JoiConfig } from "../config/schema.js";
 import type {
   QATestSuite,
@@ -12,6 +12,7 @@ import type {
   QATestResult,
   CapturedToolInteraction,
   JudgeScores,
+  TurnResult,
 } from "./types.js";
 
 export interface RunTestSuiteOptions {
@@ -148,6 +149,21 @@ async function runTestCase(
   config: JoiConfig,
   options: RunTestSuiteOptions,
 ): Promise<QATestResult> {
+  // Branch: multi-turn vs single-turn
+  if (testCase.turns && testCase.turns.length > 0) {
+    return runMultiTurnTestCase(runId, testCase, suite, config, options);
+  }
+
+  return runSingleTurnTestCase(runId, testCase, suite, config, options);
+}
+
+async function runSingleTurnTestCase(
+  runId: string,
+  testCase: QATestCase,
+  suite: QATestSuite,
+  config: JoiConfig,
+  options: RunTestSuiteOptions,
+): Promise<QATestResult> {
   // Create isolated conversation tagged as QA test
   const conversationId = await ensureConversation(undefined, suite.agent_id, {
     source: "qa-test",
@@ -235,7 +251,181 @@ async function runTestCase(
     ],
   );
 
-  // ─── Cleanup: prevent QA test data from polluting real data ───
+  // ─── Cleanup ───
+  await cleanupTestConversation(conversationId);
+
+  return updated.rows[0];
+}
+
+async function runMultiTurnTestCase(
+  runId: string,
+  testCase: QATestCase,
+  suite: QATestSuite,
+  config: JoiConfig,
+  options: RunTestSuiteOptions,
+): Promise<QATestResult> {
+  const turns = testCase.turns!;
+
+  // Create a single conversation — all turns share it (builds up history naturally)
+  const conversationId = await ensureConversation(undefined, suite.agent_id, {
+    source: "qa-test",
+    suiteId: suite.id,
+    caseId: testCase.id,
+    runId,
+    multiTurn: true,
+    turnCount: turns.length,
+  });
+
+  // Insert running result row
+  const resultRow = await query<QATestResult>(
+    `INSERT INTO qa_test_results (run_id, case_id, status, conversation_id)
+     VALUES ($1, $2, 'running', $3)
+     RETURNING *`,
+    [runId, testCase.id, conversationId],
+  );
+  const resultId = resultRow.rows[0].id;
+
+  const turnResults: TurnResult[] = [];
+  const allCapturedTools: CapturedToolInteraction[] = [];
+  const failureReasons: string[] = [];
+  let totalLatency = 0;
+  let totalCost = 0;
+  let lastModel: string | null = null;
+  let lastProvider: string | null = null;
+
+  // Execute each turn sequentially against the same conversation
+  for (let i = 0; i < turns.length; i++) {
+    const turn = turns[i];
+    const turnCapturedTools: CapturedToolInteraction[] = [];
+    const pendingTools = new Map<string, CapturedToolInteraction>();
+
+    const turnStart = Date.now();
+
+    const agentResult = await runAgent({
+      conversationId,
+      agentId: suite.agent_id,
+      userMessage: turn.message,
+      config,
+      model: (options.modelOverrides as Record<string, string>)?.model,
+      onToolUse: (name: string, input: unknown, id: string) => {
+        const interaction: CapturedToolInteraction = { name, input, id };
+        pendingTools.set(id, interaction);
+        turnCapturedTools.push(interaction);
+        allCapturedTools.push(interaction);
+      },
+      onToolResult: (id: string, result: unknown) => {
+        const pending = pendingTools.get(id);
+        if (pending) {
+          pending.result = result;
+          pendingTools.delete(id);
+        }
+      },
+    });
+
+    const turnLatency = Date.now() - turnStart;
+    totalLatency += turnLatency;
+    totalCost += agentResult.costUsd;
+    lastModel = agentResult.model;
+    lastProvider = agentResult.provider;
+
+    // Per-turn rule checks
+    const turnRuleChecks = runTurnRuleChecks(turn, agentResult.content, turnCapturedTools, turnLatency);
+
+    // Per-turn LLM judge
+    const turnJudgeScores = await evaluateTurn(config, turn, agentResult.content, turnCapturedTools, i);
+
+    // Collect per-turn failures
+    for (const detail of turnRuleChecks.details) {
+      failureReasons.push(`Turn ${i + 1}: ${detail}`);
+    }
+
+    turnResults.push({
+      turn_index: i,
+      actual_content: agentResult.content,
+      actual_tools: turnCapturedTools,
+      judge_scores: turnJudgeScores,
+      rule_checks: turnRuleChecks,
+      latency_ms: turnLatency,
+      model: agentResult.model,
+    });
+  }
+
+  // Cross-turn flow coherence evaluation
+  const flowResult = await evaluateConversationFlow(config, turns, turnResults);
+
+  // Aggregate scores across turns
+  const turnScores = turnResults
+    .map((tr) => tr.judge_scores)
+    .filter((s): s is JudgeScores => s !== null);
+
+  const avgCorrectness = turnScores.length > 0
+    ? turnScores.reduce((s, sc) => s + sc.correctness, 0) / turnScores.length : 0;
+  const avgToolAccuracy = turnScores.length > 0
+    ? turnScores.reduce((s, sc) => s + sc.tool_accuracy, 0) / turnScores.length : 0;
+  const avgResponseQuality = turnScores.length > 0
+    ? turnScores.reduce((s, sc) => s + sc.response_quality, 0) / turnScores.length : 0;
+
+  const overallAvg = (avgCorrectness + avgToolAccuracy + avgResponseQuality) / 3;
+
+  if (overallAvg < testCase.min_quality_score) {
+    failureReasons.push(`Average quality score ${overallAvg.toFixed(2)} below minimum ${testCase.min_quality_score}`);
+  }
+
+  if (flowResult.flow_coherence_score < 0.5) {
+    failureReasons.push(`Flow coherence score ${flowResult.flow_coherence_score.toFixed(2)} below 0.5`);
+  }
+
+  // Aggregate rule checks
+  const allTurnRulesPass = turnResults.every(
+    (tr) => tr.rule_checks?.tools_ok !== false && tr.rule_checks?.patterns_ok !== false,
+  );
+
+  const status = failureReasons.length === 0 && allTurnRulesPass ? "passed" : "failed";
+
+  // Build aggregated judge scores
+  const aggregatedScores: JudgeScores = {
+    correctness: avgCorrectness,
+    tool_accuracy: avgToolAccuracy,
+    response_quality: avgResponseQuality,
+    reasoning: `Aggregated across ${turns.length} turns. Flow coherence: ${flowResult.flow_coherence_score.toFixed(2)}`,
+  };
+
+  // Last turn's content as the "actual_content" for display
+  const lastTurnContent = turnResults[turnResults.length - 1]?.actual_content || "";
+
+  const updated = await query<QATestResult>(
+    `UPDATE qa_test_results SET
+       status = $1, actual_content = $2, actual_tools = $3,
+       judge_scores = $4, rule_checks = $5, failure_reasons = $6,
+       latency_ms = $7, cost_usd = $8, model = $9, provider = $10,
+       turn_results = $11, flow_coherence_score = $12, flow_reasoning = $13
+     WHERE id = $14
+     RETURNING *`,
+    [
+      status,
+      lastTurnContent,
+      JSON.stringify(allCapturedTools),
+      JSON.stringify(aggregatedScores),
+      JSON.stringify({ tools_ok: allTurnRulesPass, patterns_ok: allTurnRulesPass, latency_ok: true, details: failureReasons }),
+      JSON.stringify(failureReasons),
+      totalLatency,
+      totalCost,
+      lastModel,
+      lastProvider,
+      JSON.stringify(turnResults),
+      flowResult.flow_coherence_score,
+      flowResult.reasoning,
+      resultId,
+    ],
+  );
+
+  // ─── Cleanup ───
+  await cleanupTestConversation(conversationId);
+
+  return updated.rows[0];
+}
+
+async function cleanupTestConversation(conversationId: string): Promise<void> {
   // Delete memories created during this test conversation
   await query(
     `DELETE FROM memories WHERE conversation_id = $1`,
@@ -253,6 +443,4 @@ async function runTestCase(
     `UPDATE conversations SET metadata = metadata || '{"qa_completed": true}'::jsonb WHERE id = $1`,
     [conversationId],
   ).catch(() => {});
-
-  return updated.rows[0];
 }

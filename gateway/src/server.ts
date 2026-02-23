@@ -54,6 +54,7 @@ import { runTestSuite } from "./quality/runner.js";
 import { createIssuesFromRun, listIssues, updateIssue, pushToAutodev } from "./quality/issues.js";
 import { generatePromptCandidate, abTestPrompt, submitForReview, activatePromptVersion } from "./quality/optimizer.js";
 import type { QATestSuite, QATestCase, QATestRun, QATestResult, QAIssue, QAStats } from "./quality/types.js";
+import { getAllHeartbeats, getHeartbeat, createTask as createAgentTask, updateTask as updateAgentTask, listTasks as listAgentTasks } from "./agent/heartbeat.js";
 
 const config = loadConfig();
 
@@ -1255,6 +1256,84 @@ Rules:
     const message = err instanceof Error ? err.message : String(err);
     console.error("Failed to improve prompt:", message);
     res.status(500).json({ error: "Failed to improve prompt" });
+  }
+});
+
+// ─── Agent Heartbeat & Task API ───
+
+app.get("/api/agents/heartbeats", async (_req, res) => {
+  try {
+    const heartbeats = await getAllHeartbeats();
+    res.json({ heartbeats });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get("/api/agents/:id/heartbeat", async (req, res) => {
+  try {
+    const heartbeat = await getHeartbeat(req.params.id);
+    if (!heartbeat) return res.status(404).json({ error: "No heartbeat for agent" });
+    res.json(heartbeat);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get("/api/agents/tasks", async (req, res) => {
+  try {
+    const { status, assigned_by, limit } = req.query as Record<string, string>;
+    const tasks = await listAgentTasks({
+      status: status || undefined,
+      assigned_by: assigned_by || undefined,
+      limit: parseInt(limit) || 50,
+    });
+    res.json({ tasks });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get("/api/agents/:id/tasks", async (req, res) => {
+  try {
+    const { status, limit } = req.query as Record<string, string>;
+    const tasks = await listAgentTasks({
+      agent_id: req.params.id,
+      status: status || undefined,
+      limit: parseInt(limit) || 50,
+    });
+    res.json({ tasks });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/api/agents/:id/tasks", async (req, res) => {
+  try {
+    const { title, description, priority, input_data, deadline, assigned_by } = req.body;
+    if (!title) return res.status(400).json({ error: "title is required" });
+    const task = await createAgentTask({
+      agent_id: req.params.id,
+      assigned_by: assigned_by || "manual",
+      title,
+      description,
+      priority,
+      input_data,
+      deadline,
+    });
+    res.json(task);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.put("/api/agents/tasks/:taskId", async (req, res) => {
+  try {
+    const { status, progress, result_data } = req.body;
+    const task = await updateAgentTask(req.params.taskId, { status, progress, result_data });
+    res.json(task);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
   }
 });
 
@@ -5604,11 +5683,11 @@ app.delete("/api/quality/suites/:id", async (req, res) => {
 // Cases
 app.post("/api/quality/suites/:id/cases", async (req, res) => {
   try {
-    const { name, description, input_message, expected_tools, unexpected_tools, expected_content_patterns, max_latency_ms, min_quality_score } = req.body;
+    const { name, description, input_message, expected_tools, unexpected_tools, expected_content_patterns, max_latency_ms, min_quality_score, turns, turn_count, category } = req.body;
     const result = await query<QATestCase>(
-      `INSERT INTO qa_test_cases (suite_id, name, description, input_message, expected_tools, unexpected_tools, expected_content_patterns, max_latency_ms, min_quality_score)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-      [req.params.id, name, description || null, input_message, expected_tools || [], unexpected_tools || [], expected_content_patterns || [], max_latency_ms || null, min_quality_score || 0.5],
+      `INSERT INTO qa_test_cases (suite_id, name, description, input_message, expected_tools, unexpected_tools, expected_content_patterns, max_latency_ms, min_quality_score, turns, turn_count, category)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+      [req.params.id, name, description || null, input_message || 'multi-turn', expected_tools || [], unexpected_tools || [], expected_content_patterns || [], max_latency_ms || null, min_quality_score || 0.5, turns ? JSON.stringify(turns) : null, turn_count || 1, category || 'single-turn'],
     );
     res.json(result.rows[0]);
   } catch (err) {
@@ -5618,7 +5697,7 @@ app.post("/api/quality/suites/:id/cases", async (req, res) => {
 
 app.put("/api/quality/cases/:id", async (req, res) => {
   try {
-    const { name, description, input_message, expected_tools, unexpected_tools, expected_content_patterns, max_latency_ms, min_quality_score, enabled } = req.body;
+    const { name, description, input_message, expected_tools, unexpected_tools, expected_content_patterns, max_latency_ms, min_quality_score, enabled, turns, turn_count, category } = req.body;
     const sets: string[] = [];
     const vals: unknown[] = [];
     let idx = 1;
@@ -5631,6 +5710,9 @@ app.put("/api/quality/cases/:id", async (req, res) => {
     if (max_latency_ms !== undefined) { sets.push(`max_latency_ms = $${idx++}`); vals.push(max_latency_ms); }
     if (min_quality_score !== undefined) { sets.push(`min_quality_score = $${idx++}`); vals.push(min_quality_score); }
     if (enabled !== undefined) { sets.push(`enabled = $${idx++}`); vals.push(enabled); }
+    if (turns !== undefined) { sets.push(`turns = $${idx++}`); vals.push(turns ? JSON.stringify(turns) : null); }
+    if (turn_count !== undefined) { sets.push(`turn_count = $${idx++}`); vals.push(turn_count); }
+    if (category !== undefined) { sets.push(`category = $${idx++}`); vals.push(category); }
     sets.push("updated_at = NOW()");
     vals.push(req.params.id);
     const result = await query<QATestCase>(

@@ -12,6 +12,25 @@ export interface QATestSuite {
   updated_at: string;
 }
 
+export interface TurnDefinition {
+  role: "user";
+  message: string;
+  expected_tools?: string[];
+  unexpected_tools?: string[];
+  expected_content_patterns?: string[];
+  description?: string;
+}
+
+export interface TurnResult {
+  turn_index: number;
+  actual_content: string;
+  actual_tools: CapturedToolInteraction[];
+  judge_scores: JudgeScores | null;
+  rule_checks: RuleCheckResult | null;
+  latency_ms: number;
+  model: string | null;
+}
+
 export interface QATestCase {
   id: string;
   suite_id: string;
@@ -25,6 +44,10 @@ export interface QATestCase {
   min_quality_score: number;
   enabled: boolean;
   sort_order: number;
+  // Multi-turn fields
+  turns: TurnDefinition[] | null;
+  turn_count: number;
+  category: string;
   created_at: string;
   updated_at: string;
 }
@@ -65,6 +88,10 @@ export interface QATestResult {
   model: string | null;
   provider: string | null;
   conversation_id: string | null;
+  // Multi-turn fields
+  turn_results: TurnResult[] | null;
+  flow_coherence_score: number | null;
+  flow_reasoning: string | null;
   created_at: string;
 }
 

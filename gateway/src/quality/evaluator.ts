@@ -3,7 +3,7 @@
 
 import { utilityCall } from "../agent/model-router.js";
 import type { JoiConfig } from "../config/schema.js";
-import type { JudgeScores, QATestCase, CapturedToolInteraction } from "./types.js";
+import type { JudgeScores, QATestCase, CapturedToolInteraction, TurnDefinition, TurnResult } from "./types.js";
 
 const JUDGE_SYSTEM_PROMPT = `You are a QA judge evaluating an AI assistant's response to a test case.
 Score the response on three dimensions from 0.0 to 1.0:
@@ -70,6 +70,166 @@ Score this response.`;
 
 function clamp(value: number): number {
   return Math.max(0, Math.min(1, Number(value) || 0));
+}
+
+// ─── Flow coherence evaluation for multi-turn conversations ───
+
+const FLOW_JUDGE_SYSTEM_PROMPT = `You are a QA judge evaluating the coherence of a multi-turn conversation between a user and an AI assistant.
+
+Score the overall conversation flow from 0.0 to 1.0 on these dimensions:
+1. **Context retention** — Does the assistant remember and reference information from earlier turns?
+2. **Pronoun resolution** — Does the assistant correctly resolve "it", "that", "them" etc. to the right referents?
+3. **Logical continuity** — Do responses build on previous context rather than treating each turn independently?
+4. **Contradiction avoidance** — Does the assistant avoid contradicting its earlier statements?
+
+Return ONLY valid JSON (no markdown, no code fences):
+{"flow_coherence_score": 0.0, "reasoning": "brief explanation of coherence assessment"}`;
+
+export async function evaluateConversationFlow(
+  config: JoiConfig,
+  turns: TurnDefinition[],
+  turnResults: TurnResult[],
+): Promise<{ flow_coherence_score: number; reasoning: string }> {
+  // Build conversation transcript for the judge
+  const transcript = turns.map((turn, i) => {
+    const result = turnResults[i];
+    const assistantContent = result?.actual_content || "(no response)";
+    const toolsUsed = result?.actual_tools?.map((t) => t.name).join(", ") || "none";
+    return `Turn ${i + 1} [${turn.description || ""}]:
+User: ${turn.message}
+Assistant: ${assistantContent.slice(0, 500)}
+Tools: ${toolsUsed}`;
+  }).join("\n\n");
+
+  const userPrompt = `## Multi-Turn Conversation (${turns.length} turns)
+
+${transcript}
+
+Evaluate the overall conversation flow coherence.`;
+
+  try {
+    const raw = await utilityCall(config, FLOW_JUDGE_SYSTEM_PROMPT, userPrompt, {
+      maxTokens: 400,
+      temperature: 0.1,
+      task: "utility",
+    });
+
+    const jsonStr = raw.replace(/```json?\s*/g, "").replace(/```\s*/g, "").trim();
+    const parsed = JSON.parse(jsonStr);
+
+    return {
+      flow_coherence_score: clamp(parsed.flow_coherence_score ?? 0),
+      reasoning: String(parsed.reasoning || ""),
+    };
+  } catch (err) {
+    console.error("[QA] Flow coherence evaluation failed:", err);
+    return {
+      flow_coherence_score: 0,
+      reasoning: `Flow judge error: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
+// ─── Per-turn evaluation for multi-turn test cases ───
+
+export async function evaluateTurn(
+  config: JoiConfig,
+  turn: TurnDefinition,
+  actualContent: string,
+  actualTools: CapturedToolInteraction[],
+  turnIndex: number,
+): Promise<JudgeScores> {
+  const toolsSummary = actualTools.length > 0
+    ? actualTools.map((t) => `- ${t.name}(${JSON.stringify(t.input).slice(0, 200)})`).join("\n")
+    : "(no tools used)";
+
+  const userPrompt = `## Turn ${turnIndex + 1}
+**Description**: ${turn.description || "N/A"}
+**User message**: "${turn.message}"
+**Expected tools**: ${turn.expected_tools?.join(", ") || "none specified"}
+**Expected patterns**: ${turn.expected_content_patterns?.join(", ") || "none specified"}
+
+## Actual Response
+**Content**: ${actualContent.slice(0, 1500)}
+
+**Tools used**:
+${toolsSummary}
+
+Score this turn's response.`;
+
+  try {
+    const raw = await utilityCall(config, JUDGE_SYSTEM_PROMPT, userPrompt, {
+      maxTokens: 300,
+      temperature: 0.1,
+      task: "utility",
+    });
+
+    const jsonStr = raw.replace(/```json?\s*/g, "").replace(/```\s*/g, "").trim();
+    const parsed = JSON.parse(jsonStr);
+
+    return {
+      correctness: clamp(parsed.correctness ?? 0),
+      tool_accuracy: clamp(parsed.tool_accuracy ?? 0),
+      response_quality: clamp(parsed.response_quality ?? 0),
+      reasoning: String(parsed.reasoning || ""),
+    };
+  } catch (err) {
+    console.error(`[QA] Turn ${turnIndex + 1} judge evaluation failed:`, err);
+    return {
+      correctness: 0,
+      tool_accuracy: 0,
+      response_quality: 0,
+      reasoning: `Judge error: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
+// ─── Per-turn rule checks ───
+
+export function runTurnRuleChecks(
+  turn: TurnDefinition,
+  actualContent: string,
+  actualTools: CapturedToolInteraction[],
+  latencyMs: number,
+): { tools_ok: boolean; patterns_ok: boolean; latency_ok: boolean; details: string[] } {
+  const details: string[] = [];
+  const usedToolNames = actualTools.map((t) => t.name);
+
+  let tools_ok = true;
+  if (turn.expected_tools) {
+    for (const expected of turn.expected_tools) {
+      if (!usedToolNames.includes(expected)) {
+        tools_ok = false;
+        details.push(`Missing expected tool: ${expected}`);
+      }
+    }
+  }
+
+  if (turn.unexpected_tools) {
+    for (const unexpected of turn.unexpected_tools) {
+      if (usedToolNames.includes(unexpected)) {
+        tools_ok = false;
+        details.push(`Unexpected tool used: ${unexpected}`);
+      }
+    }
+  }
+
+  let patterns_ok = true;
+  if (turn.expected_content_patterns) {
+    for (const pattern of turn.expected_content_patterns) {
+      try {
+        const regex = new RegExp(pattern, "i");
+        if (!regex.test(actualContent)) {
+          patterns_ok = false;
+          details.push(`Content pattern not matched: /${pattern}/i`);
+        }
+      } catch {
+        details.push(`Invalid regex pattern: ${pattern}`);
+      }
+    }
+  }
+
+  return { tools_ok, patterns_ok, latency_ok: true, details };
 }
 
 // Rule-based checks (deterministic, no LLM needed)

@@ -52,6 +52,19 @@ function toOpenRouterSlug(model: string): string {
   return `anthropic/${stripped}`;
 }
 
+// Models known to be unreliable for structured tool/function calling via OpenRouter.
+// These models sometimes output code blocks (e.g. `print(default_api.xxx())`) instead
+// of proper OpenAI-format tool_calls. When one of these is resolved as the tool model,
+// we substitute a reliable alternative to force two-phase routing.
+const UNRELIABLE_TOOL_CALLING_PREFIXES = ["google/"];
+
+function isUnreliableForToolCalling(model: string): boolean {
+  return UNRELIABLE_TOOL_CALLING_PREFIXES.some((prefix) => model.startsWith(prefix));
+}
+
+// Reliable cheap model for tool calling when the chat model can't do it
+const RELIABLE_TOOL_MODEL: ModelRoute = { model: "openai/gpt-4o-mini", provider: "openrouter" };
+
 // Models available via each provider
 export const AVAILABLE_MODELS = {
   anthropic: [
@@ -183,6 +196,13 @@ export async function resolveModel(config: JoiConfig, task: ModelTask, override?
       // DB route is fully authoritative — the user's explicit Settings selection
       // always wins over agent model overrides.
 
+      // Guard: if a model unreliable for tool calling is set as the tool route,
+      // override with a reliable model to prevent code-block output instead of tool_calls.
+      if (task === "tool" && dbRoute.provider === "openrouter" && isUnreliableForToolCalling(dbRoute.model)) {
+        console.warn(`[ModelRouter] Tool route ${dbRoute.model} is unreliable for function calling, using ${RELIABLE_TOOL_MODEL.model} instead`);
+        if (config.auth.openrouterApiKey) return RELIABLE_TOOL_MODEL;
+      }
+
       // Verify the provider key is available, fall back if not
       if (dbRoute.provider === "anthropic" && !config.auth.anthropicApiKey && config.auth.openrouterApiKey) {
         return { model: toOpenRouterSlug(dbRoute.model), provider: "openrouter" };
@@ -235,8 +255,15 @@ export async function resolveModel(config: JoiConfig, task: ModelTask, override?
   }
 
   if (task === "tool") {
-    // Fallback: delegate to chat model when no DB route for tool
-    return resolveModel(config, "chat", override);
+    // Fallback: delegate to chat model when no DB route for tool.
+    // But if the chat model is unreliable for structured tool calling
+    // (e.g. Gemini outputs code blocks instead of tool_calls), use a
+    // known-reliable model to force two-phase routing.
+    const chatRoute = await resolveModel(config, "chat", override);
+    if (chatRoute.provider === "openrouter" && isUnreliableForToolCalling(chatRoute.model)) {
+      if (config.auth.openrouterApiKey) return RELIABLE_TOOL_MODEL;
+    }
+    return chatRoute;
   }
 
   if (task === "triage") {

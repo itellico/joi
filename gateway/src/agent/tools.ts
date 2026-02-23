@@ -41,6 +41,7 @@ import { readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { runClaudeCode } from "./claude-code.js";
+import { updateHeartbeat, createTask, updateTask, listTasks } from "./heartbeat.js";
 
 export interface ToolContext {
   config: JoiConfig;
@@ -890,6 +891,131 @@ toolRegistry.set("run_claude_code", async (input, ctx) => {
   }
 });
 
+// ─── agent_heartbeat: Report agent status/progress ───
+
+toolRegistry.set("agent_heartbeat", async (input, ctx) => {
+  const { status, current_task, progress, error_message, metadata } = input as {
+    status: string;
+    current_task?: string;
+    progress?: number;
+    error_message?: string;
+    metadata?: Record<string, unknown>;
+  };
+
+  const heartbeat = await updateHeartbeat(ctx.agentId, {
+    status,
+    current_task: current_task ?? null,
+    progress: progress ?? null,
+    error_message: error_message ?? null,
+    metadata,
+  });
+
+  ctx.broadcast?.("agent.heartbeat", {
+    agentId: ctx.agentId,
+    status: heartbeat.status,
+    currentTask: heartbeat.current_task,
+    progress: heartbeat.progress,
+    timestamp: heartbeat.last_heartbeat_at,
+  });
+
+  return { updated: true, status: heartbeat.status, last_heartbeat_at: heartbeat.last_heartbeat_at };
+});
+
+// ─── agent_task_create: Assign a task to an agent ───
+
+toolRegistry.set("agent_task_create", async (input, ctx) => {
+  const { agent_id, title, description, input_data, priority, deadline } = input as {
+    agent_id: string;
+    title: string;
+    description?: string;
+    input_data?: Record<string, unknown>;
+    priority?: number;
+    deadline?: string;
+  };
+
+  const task = await createTask({
+    agent_id,
+    assigned_by: ctx.agentId,
+    title,
+    description,
+    priority,
+    input_data,
+    conversation_id: ctx.conversationId,
+    deadline,
+  });
+
+  ctx.broadcast?.("agent.task_created", {
+    taskId: task.id,
+    agentId: agent_id,
+    assignedBy: ctx.agentId,
+    title,
+    priority: task.priority,
+  });
+
+  return { created: true, id: task.id, agent_id, title, status: task.status };
+});
+
+// ─── agent_task_update: Update task progress/status ───
+
+toolRegistry.set("agent_task_update", async (input, ctx) => {
+  const { task_id, status, progress, result_data } = input as {
+    task_id: string;
+    status?: string;
+    progress?: number;
+    result_data?: unknown;
+  };
+
+  const task = await updateTask(task_id, {
+    status,
+    progress,
+    result_data,
+    result_conversation_id: ctx.conversationId,
+  });
+
+  ctx.broadcast?.("agent.task_updated", {
+    taskId: task.id,
+    agentId: task.agent_id,
+    status: task.status,
+    progress: task.progress,
+  });
+
+  return { updated: true, id: task.id, status: task.status, progress: task.progress };
+});
+
+// ─── agent_task_list: List tasks with filters ───
+
+toolRegistry.set("agent_task_list", async (input, ctx) => {
+  const { agent_id, status, assigned_by, limit } = input as {
+    agent_id?: string;
+    status?: string;
+    assigned_by?: string;
+    limit?: number;
+  };
+
+  const tasks = await listTasks({
+    agent_id: agent_id || undefined,
+    status: status || undefined,
+    assigned_by: assigned_by || undefined,
+    limit: limit || 20,
+  });
+
+  return {
+    tasks: tasks.map((t) => ({
+      id: t.id,
+      agent_id: t.agent_id,
+      title: t.title,
+      status: t.status,
+      priority: t.priority,
+      progress: t.progress,
+      assigned_by: t.assigned_by,
+      deadline: t.deadline,
+      created_at: t.created_at,
+      completed_at: t.completed_at,
+    })),
+    count: tasks.length,
+  };
+});
+
 // ─── Tool definitions for Claude API ───
 
 // Register accounting tools into main registry
@@ -974,6 +1100,7 @@ const CORE_TOOLS = new Set([
   "schedule_create", "schedule_list", "schedule_manage",
   "spawn_agent", "review_request", "review_status",
   "query_gateway_logs", "skill_read",
+  "agent_heartbeat", "agent_task_create", "agent_task_update", "agent_task_list",
 ]);
 
 /**
@@ -1352,6 +1479,129 @@ export function getToolDefinitions(allowedSkills?: string[] | null): Anthropic.T
           limit: {
             type: "number",
             description: "Maximum items to return (default: 20)",
+          },
+        },
+        required: [],
+      },
+    },
+    {
+      name: "agent_heartbeat",
+      description:
+        "Report your current status and progress. Call this when starting work (status='working'), making progress, or finishing (status='finished'/'error'). This helps track agent liveness and workload.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          status: {
+            type: "string",
+            enum: ["idle", "working", "finished", "error"],
+            description: "Current agent status",
+          },
+          current_task: {
+            type: "string",
+            description: "Brief description of current task (when working)",
+          },
+          progress: {
+            type: "number",
+            description: "Progress 0.0-1.0 (when working)",
+          },
+          error_message: {
+            type: "string",
+            description: "Error details (when status is error)",
+          },
+          metadata: {
+            type: "object",
+            description: "Additional status metadata",
+          },
+        },
+        required: ["status"],
+      },
+    },
+    {
+      name: "agent_task_create",
+      description:
+        "Assign a task to an agent. Creates a tracked task with priority, optional deadline, and input data. Use this to delegate work to specialized agents with accountability.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          agent_id: {
+            type: "string",
+            description: "ID of the agent to assign the task to",
+          },
+          title: {
+            type: "string",
+            description: "Short title for the task",
+          },
+          description: {
+            type: "string",
+            description: "Detailed task description and requirements",
+          },
+          input_data: {
+            type: "object",
+            description: "Structured input data for the task",
+          },
+          priority: {
+            type: "number",
+            description: "Priority 1-10 (higher = more urgent, default: 5)",
+          },
+          deadline: {
+            type: "string",
+            description: "ISO 8601 deadline (task auto-fails if not completed by then)",
+          },
+        },
+        required: ["agent_id", "title"],
+      },
+    },
+    {
+      name: "agent_task_update",
+      description:
+        "Update the status or progress of a task. Use to mark tasks in_progress, completed, or failed, and to report progress.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          task_id: {
+            type: "string",
+            description: "UUID of the task to update",
+          },
+          status: {
+            type: "string",
+            enum: ["pending", "in_progress", "completed", "failed", "cancelled"],
+            description: "New task status",
+          },
+          progress: {
+            type: "number",
+            description: "Progress 0.0-1.0",
+          },
+          result_data: {
+            type: "object",
+            description: "Task result data (when completing)",
+          },
+        },
+        required: ["task_id"],
+      },
+    },
+    {
+      name: "agent_task_list",
+      description:
+        "List tasks with optional filters. See your own tasks, tasks assigned by you, or all tasks for a specific agent.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          agent_id: {
+            type: "string",
+            description: "Filter by agent ID",
+          },
+          status: {
+            type: "string",
+            enum: ["pending", "in_progress", "completed", "failed", "cancelled"],
+            description: "Filter by status",
+          },
+          assigned_by: {
+            type: "string",
+            description: "Filter by who assigned the task",
+          },
+          limit: {
+            type: "number",
+            description: "Maximum results (default: 20)",
           },
         },
         required: [],

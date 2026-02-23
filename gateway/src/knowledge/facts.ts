@@ -440,8 +440,10 @@ export async function loadVerifiedFactsContext(): Promise<{
      FROM store_objects
      WHERE collection_id = $1
        AND status = 'active'
-       AND COALESCE(data->>'status', 'unverified') = 'verified'
-     ORDER BY updated_at DESC
+       AND COALESCE(data->>'status', 'unverified') IN ('verified', 'unverified')
+     ORDER BY
+       CASE WHEN COALESCE(data->>'status', 'unverified') = 'verified' THEN 0 ELSE 1 END,
+       updated_at DESC
      LIMIT 200`,
     [collectionId],
   );

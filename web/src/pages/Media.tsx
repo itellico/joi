@@ -1,7 +1,21 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
-import { PageHeader, PageBody } from "../components/ui/PageLayout";
-import { SearchInput, ChipGroup, ViewToggle, Pagination, Modal, Badge, MetaText, EmptyState } from "../components/ui";
+import {
+  Badge,
+  Card,
+  ChipGroup,
+  EmptyState,
+  MetaText,
+  Modal,
+  Pagination,
+  PageHeader,
+  PageBody,
+  SearchInput,
+  Stack,
+  UnifiedList,
+  ViewToggle,
+  type UnifiedListColumn,
+} from "../components/ui";
 
 interface MediaItem {
   id: string;
@@ -49,12 +63,6 @@ const CHANNEL_OPTIONS = [
   { value: "slack", label: "Slack" },
   { value: "discord", label: "Discord" },
   { value: "email", label: "Email" },
-];
-
-const SORT_OPTIONS = [
-  { value: "created_at", label: "Date" },
-  { value: "filename", label: "Name" },
-  { value: "size", label: "Size" },
 ];
 
 const TYPE_ICONS: Record<string, string> = {
@@ -107,18 +115,17 @@ export default function Media() {
   const [loading, setLoading] = useState(true);
   const [lightbox, setLightbox] = useState<MediaItem | null>(null);
 
-  const view = params.get("view") || localStorage.getItem("view-toggle:media") || "cards";
+  const viewMode = params.get("view") || localStorage.getItem("view-toggle:media") || "cards";
   const typeFilter = params.get("type") || "all";
   const channelFilter = params.get("channel") || "all";
   const search = params.get("q") || "";
-  const sort = params.get("sort") || "created_at";
-  const dir = params.get("dir") || "DESC";
   const page = parseInt(params.get("page") || "1") || 1;
+  const offset = (page - 1) * PAGE_SIZE;
 
   const updateParam = useCallback((key: string, value: string) => {
     setParams((prev) => {
       const next = new URLSearchParams(prev);
-      if (value && value !== "all" && value !== "1" && value !== "created_at" && value !== "DESC") {
+      if (value && value !== "all" && value !== "1") {
         next.set(key, value);
       } else {
         next.delete(key);
@@ -135,10 +142,10 @@ export default function Media() {
       if (typeFilter !== "all") qs.set("type", typeFilter);
       if (channelFilter !== "all") qs.set("channel", channelFilter);
       if (search) qs.set("q", search);
-      qs.set("sort", sort);
-      qs.set("dir", dir);
+      qs.set("sort", "created_at");
+      qs.set("dir", "DESC");
       qs.set("limit", String(PAGE_SIZE));
-      qs.set("offset", String((page - 1) * PAGE_SIZE));
+      qs.set("offset", String(offset));
 
       const resp = await fetch(`/api/media?${qs}`);
       const data = await resp.json();
@@ -149,7 +156,7 @@ export default function Media() {
     } finally {
       setLoading(false);
     }
-  }, [typeFilter, channelFilter, search, sort, dir, page]);
+  }, [typeFilter, channelFilter, search, offset]);
 
   useEffect(() => {
     fetchMedia();
@@ -162,124 +169,173 @@ export default function Media() {
       .catch(() => {});
   }, []);
 
-  const offset = (page - 1) * PAGE_SIZE;
+  const handleViewChange = (mode: string) => {
+    updateParam("view", mode);
+    localStorage.setItem("view-toggle:media", mode);
+  };
+
+  const statChips = useMemo(() => {
+    if (!stats) return [];
+    return stats.byType.map((t) => ({
+      value: t.media_type,
+      label: `${TYPE_ICONS[t.media_type] || ""} ${t.media_type}`,
+      count: t.count,
+    }));
+  }, [stats]);
+
+  const columns: UnifiedListColumn<MediaItem>[] = useMemo(() => [
+    {
+      key: "thumb",
+      header: "",
+      render: (item) => <MediaThumb item={item} size={40} />,
+      width: 52,
+    },
+    {
+      key: "filename",
+      header: "Filename",
+      render: (item) => (
+        <div className="unified-list-cell-break">
+          <div className="text-primary">{item.filename || item.media_type}</div>
+          {item.caption && <MetaText size="xs" className="block mt-1">{item.caption}</MetaText>}
+        </div>
+      ),
+      sortValue: (item) => item.filename || item.media_type,
+    },
+    {
+      key: "media_type",
+      header: "Type",
+      render: (item) => (
+        <Badge status="muted" className="text-xs">{item.media_type}</Badge>
+      ),
+      sortValue: (item) => item.media_type,
+      width: 100,
+    },
+    {
+      key: "channel_type",
+      header: "Channel",
+      render: (item) => item.channel_type ? (
+        <span style={{ borderLeft: `3px solid ${CHANNEL_COLORS[item.channel_type] || "var(--text-muted)"}`, paddingLeft: 6 }}>
+          <Badge status="muted" className="text-xs">{item.channel_type}</Badge>
+        </span>
+      ) : <MetaText size="xs">—</MetaText>,
+      sortValue: (item) => item.channel_type || "",
+      width: 120,
+    },
+    {
+      key: "size_bytes",
+      header: "Size",
+      render: (item) => <MetaText size="xs">{formatBytes(item.size_bytes)}</MetaText>,
+      sortValue: (item) => item.size_bytes || 0,
+      width: 90,
+      align: "right",
+    },
+    {
+      key: "created_at",
+      header: "Date",
+      render: (item) => <MetaText size="xs">{timeAgo(item.created_at)}</MetaText>,
+      sortValue: (item) => new Date(item.created_at),
+      width: 120,
+    },
+  ], []);
 
   return (
     <>
-      <PageHeader title="Media" />
+      <PageHeader
+        title="Media"
+        subtitle={stats ? `${stats.total.toLocaleString()} files \u00b7 ${formatBytes(stats.totalBytes)}` : undefined}
+      />
+
       <PageBody>
-        {stats && (
-          <div className="media-stats-bar">
-            <MetaText size="sm">{stats.total} files</MetaText>
-            <MetaText size="sm">{formatBytes(stats.totalBytes)}</MetaText>
-            {stats.byType.slice(0, 4).map((t) => (
-              <MetaText key={t.media_type} size="sm">
-                {TYPE_ICONS[t.media_type] || ""} {t.count}
-              </MetaText>
-            ))}
-          </div>
+        {/* Stat chips */}
+        {statChips.length > 0 && (
+          <ChipGroup
+            variant="stat"
+            options={statChips}
+            value={typeFilter}
+            onChange={(v) => updateParam("type", v === typeFilter ? "all" : v)}
+          />
         )}
 
-        <div className="media-toolbar">
+        {/* Search + View toggle toolbar */}
+        <div className="list-page-toolbar">
           <SearchInput
             value={search}
             onChange={(v) => updateParam("q", v)}
             placeholder="Search media..."
+            resultCount={search.trim() ? total : undefined}
+            className="list-page-search"
           />
-          <ChipGroup
-            options={TYPE_OPTIONS}
-            value={typeFilter}
-            onChange={(v) => updateParam("type", v)}
-            variant="pill"
-          />
-          <ChipGroup
-            options={CHANNEL_OPTIONS}
-            value={channelFilter}
-            onChange={(v) => updateParam("channel", v)}
-            variant="pill"
-          />
-          <div className="media-sort">
-            <select
-              value={sort}
-              onChange={(e) => updateParam("sort", e.target.value)}
-              className="media-sort-select"
-            >
-              {SORT_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
-            <button
-              className="media-sort-dir"
-              onClick={() => updateParam("dir", dir === "DESC" ? "ASC" : "DESC")}
-              title={dir === "DESC" ? "Newest first" : "Oldest first"}
-            >
-              {dir === "DESC" ? "\u2193" : "\u2191"}
-            </button>
+          <div className="list-page-toolbar-right">
+            <ViewToggle
+              value={viewMode}
+              onChange={handleViewChange}
+              storageKey="media"
+            />
           </div>
-          <ViewToggle
-            value={view}
-            onChange={(v) => {
-              updateParam("view", v);
-              localStorage.setItem("view-toggle:media", v);
-            }}
-            storageKey="media"
-          />
         </div>
 
-        {loading ? (
-          <div className="media-loading">Loading...</div>
-        ) : items.length === 0 ? (
-          <EmptyState message="No media files found" />
-        ) : view === "cards" ? (
-          <div className="media-grid">
-            {items.map((item) => (
-              <MediaCard key={item.id} item={item} onClick={() => setLightbox(item)} />
-            ))}
-          </div>
-        ) : (
-          <div className="media-list">
-            <table className="unified-list-table">
-              <thead>
-                <tr>
-                  <th style={{ width: 52 }}></th>
-                  <th>Filename</th>
-                  <th>Type</th>
-                  <th>Channel</th>
-                  <th>Size</th>
-                  <th>Date</th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((item) => (
-                  <tr key={item.id} className="media-list-row" onClick={() => setLightbox(item)}>
-                    <td>
-                      <MediaThumb item={item} size={40} />
-                    </td>
-                    <td className="media-list-filename">{item.filename || item.media_type}</td>
-                    <td><Badge status="muted">{item.media_type}</Badge></td>
-                    <td>
-                      {item.channel_type && (
-                        <span style={{ borderLeft: `3px solid ${CHANNEL_COLORS[item.channel_type] || "var(--text-muted)"}`, paddingLeft: 6 }}>
-                          <Badge status="muted">{item.channel_type}</Badge>
-                        </span>
-                      )}
-                    </td>
-                    <td><MetaText size="sm">{formatBytes(item.size_bytes)}</MetaText></td>
-                    <td><MetaText size="sm">{timeAgo(item.created_at)}</MetaText></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        {/* Type filter pills */}
+        <ChipGroup
+          variant="pill"
+          options={TYPE_OPTIONS}
+          value={typeFilter}
+          onChange={(v) => { updateParam("type", v); }}
+        />
 
-        {total > PAGE_SIZE && (
-          <Pagination
-            total={total}
-            pageSize={PAGE_SIZE}
-            offset={offset}
-            onOffsetChange={(newOffset: number) => updateParam("page", String(Math.floor(newOffset / PAGE_SIZE) + 1))}
-          />
+        {/* Channel filter pills */}
+        <ChipGroup
+          variant="pill"
+          options={CHANNEL_OPTIONS}
+          value={channelFilter}
+          onChange={(v) => { updateParam("channel", v); }}
+        />
+
+        {/* Content */}
+        {loading && items.length === 0 ? (
+          <Card><MetaText>Loading...</MetaText></Card>
+        ) : items.length === 0 ? (
+          <Card>
+            <EmptyState
+              icon={total === 0 && !search ? "\uD83D\uDCCE" : "\uD83D\uDD0D"}
+              message={
+                total === 0 && !search
+                  ? "No media files yet. Media is downloaded automatically when messages with attachments arrive."
+                  : "No media files match your filters."
+              }
+            />
+          </Card>
+        ) : viewMode === "list" ? (
+          <>
+            <UnifiedList
+              items={items}
+              columns={columns}
+              rowKey={(item) => item.id}
+              onRowClick={(item) => setLightbox(item)}
+              defaultSort={{ key: "created_at", direction: "desc" }}
+              tableAriaLabel="Media files list"
+              emptyMessage="No media files found."
+            />
+            <Pagination
+              total={total}
+              pageSize={PAGE_SIZE}
+              offset={offset}
+              onOffsetChange={(newOffset: number) => updateParam("page", String(Math.floor(newOffset / PAGE_SIZE) + 1))}
+            />
+          </>
+        ) : (
+          <>
+            <div className="media-grid">
+              {items.map((item) => (
+                <MediaCard key={item.id} item={item} onClick={() => setLightbox(item)} />
+              ))}
+            </div>
+            <Pagination
+              total={total}
+              pageSize={PAGE_SIZE}
+              offset={offset}
+              onOffsetChange={(newOffset: number) => updateParam("page", String(Math.floor(newOffset / PAGE_SIZE) + 1))}
+            />
+          </>
         )}
       </PageBody>
 
@@ -364,7 +420,7 @@ function MediaLightbox({ item, onClose }: { item: MediaItem; onClose: () => void
         </div>
         <div className="media-lightbox-meta">
           {item.filename && <div className="media-lightbox-filename">{item.filename}</div>}
-          <div className="media-lightbox-details">
+          <Stack gap={1}>
             <MetaText size="sm">Type: {item.media_type}</MetaText>
             {item.mime_type && <MetaText size="sm">MIME: {item.mime_type}</MetaText>}
             <MetaText size="sm">Size: {formatBytes(item.size_bytes)}</MetaText>
@@ -372,7 +428,7 @@ function MediaLightbox({ item, onClose }: { item: MediaItem; onClose: () => void
             {item.channel_type && <MetaText size="sm">Channel: {item.channel_type}</MetaText>}
             <MetaText size="sm">Date: {new Date(item.created_at).toLocaleString("de-AT")}</MetaText>
             {item.caption && <MetaText size="sm">Caption: {item.caption}</MetaText>}
-          </div>
+          </Stack>
         </div>
       </div>
     </Modal>

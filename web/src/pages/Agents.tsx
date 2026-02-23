@@ -76,7 +76,7 @@ const CATEGORY_META: Record<string, { title: string; subtitle: string; icon: str
 };
 
 const CATEGORY_ORDER = ["combined", "operations", "system"];
-const PAGE_VIEWS = ["agents", "matrix", "skills"] as const;
+const PAGE_VIEWS = ["agents", "matrix", "skills", "heartbeat"] as const;
 
 function isPageView(value: string | null): value is (typeof PAGE_VIEWS)[number] {
   return value !== null && (PAGE_VIEWS as readonly string[]).includes(value);
@@ -288,6 +288,11 @@ export default function Agents() {
               value: "skills",
               label: "Skills",
               content: <SkillsBrowser />,
+            },
+            {
+              value: "heartbeat",
+              label: "Heartbeat",
+              content: <HeartbeatDashboard />,
             },
           ]}
         />
@@ -1138,5 +1143,161 @@ function StatsTab({ stats }: { stats: AgentStats | null }) {
         <div className="agent-stats-label">Avg Latency</div>
       </div>
     </div>
+  );
+}
+
+/* ── Heartbeat Dashboard ── */
+
+interface Heartbeat {
+  agent_id: string;
+  agent_name: string;
+  status: string;
+  current_task: string | null;
+  progress: number | null;
+  workload_summary: Record<string, number>;
+  last_heartbeat_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  error_message: string | null;
+}
+
+interface AgentTaskItem {
+  id: string;
+  agent_id: string;
+  title: string;
+  status: string;
+  priority: number;
+  progress: number;
+  assigned_by: string | null;
+  deadline: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+const STATUS_COLORS: Record<string, string> = {
+  idle: "var(--text-secondary)",
+  working: "var(--blue)",
+  finished: "var(--green)",
+  error: "var(--red)",
+  stale: "var(--orange)",
+};
+
+function HeartbeatDashboard() {
+  const [heartbeats, setHeartbeats] = useState<Heartbeat[]>([]);
+  const [tasks, setTasks] = useState<AgentTaskItem[]>([]);
+  const [taskFilter, setTaskFilter] = useState("all");
+
+  const loadHeartbeats = useCallback(async () => {
+    const res = await fetch("/api/agents/heartbeats");
+    if (res.ok) {
+      const data = await res.json();
+      setHeartbeats(data.heartbeats || []);
+    }
+  }, []);
+
+  const loadTasks = useCallback(async () => {
+    const params = taskFilter !== "all" ? `?status=${taskFilter}` : "";
+    const res = await fetch(`/api/agents/tasks${params}`);
+    if (res.ok) {
+      const data = await res.json();
+      setTasks(data.tasks || []);
+    }
+  }, [taskFilter]);
+
+  useEffect(() => { loadHeartbeats(); loadTasks(); }, [loadHeartbeats, loadTasks]);
+  useEffect(() => { const interval = setInterval(() => { loadHeartbeats(); loadTasks(); }, 15000); return () => clearInterval(interval); }, [loadHeartbeats, loadTasks]);
+
+  const timeAgo = (dateStr: string | null) => {
+    if (!dateStr) return "—";
+    const diff = Date.now() - new Date(dateStr).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    return `${Math.floor(hours / 24)}d ago`;
+  };
+
+  return (
+    <Stack gap={16}>
+      {/* Agent Status Cards */}
+      <div>
+        <SectionLabel>Agent Status</SectionLabel>
+        {heartbeats.length === 0 ? (
+          <MetaText>No heartbeat data yet. Agents will report status when they start working.</MetaText>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 12 }}>
+            {heartbeats.map((hb) => (
+              <Card key={hb.agent_id} style={{ padding: 12 }}>
+                <Row gap={8} style={{ marginBottom: 8 }}>
+                  <StatusDot status={hb.status === "working" ? "running" : hb.status === "error" || hb.status === "stale" ? "error" : "muted"} />
+                  <strong>{hb.agent_name}</strong>
+                  <Badge status={hb.status === "working" ? "accent" : hb.status === "finished" ? "success" : hb.status === "error" ? "error" : hb.status === "stale" ? "warning" : "muted"}>
+                    {hb.status}
+                  </Badge>
+                </Row>
+
+                {hb.current_task && (
+                  <MetaText style={{ display: "block", marginBottom: 4 }}>{hb.current_task}</MetaText>
+                )}
+
+                {hb.progress !== null && hb.progress > 0 && (
+                  <div style={{ background: "var(--bg-secondary)", borderRadius: 4, height: 6, marginBottom: 6, overflow: "hidden" }}>
+                    <div style={{ background: STATUS_COLORS[hb.status] || "var(--blue)", width: `${hb.progress * 100}%`, height: "100%", borderRadius: 4, transition: "width 0.3s" }} />
+                  </div>
+                )}
+
+                {hb.error_message && (
+                  <MetaText style={{ display: "block", color: "var(--red)", marginBottom: 4, fontSize: 12 }}>{hb.error_message}</MetaText>
+                )}
+
+                <Row gap={8}>
+                  <MetaText>Last: {timeAgo(hb.last_heartbeat_at)}</MetaText>
+                  {hb.workload_summary.pending !== undefined && (
+                    <MetaText>{hb.workload_summary.pending}p / {hb.workload_summary.in_progress || 0}w / {hb.workload_summary.completed || 0}d</MetaText>
+                  )}
+                </Row>
+              </Card>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Task List */}
+      <div>
+        <Row gap={8} style={{ marginBottom: 8 }}>
+          <SectionLabel>Tasks</SectionLabel>
+          <select value={taskFilter} onChange={(e) => setTaskFilter(e.target.value)} style={{ fontSize: 13, padding: "2px 8px" }}>
+            <option value="all">All</option>
+            <option value="pending">Pending</option>
+            <option value="in_progress">In Progress</option>
+            <option value="completed">Completed</option>
+            <option value="failed">Failed</option>
+          </select>
+        </Row>
+
+        {tasks.length === 0 ? (
+          <MetaText>No tasks found.</MetaText>
+        ) : (
+          <Stack gap={4}>
+            {tasks.map((t) => (
+              <Row key={t.id} gap={8} style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", alignItems: "center" }}>
+                <Badge status={t.status === "completed" ? "success" : t.status === "failed" ? "error" : t.status === "in_progress" ? "accent" : "muted"}>
+                  {t.status}
+                </Badge>
+                <div style={{ flex: 1 }}>
+                  <strong>{t.title}</strong>
+                  <MetaText> — {t.agent_id}</MetaText>
+                </div>
+                <MetaText>P{t.priority}</MetaText>
+                {t.progress > 0 && t.progress < 1 && <MetaText>{Math.round(t.progress * 100)}%</MetaText>}
+                {t.assigned_by && <MetaText>by {t.assigned_by}</MetaText>}
+                <MetaText>{timeAgo(t.created_at)}</MetaText>
+              </Row>
+            ))}
+          </Stack>
+        )}
+      </div>
+    </Stack>
   );
 }

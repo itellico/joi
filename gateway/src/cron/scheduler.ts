@@ -15,6 +15,7 @@ import { checkBirthdays } from "../contacts/birthday-checker.js";
 import { runSelfRepair } from "./self-repair.js";
 import { runTestSuite } from "../quality/runner.js";
 import { createIssuesFromRun } from "../quality/issues.js";
+import { checkHeartbeats } from "../agent/heartbeat.js";
 import type { JoiConfig } from "../config/schema.js";
 
 export interface CronJob {
@@ -248,6 +249,9 @@ async function executeJob(job: CronJob): Promise<void> {
           break;
         case "self_repair":
           await runSelfRepair(schedulerConfig!);
+          break;
+        case "check_agent_heartbeats":
+          await checkHeartbeats();
           break;
         case "run_qa_tests": {
           // Run all enabled QA test suites

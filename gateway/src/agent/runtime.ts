@@ -39,8 +39,10 @@ function shouldUseToolsForMessage(message: string): boolean {
   const trimmed = message.trim();
   if (!trimmed) return false;
   if (trimmed.length > LIGHTWEIGHT_CHAT_MAX_CHARS) return true;
+  // Only disable tools for known-lightweight greetings/acks.
+  // Everything else (including questions like "who is my son?") needs tools + memory.
   if (LIGHTWEIGHT_CHAT_REGEX.test(trimmed)) return false;
-  return TOOL_INTENT_REGEX.test(trimmed);
+  return true;
 }
 
 // ── OpenAI format converters (for non-Anthropic models on OpenRouter) ──
@@ -193,6 +195,11 @@ async function openaiStream(
   }
 
   const stopReason = finishReason === "tool_calls" ? "tool_use" : "end_turn";
+
+  // Detect models that output tool-call-like code instead of structured tool_calls
+  if (toolCalls.length === 0 && text && /\bdefault_api\.\w+\(|print\(\s*\w+_api\./i.test(text)) {
+    console.warn(`[openaiStream] Model ${model} produced code-block tool calls instead of structured tool_calls. Text contains API call patterns. Consider using a model with reliable function calling.`);
+  }
 
   return { text, toolCalls, inputTokens, outputTokens, stopReason };
 }
