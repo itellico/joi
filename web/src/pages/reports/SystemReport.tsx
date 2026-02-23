@@ -81,7 +81,7 @@ export default function SystemReport() {
 
   const credits = openrouter?.credits;
   const balance = credits ? (credits.total_credits ?? 0) - (credits.total_usage ?? 0) : null;
-  const hasVoiceData = voice && voice.total_calls > 0;
+  const hasVoiceData = voice && (voice.total_calls > 0 || voice.total_cost > 0);
 
   // Pivot voice daily by service for stacked bar
   const voiceDailyPivoted = (() => {
