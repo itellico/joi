@@ -221,7 +221,17 @@ check_autodev() {
 }
 
 check_livekit() {
-  pgrep -f "$PROJECT_ROOT/infra/livekit-worker" >/dev/null 2>&1
+  # Process must exist AND its HTTP health server must respond "OK".
+  # The LiveKit agents SDK exposes an HTTP health endpoint on a random port.
+  # Without this check, a zombie worker (alive but disconnected from LiveKit
+  # after an OrbStack restart) would appear healthy to pgrep.
+  local pid
+  pid=$(pgrep -f "agent.py dev" | head -1) || return 1
+  [ -n "$pid" ] || return 1
+  local port
+  port=$(lsof -anP -p "$pid" -i TCP -sTCP:LISTEN 2>/dev/null \
+    | awk '{print $9}' | grep -oE '[0-9]+$' | head -1)
+  [ -n "$port" ] && curl -sf -m 3 "http://localhost:${port}/" >/dev/null 2>&1
 }
 
 gateway_pids() {
