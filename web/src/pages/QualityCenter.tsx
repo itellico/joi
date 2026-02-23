@@ -780,7 +780,7 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
             <input type="text" value={suiteForm.agent_id} onChange={(e) => setSuiteForm({ ...suiteForm, agent_id: e.target.value })} placeholder="personal" />
           </FormField>
           <FormField label="Description" span>
-            <textarea value={suiteForm.description} onChange={(e) => setSuiteForm({ ...suiteForm, description: e.target.value })} placeholder="What does this suite test?" rows={2} />
+            <textarea value={suiteForm.description} onChange={(e) => setSuiteForm({ ...suiteForm, description: e.target.value })} placeholder="What does this suite test?" rows={5} />
           </FormField>
           <FormField label="Tags" hint="Comma-separated">
             <input type="text" value={suiteForm.tags} onChange={(e) => setSuiteForm({ ...suiteForm, tags: e.target.value })} placeholder="memory, core, smoke-test" />
