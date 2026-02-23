@@ -368,7 +368,7 @@ export function getOKRToolDefinitions(): Anthropic.Tool[] {
         properties: {
           quarter: {
             type: "string",
-            description: 'Quarter to report on (e.g. "Q1 2026"). Defaults to current quarter.',
+            description: 'Period to report on — e.g. "Q1 2026" for quarterly or "2026" for annual. Defaults to current quarter.',
           },
         },
         required: [],

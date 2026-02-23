@@ -4718,6 +4718,21 @@ select.t3-dialog-input {
   color: var(--text-primary);
 }
 
+.okr-obj-title--clickable:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.okr-owner-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
 .okr-obj-content {
   padding: var(--space-3) 18px var(--space-4);
 }
@@ -4798,9 +4813,25 @@ select.t3-dialog-input {
   border-radius: 4px;
 }
 
-.okr-kr-value--editable {
+.okr-kr-edit-btn {
+  opacity: 0;
+  background: none;
+  border: none;
+  color: var(--text-muted);
   cursor: pointer;
-  border: 1px dashed var(--border);
+  font-size: 14px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: opacity 0.15s;
+}
+
+.okr-kr-row:hover .okr-kr-edit-btn {
+  opacity: 1;
+}
+
+.okr-kr-edit-btn:hover {
+  color: var(--accent);
+  background: var(--bg-tertiary);
 }
 
 .okr-add-kr-btn {

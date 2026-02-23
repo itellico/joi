@@ -66,9 +66,46 @@ interface FlatKR {
   score: number;
 }
 
+interface Agent {
+  id: string;
+  name: string;
+  enabled: boolean;
+}
+
+interface ObjForm {
+  id: string | null;
+  title: string;
+  description: string;
+  type: string;
+  level: string;
+  owner: string;
+  status: string;
+}
+
+interface KRForm {
+  id: string | null;
+  objectiveId: string;
+  title: string;
+  metricType: string;
+  unit: string;
+  baseline: string;
+  target: string;
+  current: string;
+  owner: string;
+}
+
 // ─── Helpers ───
 
-const QUARTERS = ["Q1 2026", "Q2 2026", "Q3 2026", "Q4 2026"];
+function getCurrentPeriod(): string {
+  const now = new Date();
+  const q = Math.ceil((now.getMonth() + 1) / 3);
+  return `Q${q} ${now.getFullYear()}`;
+}
+
+function yearFromPeriod(p: string): number {
+  const parts = p.split(" ");
+  return parseInt(parts.length > 1 ? parts[1] : parts[0]);
+}
 
 function scoreColor(score: number): string {
   if (score >= 0.7) return "var(--success)";
@@ -174,7 +211,7 @@ function ScoreBar({
 export default function OKRs() {
   const [collections, setCollections] = useState<Collection[]>([]);
   const [objectives, setObjectives] = useState<Objective[]>([]);
-  const [quarter, setQuarter] = useState(QUARTERS[0]);
+  const [period, setPeriod] = useState(getCurrentPeriod);
   const [loading, setLoading] = useState(true);
   const [expandedObj, setExpandedObj] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
@@ -183,33 +220,55 @@ export default function OKRs() {
     return stored === "list" ? "list" : "cards";
   });
 
-  // Modals
-  const [showNewObjective, setShowNewObjective] = useState(false);
-  const [showNewKR, setShowNewKR] = useState<string | null>(null); // objective ID
-  const [editingKR, setEditingKR] = useState<string | null>(null);
-  const [editValue, setEditValue] = useState("");
+  // Agents
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [ownerFilter, setOwnerFilter] = useState("All");
 
-  // New Objective form
-  const [newObjTitle, setNewObjTitle] = useState("");
-  const [newObjType, setNewObjType] = useState("committed");
-  const [newObjLevel, setNewObjLevel] = useState("personal");
-  const [newObjDesc, setNewObjDesc] = useState("");
+  // Unified modals
+  const [objForm, setObjForm] = useState<ObjForm | null>(null);
+  const [krForm, setKrForm] = useState<KRForm | null>(null);
 
-  // New KR form
-  const [newKRTitle, setNewKRTitle] = useState("");
-  const [newKRMetricType, setNewKRMetricType] = useState("number");
-  const [newKRBaseline, setNewKRBaseline] = useState("0");
-  const [newKRTarget, setNewKRTarget] = useState("");
-  const [newKRUnit, setNewKRUnit] = useState("");
-  const [newKROwner, setNewKROwner] = useState("Marcus");
+  // ─── Period options ───
+
+  const periodGroups = useMemo(() => {
+    const now = new Date();
+    const years = [now.getFullYear(), now.getFullYear() + 1];
+    return years.map((year) => ({
+      year,
+      options: [
+        ...[1, 2, 3, 4].map((q) => ({
+          value: `Q${q} ${year}`,
+          label: `Q${q} ${year}`,
+        })),
+        { value: String(year), label: `${year} (Annual)` },
+      ],
+    }));
+  }, []);
+
+  // ─── Owner choices ───
+
+  const ownerChoices = useMemo(() => {
+    const choices = ["Marcus"];
+    agents
+      .filter((a) => a.enabled)
+      .forEach((a) => {
+        if (!choices.includes(a.name)) choices.push(a.name);
+      });
+    return choices;
+  }, [agents]);
+
+  const ownerFilterOptions = useMemo(
+    () => ["All", ...ownerChoices],
+    [ownerChoices],
+  );
 
   // ─── Find OKR collection IDs ───
 
   const objCollectionId = collections.find(
-    (c) => c.name === "OKR Objectives"
+    (c) => c.name === "OKR Objectives",
   )?.id;
   const krCollectionId = collections.find(
-    (c) => c.name === "OKR Key Results"
+    (c) => c.name === "OKR Key Results",
   )?.id;
 
   // ─── Data Fetching ───
@@ -224,22 +283,32 @@ export default function OKRs() {
     }
   }, []);
 
+  const fetchAgents = useCallback(async () => {
+    try {
+      const res = await fetch("/api/agents");
+      const data = await res.json();
+      setAgents(data.agents || []);
+    } catch (err) {
+      console.error("Failed to load agents:", err);
+    }
+  }, []);
+
   const fetchOKRs = useCallback(async () => {
     if (!objCollectionId || !krCollectionId) return;
     setLoading(true);
     try {
-      // Fetch objectives for selected quarter
+      // Fetch objectives for selected period
       const objRes = await fetch(
-        `/api/store/objects?collection=${objCollectionId}&limit=100`
+        `/api/store/objects?collection=${objCollectionId}&limit=100`,
       );
       const objData = await objRes.json();
       const allObjectives: StoreObject[] = (objData.objects || []).filter(
-        (o: StoreObject) => o.data.quarter === quarter
+        (o: StoreObject) => o.data.quarter === period,
       );
 
       // Fetch all KRs
       const krRes = await fetch(
-        `/api/store/objects?collection=${krCollectionId}&limit=500`
+        `/api/store/objects?collection=${krCollectionId}&limit=500`,
       );
       const krData = await krRes.json();
       const allKRs: StoreObject[] = krData.objects || [];
@@ -255,7 +324,7 @@ export default function OKRs() {
           const linkedKRIds = relations
             .filter(
               (r) =>
-                r.relation === "has_key_result" && r.source_id === obj.id
+                r.relation === "has_key_result" && r.source_id === obj.id,
             )
             .map((r) => r.target_id);
 
@@ -271,7 +340,7 @@ export default function OKRs() {
               : 0;
 
           return { ...obj, keyResults, computedScore };
-        })
+        }),
       );
 
       // Sort by status (active first), then by title
@@ -297,11 +366,12 @@ export default function OKRs() {
     } finally {
       setLoading(false);
     }
-  }, [objCollectionId, krCollectionId, quarter]);
+  }, [objCollectionId, krCollectionId, period]);
 
   useEffect(() => {
     fetchCollections();
-  }, [fetchCollections]);
+    fetchAgents();
+  }, [fetchCollections, fetchAgents]);
 
   useEffect(() => {
     if (objCollectionId && krCollectionId) {
@@ -309,128 +379,240 @@ export default function OKRs() {
     }
   }, [objCollectionId, krCollectionId, fetchOKRs]);
 
+  // ─── Open modals ───
+
+  const openNewObjective = () => {
+    setObjForm({
+      id: null,
+      title: "",
+      description: "",
+      type: "committed",
+      level: "personal",
+      owner: "Marcus",
+      status: "active",
+    });
+  };
+
+  const openEditObjective = (obj: Objective) => {
+    setObjForm({
+      id: obj.id,
+      title: obj.title,
+      description: String(obj.data.description || ""),
+      type: (obj.data.type as string) || "committed",
+      level: (obj.data.level as string) || "personal",
+      owner: (obj.data.owner as string) || "Marcus",
+      status: (obj.data.status as string) || "active",
+    });
+  };
+
+  const openNewKR = (objectiveId: string) => {
+    setKrForm({
+      id: null,
+      objectiveId,
+      title: "",
+      metricType: "number",
+      unit: "",
+      baseline: "0",
+      target: "",
+      current: "0",
+      owner: "Marcus",
+    });
+  };
+
+  const openEditKR = (kr: KeyResult, objectiveId: string) => {
+    setKrForm({
+      id: kr.id,
+      objectiveId,
+      title: kr.title,
+      metricType: (kr.data.metric_type as string) || "number",
+      unit: (kr.data.unit as string) || "",
+      baseline: String(kr.data.baseline ?? 0),
+      target: String(kr.data.target ?? 0),
+      current: String(kr.data.current ?? 0),
+      owner: (kr.data.owner as string) || "Marcus",
+    });
+  };
+
   // ─── Actions ───
 
-  const handleCreateObjective = async () => {
-    if (!newObjTitle.trim() || !objCollectionId) return;
+  const handleSaveObjective = async () => {
+    if (!objForm || !objForm.title.trim() || !objCollectionId) return;
     try {
-      await fetch("/api/store/objects", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          collection_id: objCollectionId,
-          title: newObjTitle,
-          data: {
-            quarter,
-            year: parseInt(quarter.split(" ")[1]),
-            type: newObjType,
-            level: newObjLevel,
-            status: "active",
-            score: 0,
-            owner: "Marcus",
-            description: newObjDesc,
-          },
-          tags: [
-            quarter.toLowerCase().replace(" ", "-"),
-            newObjType,
-          ],
-        }),
-      });
-      setShowNewObjective(false);
-      setNewObjTitle("");
-      setNewObjType("committed");
-      setNewObjLevel("personal");
-      setNewObjDesc("");
+      if (objForm.id) {
+        // Edit mode
+        const obj = objectives.find((o) => o.id === objForm.id);
+        if (!obj) return;
+        await fetch(`/api/store/objects/${objForm.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: objForm.title,
+            data: {
+              ...obj.data,
+              description: objForm.description,
+              type: objForm.type,
+              level: objForm.level,
+              owner: objForm.owner,
+              status: objForm.status,
+            },
+          }),
+        });
+      } else {
+        // Create mode
+        await fetch("/api/store/objects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            collection_id: objCollectionId,
+            title: objForm.title,
+            data: {
+              quarter: period,
+              year: yearFromPeriod(period),
+              type: objForm.type,
+              level: objForm.level,
+              status: "active",
+              score: 0,
+              owner: objForm.owner,
+              description: objForm.description,
+            },
+            tags: [period.toLowerCase().replace(" ", "-"), objForm.type],
+          }),
+        });
+      }
+      setObjForm(null);
       fetchOKRs();
     } catch (err) {
-      console.error("Failed to create objective:", err);
+      console.error("Failed to save objective:", err);
     }
   };
 
-  const handleCreateKR = async () => {
-    if (!newKRTitle.trim() || !krCollectionId || !showNewKR) return;
+  const handleSaveKR = async () => {
+    if (!krForm || !krForm.title.trim() || !krCollectionId) return;
     try {
-      const krRes = await fetch("/api/store/objects", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          collection_id: krCollectionId,
-          title: newKRTitle,
-          data: {
-            metric_type: newKRMetricType,
-            baseline: parseFloat(newKRBaseline) || 0,
-            target: parseFloat(newKRTarget) || 0,
-            current: parseFloat(newKRBaseline) || 0,
-            unit: newKRUnit,
-            score: 0,
-            confidence: "high",
-            status: "on_track",
-            owner: newKROwner,
-            data_source: "",
-          },
-        }),
-      });
-      const krData = await krRes.json();
+      if (krForm.id) {
+        // Edit mode
+        const baseline = parseFloat(krForm.baseline) || 0;
+        const target = parseFloat(krForm.target) || 0;
+        const current = parseFloat(krForm.current) || 0;
+        const newScore =
+          target === baseline
+            ? 0
+            : Math.max(
+                0,
+                Math.min(1, (current - baseline) / (target - baseline)),
+              );
+        let newStatus = "on_track";
+        if (newScore >= 1.0) newStatus = "achieved";
+        else if (newScore < 0.4) newStatus = "behind";
+        else if (newScore < 0.7) newStatus = "at_risk";
 
-      // Create relation: objective -> KR
-      await fetch("/api/store/relations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          source_id: showNewKR,
-          target_id: krData.object.id,
-          relation: "has_key_result",
-        }),
-      });
+        // Preserve existing data fields
+        let existingData: Record<string, unknown> = {};
+        for (const obj of objectives) {
+          const found = obj.keyResults.find((kr) => kr.id === krForm.id);
+          if (found) {
+            existingData = found.data;
+            break;
+          }
+        }
 
-      setShowNewKR(null);
-      setNewKRTitle("");
-      setNewKRMetricType("number");
-      setNewKRBaseline("0");
-      setNewKRTarget("");
-      setNewKRUnit("");
-      setNewKROwner("Marcus");
+        await fetch(`/api/store/objects/${krForm.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: krForm.title,
+            data: {
+              ...existingData,
+              metric_type: krForm.metricType,
+              unit: krForm.unit,
+              baseline,
+              target,
+              current,
+              owner: krForm.owner,
+              score: Math.round(newScore * 100) / 100,
+              status: newStatus,
+            },
+          }),
+        });
+      } else {
+        // Create mode
+        const krRes = await fetch("/api/store/objects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            collection_id: krCollectionId,
+            title: krForm.title,
+            data: {
+              metric_type: krForm.metricType,
+              baseline: parseFloat(krForm.baseline) || 0,
+              target: parseFloat(krForm.target) || 0,
+              current: parseFloat(krForm.baseline) || 0,
+              unit: krForm.unit,
+              score: 0,
+              confidence: "high",
+              status: "on_track",
+              owner: krForm.owner,
+              data_source: "",
+            },
+          }),
+        });
+        const krData = await krRes.json();
+
+        // Create relation: objective -> KR
+        await fetch("/api/store/relations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            source_id: krForm.objectiveId,
+            target_id: krData.object.id,
+            relation: "has_key_result",
+          }),
+        });
+      }
+      setKrForm(null);
       fetchOKRs();
     } catch (err) {
-      console.error("Failed to create KR:", err);
+      console.error("Failed to save KR:", err);
     }
   };
 
-  const handleUpdateKRValue = async (kr: KeyResult) => {
-    const newCurrent = parseFloat(editValue);
-    if (isNaN(newCurrent)) return;
-
-    const baseline = Number(kr.data.baseline) || 0;
-    const target = Number(kr.data.target) || 0;
-    const newScore =
-      target === baseline
-        ? 0
-        : Math.max(0, Math.min(1, (newCurrent - baseline) / (target - baseline)));
-
-    // Determine status
-    let newStatus = "on_track";
-    if (newScore >= 1.0) newStatus = "achieved";
-    else if (newScore < 0.4) newStatus = "behind";
-    else if (newScore < 0.7) newStatus = "at_risk";
-
+  const handleArchiveObjective = async (objId: string) => {
     try {
-      await fetch(`/api/store/objects/${kr.id}`, {
+      await fetch(`/api/store/objects/${objId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          data: {
-            ...kr.data,
-            current: newCurrent,
-            score: Math.round(newScore * 100) / 100,
-            status: newStatus,
-          },
-        }),
+        body: JSON.stringify({ status: "archived" }),
       });
-      setEditingKR(null);
-      setEditValue("");
+      const obj = objectives.find((o) => o.id === objId);
+      if (obj) {
+        await Promise.all(
+          obj.keyResults.map((kr) =>
+            fetch(`/api/store/objects/${kr.id}`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ status: "archived" }),
+            }),
+          ),
+        );
+      }
+      setObjForm(null);
       fetchOKRs();
     } catch (err) {
-      console.error("Failed to update KR:", err);
+      console.error("Failed to archive objective:", err);
+    }
+  };
+
+  const handleArchiveKR = async (krId: string) => {
+    try {
+      await fetch(`/api/store/objects/${krId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "archived" }),
+      });
+      setKrForm(null);
+      fetchOKRs();
+    } catch (err) {
+      console.error("Failed to archive KR:", err);
     }
   };
 
@@ -484,15 +666,28 @@ export default function OKRs() {
   // ─── Filtering ───
 
   const filteredObjectives = useMemo(() => {
+    let result = objectives;
+
+    // Owner filter
+    if (ownerFilter !== "All") {
+      result = result.filter(
+        (obj) => (obj.data.owner as string || "Marcus") === ownerFilter,
+      );
+    }
+
+    // Search filter
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return objectives;
-    return objectives.filter(
-      (obj) =>
-        obj.title.toLowerCase().includes(q) ||
-        String(obj.data.description || "").toLowerCase().includes(q) ||
-        obj.keyResults.some((kr) => kr.title.toLowerCase().includes(q)),
-    );
-  }, [objectives, searchQuery]);
+    if (q) {
+      result = result.filter(
+        (obj) =>
+          obj.title.toLowerCase().includes(q) ||
+          String(obj.data.description || "").toLowerCase().includes(q) ||
+          obj.keyResults.some((kr) => kr.title.toLowerCase().includes(q)),
+      );
+    }
+
+    return result;
+  }, [objectives, searchQuery, ownerFilter]);
 
   const flatKRs = useMemo(() => {
     const result: FlatKR[] = [];
@@ -574,7 +769,7 @@ export default function OKRs() {
       <PageHeader
         title="OKRs"
         actions={
-          <Button variant="primary" size="sm" onClick={() => setShowNewObjective(true)}>
+          <Button variant="primary" size="sm" onClick={openNewObjective}>
             + New Objective
           </Button>
         }
@@ -599,11 +794,26 @@ export default function OKRs() {
             placeholder="Search objectives and key results..."
             resultCount={searchQuery.trim() ? filteredObjectives.length : undefined}
           />
+          <select
+            value={period}
+            onChange={(e) => setPeriod(e.target.value)}
+            className="okr-quarter-select"
+          >
+            {periodGroups.map((g) => (
+              <optgroup key={g.year} label={String(g.year)}>
+                {g.options.map((p) => (
+                  <option key={p.value} value={p.value}>
+                    {p.label}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
           <FilterGroup
-            options={QUARTERS}
-            value={quarter}
-            onChange={(v) => setQuarter(v as string)}
-            labelFn={(q) => String(q)}
+            options={ownerFilterOptions}
+            value={ownerFilter}
+            onChange={(v) => setOwnerFilter(v as string)}
+            labelFn={(o) => String(o)}
           />
           <div className="list-page-toolbar-right">
             <ViewToggle
@@ -618,10 +828,10 @@ export default function OKRs() {
           <EmptyState message="Loading OKRs..." />
         ) : filteredObjectives.length === 0 ? (
           <EmptyState
-            message={searchQuery.trim() ? "No matching objectives" : `No objectives for ${quarter}`}
+            message={searchQuery.trim() ? "No matching objectives" : `No objectives for ${period}`}
             action={
               !searchQuery.trim() ? (
-                <Button variant="primary" onClick={() => setShowNewObjective(true)}>
+                <Button variant="primary" onClick={openNewObjective}>
                   Create your first objective
                 </Button>
               ) : undefined
@@ -641,6 +851,7 @@ export default function OKRs() {
               const isExpanded = expandedObj.has(obj.id);
               const objType = (obj.data.type as string) || "committed";
               const objStatus = (obj.data.status as string) || "draft";
+              const objOwner = (obj.data.owner as string) || "Marcus";
 
               return (
                 <Card
@@ -658,9 +869,19 @@ export default function OKRs() {
                     <MetaText size="xs" className="font-semibold">
                       O{objIndex + 1}
                     </MetaText>
-                    <span className="okr-obj-title">
+                    <span
+                      className="okr-obj-title okr-obj-title--clickable"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openEditObjective(obj);
+                      }}
+                      title="Click to edit objective"
+                    >
                       {obj.title}
                     </span>
+                    {objOwner !== "Marcus" && (
+                      <span className="okr-owner-badge">{objOwner}</span>
+                    )}
                     <Badge status={typeToBadge(objType)}>
                       {objType === "aspirational"
                         ? "\u25CB aspirational"
@@ -693,9 +914,6 @@ export default function OKRs() {
                         <div className="okr-kr-list">
                           {obj.keyResults.map((kr, krIndex) => {
                             const krScore = computeKRScore(kr);
-                            const isBinary =
-                              (kr.data.metric_type as string) === "binary";
-                            const isEditing = editingKR === kr.id;
                             const krStatus = (kr.data.status as string) || "on_track";
                             const krConfidence = (kr.data.confidence as string) || "medium";
 
@@ -711,56 +929,9 @@ export default function OKRs() {
 
                                 {/* Progress value */}
                                 <div className="okr-kr-progress">
-                                  {isEditing ? (
-                                    <div className="flex-row gap-1">
-                                      <input
-                                        type="number"
-                                        value={editValue}
-                                        onChange={(e) =>
-                                          setEditValue(e.target.value)
-                                        }
-                                        onKeyDown={(e) => {
-                                          if (e.key === "Enter")
-                                            handleUpdateKRValue(kr);
-                                          if (e.key === "Escape") {
-                                            setEditingKR(null);
-                                            setEditValue("");
-                                          }
-                                        }}
-                                        autoFocus
-                                        className="okr-inline-input"
-                                      />
-                                      <button
-                                        onClick={() =>
-                                          handleUpdateKRValue(kr)
-                                        }
-                                        className="okr-save-btn"
-                                      >
-                                        Save
-                                      </button>
-                                    </div>
-                                  ) : (
-                                    <span
-                                      onClick={() => {
-                                        if (!isBinary) {
-                                          setEditingKR(kr.id);
-                                          setEditValue(
-                                            String(
-                                              kr.data.current || 0
-                                            )
-                                          );
-                                        }
-                                      }}
-                                      className={`okr-kr-value${!isBinary ? " okr-kr-value--editable" : ""}`}
-                                      title={
-                                        isBinary
-                                          ? undefined
-                                          : "Click to update"
-                                      }
-                                    >
-                                      {formatKRProgress(kr)}
-                                    </span>
-                                  )}
+                                  <span className="okr-kr-value">
+                                    {formatKRProgress(kr)}
+                                  </span>
                                 </div>
 
                                 {/* Confidence */}
@@ -782,6 +953,14 @@ export default function OKRs() {
                                     height={6}
                                   />
                                 </div>
+
+                                <button
+                                  className="okr-kr-edit-btn"
+                                  onClick={() => openEditKR(kr, obj.id)}
+                                  title="Edit key result"
+                                >
+                                  ✎
+                                </button>
                               </div>
                             );
                           })}
@@ -791,7 +970,7 @@ export default function OKRs() {
                       {/* Add KR button */}
                       <div className="okr-add-kr-area mt-2">
                         <button
-                          onClick={() => setShowNewKR(obj.id)}
+                          onClick={() => openNewKR(obj.id)}
                           className="okr-add-kr-btn"
                         >
                           + Add Key Result
@@ -806,157 +985,238 @@ export default function OKRs() {
         )}
       </PageBody>
 
-      {/* ─── New Objective Modal ─── */}
+      {/* ─── Objective Modal (create + edit) ─── */}
       <Modal
-        open={showNewObjective}
-        onClose={() => setShowNewObjective(false)}
-        title="New Objective"
+        open={objForm !== null}
+        onClose={() => setObjForm(null)}
+        title={objForm?.id ? "Edit Objective" : "New Objective"}
       >
-        <Stack gap={3}>
-          <FormField label="Title">
-            <input
-              type="text"
-              value={newObjTitle}
-              onChange={(e) => setNewObjTitle(e.target.value)}
-              placeholder="e.g., Ship JOI v1.0 to production"
-              autoFocus
-              onKeyDown={(e) =>
-                e.key === "Enter" && handleCreateObjective()
-              }
-            />
-          </FormField>
-          <FormField label="Description">
-            <textarea
-              value={newObjDesc}
-              onChange={(e) => setNewObjDesc(e.target.value)}
-              placeholder="What does success look like?"
-              rows={2}
-              className="resize-vertical"
-            />
-          </FormField>
-          <FormGrid>
-            <FormField label="Type">
-              <select
-                value={newObjType}
-                onChange={(e) => setNewObjType(e.target.value)}
-              >
-                <option value="committed">Committed</option>
-                <option value="aspirational">Aspirational</option>
-              </select>
-            </FormField>
-            <FormField label="Level">
-              <select
-                value={newObjLevel}
-                onChange={(e) => setNewObjLevel(e.target.value)}
-              >
-                <option value="personal">Personal</option>
-                <option value="project">Project</option>
-                <option value="company">Company</option>
-              </select>
-            </FormField>
-          </FormGrid>
-          <MetaText size="xs" className="okr-meta-info">
-            Quarter: <strong>{quarter}</strong> &middot; Owner: <strong>Marcus</strong>
-          </MetaText>
-          <div className="action-row mt-1">
-            <Button onClick={() => setShowNewObjective(false)}>
-              Cancel
-            </Button>
-            <Button
-              variant="primary"
-              onClick={handleCreateObjective}
-              disabled={!newObjTitle.trim()}
-            >
-              Create Objective
-            </Button>
-          </div>
-        </Stack>
-      </Modal>
-
-      {/* ─── New Key Result Modal ─── */}
-      <Modal
-        open={showNewKR !== null}
-        onClose={() => setShowNewKR(null)}
-        title="New Key Result"
-      >
-        <Stack gap={3}>
-          <FormField label="Title">
-            <input
-              type="text"
-              value={newKRTitle}
-              onChange={(e) => setNewKRTitle(e.target.value)}
-              placeholder="e.g., Core API endpoints"
-              autoFocus
-              onKeyDown={(e) =>
-                e.key === "Enter" && handleCreateKR()
-              }
-            />
-          </FormField>
-          <FormGrid>
-            <FormField label="Metric Type">
-              <select
-                value={newKRMetricType}
-                onChange={(e) =>
-                  setNewKRMetricType(e.target.value)
-                }
-              >
-                <option value="number">Number</option>
-                <option value="percentage">Percentage</option>
-                <option value="currency">Currency</option>
-                <option value="binary">Binary (yes/no)</option>
-              </select>
-            </FormField>
-            <FormField label="Unit">
+        {objForm && (
+          <Stack gap={3}>
+            <FormField label="Title">
               <input
                 type="text"
-                value={newKRUnit}
-                onChange={(e) => setNewKRUnit(e.target.value)}
-                placeholder='e.g., "users", "%", "$"'
+                value={objForm.title}
+                onChange={(e) =>
+                  setObjForm({ ...objForm, title: e.target.value })
+                }
+                placeholder="e.g., Ship JOI v1.0 to production"
+                autoFocus
+                onKeyDown={(e) =>
+                  e.key === "Enter" && handleSaveObjective()
+                }
               />
             </FormField>
-          </FormGrid>
-          {newKRMetricType !== "binary" && (
+            <FormField label="Description">
+              <textarea
+                value={objForm.description}
+                onChange={(e) =>
+                  setObjForm({ ...objForm, description: e.target.value })
+                }
+                placeholder="What does success look like?"
+                rows={2}
+                className="resize-vertical"
+              />
+            </FormField>
             <FormGrid>
-              <FormField label="Baseline">
-                <input
-                  type="number"
-                  value={newKRBaseline}
+              <FormField label="Type">
+                <select
+                  value={objForm.type}
                   onChange={(e) =>
-                    setNewKRBaseline(e.target.value)
+                    setObjForm({ ...objForm, type: e.target.value })
                   }
-                />
+                >
+                  <option value="committed">Committed</option>
+                  <option value="aspirational">Aspirational</option>
+                </select>
               </FormField>
-              <FormField label="Target">
-                <input
-                  type="number"
-                  value={newKRTarget}
+              <FormField label="Level">
+                <select
+                  value={objForm.level}
                   onChange={(e) =>
-                    setNewKRTarget(e.target.value)
+                    setObjForm({ ...objForm, level: e.target.value })
                   }
+                >
+                  <option value="personal">Personal</option>
+                  <option value="project">Project</option>
+                  <option value="company">Company</option>
+                </select>
+              </FormField>
+            </FormGrid>
+            <FormGrid>
+              <FormField label="Owner">
+                <select
+                  value={objForm.owner}
+                  onChange={(e) =>
+                    setObjForm({ ...objForm, owner: e.target.value })
+                  }
+                >
+                  {ownerChoices.map((o) => (
+                    <option key={o} value={o}>
+                      {o}
+                    </option>
+                  ))}
+                </select>
+              </FormField>
+              {objForm.id && (
+                <FormField label="Status">
+                  <select
+                    value={objForm.status}
+                    onChange={(e) =>
+                      setObjForm({ ...objForm, status: e.target.value })
+                    }
+                  >
+                    <option value="active">Active</option>
+                    <option value="draft">Draft</option>
+                    <option value="completed">Completed</option>
+                    <option value="cancelled">Cancelled</option>
+                  </select>
+                </FormField>
+              )}
+            </FormGrid>
+            {!objForm.id && (
+              <MetaText size="xs" className="okr-meta-info">
+                Period: <strong>{period}</strong>
+              </MetaText>
+            )}
+            <div className="action-row mt-1">
+              {objForm.id && (
+                <Button
+                  variant="ghost"
+                  onClick={() => handleArchiveObjective(objForm.id!)}
+                >
+                  Archive
+                </Button>
+              )}
+              <div style={{ flex: 1 }} />
+              <Button onClick={() => setObjForm(null)}>Cancel</Button>
+              <Button
+                variant="primary"
+                onClick={handleSaveObjective}
+                disabled={!objForm.title.trim()}
+              >
+                {objForm.id ? "Save Changes" : "Create Objective"}
+              </Button>
+            </div>
+          </Stack>
+        )}
+      </Modal>
+
+      {/* ─── Key Result Modal (create + edit) ─── */}
+      <Modal
+        open={krForm !== null}
+        onClose={() => setKrForm(null)}
+        title={krForm?.id ? "Edit Key Result" : "New Key Result"}
+      >
+        {krForm && (
+          <Stack gap={3}>
+            <FormField label="Title">
+              <input
+                type="text"
+                value={krForm.title}
+                onChange={(e) =>
+                  setKrForm({ ...krForm, title: e.target.value })
+                }
+                placeholder="e.g., Core API endpoints"
+                autoFocus
+                onKeyDown={(e) =>
+                  e.key === "Enter" && handleSaveKR()
+                }
+              />
+            </FormField>
+            <FormGrid>
+              <FormField label="Metric Type">
+                <select
+                  value={krForm.metricType}
+                  onChange={(e) =>
+                    setKrForm({ ...krForm, metricType: e.target.value })
+                  }
+                >
+                  <option value="number">Number</option>
+                  <option value="percentage">Percentage</option>
+                  <option value="currency">Currency</option>
+                  <option value="binary">Binary (yes/no)</option>
+                </select>
+              </FormField>
+              <FormField label="Unit">
+                <input
+                  type="text"
+                  value={krForm.unit}
+                  onChange={(e) =>
+                    setKrForm({ ...krForm, unit: e.target.value })
+                  }
+                  placeholder='e.g., "users", "%", "$"'
                 />
               </FormField>
             </FormGrid>
-          )}
-          <FormField label="Owner">
-            <input
-              type="text"
-              value={newKROwner}
-              onChange={(e) => setNewKROwner(e.target.value)}
-            />
-          </FormField>
-          <div className="action-row mt-1">
-            <Button onClick={() => setShowNewKR(null)}>
-              Cancel
-            </Button>
-            <Button
-              variant="primary"
-              onClick={handleCreateKR}
-              disabled={!newKRTitle.trim()}
-            >
-              Create Key Result
-            </Button>
-          </div>
-        </Stack>
+            {krForm.metricType !== "binary" && (
+              <FormGrid>
+                <FormField label="Baseline">
+                  <input
+                    type="number"
+                    value={krForm.baseline}
+                    onChange={(e) =>
+                      setKrForm({ ...krForm, baseline: e.target.value })
+                    }
+                  />
+                </FormField>
+                <FormField label="Target">
+                  <input
+                    type="number"
+                    value={krForm.target}
+                    onChange={(e) =>
+                      setKrForm({ ...krForm, target: e.target.value })
+                    }
+                  />
+                </FormField>
+              </FormGrid>
+            )}
+            {krForm.id && krForm.metricType !== "binary" && (
+              <FormField label="Current Value">
+                <input
+                  type="number"
+                  value={krForm.current}
+                  onChange={(e) =>
+                    setKrForm({ ...krForm, current: e.target.value })
+                  }
+                />
+              </FormField>
+            )}
+            <FormField label="Owner">
+              <select
+                value={krForm.owner}
+                onChange={(e) =>
+                  setKrForm({ ...krForm, owner: e.target.value })
+                }
+              >
+                {ownerChoices.map((o) => (
+                  <option key={o} value={o}>
+                    {o}
+                  </option>
+                ))}
+              </select>
+            </FormField>
+            <div className="action-row mt-1">
+              {krForm.id && (
+                <Button
+                  variant="ghost"
+                  onClick={() => handleArchiveKR(krForm.id!)}
+                >
+                  Archive
+                </Button>
+              )}
+              <div style={{ flex: 1 }} />
+              <Button onClick={() => setKrForm(null)}>Cancel</Button>
+              <Button
+                variant="primary"
+                onClick={handleSaveKR}
+                disabled={!krForm.title.trim()}
+              >
+                {krForm.id ? "Save Changes" : "Create Key Result"}
+              </Button>
+            </div>
+          </Stack>
+        )}
       </Modal>
     </>
   );
