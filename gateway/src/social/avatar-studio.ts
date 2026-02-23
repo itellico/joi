@@ -272,6 +272,18 @@ export async function generateAvatarAndStore(opts: GenerateAvatarOptions): Promi
     mediaConfig: opts.config.media,
   });
 
+  // ── Housekeeping: mark old avatar media as 'replaced' before inserting new ──
+  await query(
+    `UPDATE media
+        SET status = 'replaced', updated_at = NOW()
+      WHERE sender_id = $1
+        AND channel_type = 'agent-social'
+        AND media_type = 'photo'
+        AND status = 'ready'`,
+    [opts.agentId],
+  );
+
+  // ── Insert new avatar media record ──
   await query(
     `INSERT INTO media (
        id, message_id, conversation_id, channel_type, channel_id, sender_id,
@@ -299,12 +311,19 @@ export async function generateAvatarAndStore(opts: GenerateAvatarOptions): Promi
     ],
   );
 
+  // ── Update the agent's avatar_url column so it always points to the latest ──
+  const avatarUrl = `/api/media/${mediaId}/file`;
+  await query(
+    `UPDATE agents SET avatar_url = $1, updated_at = NOW() WHERE id = $2`,
+    [avatarUrl, opts.agentId],
+  );
+
   return {
     mediaId,
     model,
     mode,
     mimeType: image.mimeType,
-    fileUrl: `/api/media/${mediaId}/file`,
+    fileUrl: avatarUrl,
     thumbnailUrl: stored.thumbnailPath ? `/api/media/${mediaId}/thumbnail` : null,
     storagePath: stored.storagePath,
     styleSource: styleGuide.source,
@@ -312,4 +331,62 @@ export async function generateAvatarAndStore(opts: GenerateAvatarOptions): Promi
     promptUsed,
     modelText,
   };
+}
+
+/* ── Bulk avatar generation for all enabled agents ── */
+
+export interface BulkAvatarResult {
+  agentId: string;
+  agentName: string;
+  result?: GenerateAvatarResult;
+  error?: string;
+}
+
+export async function generateAvatarsForAllAgents(opts: {
+  config: JoiConfig;
+  prompt?: string;
+  mode?: AvatarRenderMode;
+  model?: string;
+  conversationId?: string | null;
+}): Promise<BulkAvatarResult[]> {
+  const { rows } = await query(
+    `SELECT id, name, system_prompt FROM agents WHERE enabled = true ORDER BY name`,
+  );
+
+  if (!rows || rows.length === 0) {
+    throw new Error("No enabled agents found.");
+  }
+
+  const results: BulkAvatarResult[] = [];
+
+  for (const agent of rows) {
+    const agentId = agent.id as string;
+    const agentName = (agent.name as string) || agentId;
+    const soulSnippet = typeof agent.system_prompt === "string"
+      ? agent.system_prompt.slice(0, 300)
+      : undefined;
+
+    const agentPrompt = opts.prompt
+      ? `${opts.prompt} — for agent "${agentName}"`
+      : `Unique profile avatar for ${agentName}, an autonomous AI agent`;
+
+    try {
+      const result = await generateAvatarAndStore({
+        config: opts.config,
+        agentId,
+        agentName,
+        prompt: agentPrompt,
+        soulDocument: soulSnippet,
+        mode: opts.mode,
+        model: opts.model,
+        conversationId: opts.conversationId || null,
+      });
+      results.push({ agentId, agentName, result });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      results.push({ agentId, agentName, error: message });
+    }
+  }
+
+  return results;
 }

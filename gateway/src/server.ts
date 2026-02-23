@@ -51,11 +51,18 @@ import { createPushDispatcher, getNotificationLog, getDeviceCount } from "./noti
 import { generateToken } from "./livekit/token.js";
 import { AutoDevProxy } from "./autodev/proxy.js";
 import { runTestSuite } from "./quality/runner.js";
-import { createIssuesFromRun, listIssues, updateIssue, pushToAutodev } from "./quality/issues.js";
+import { createIssuesFromRun, listIssues, updateIssue, pushToAutodev, createAutoDevRuntimeIssue } from "./quality/issues.js";
 import { generatePromptCandidate, abTestPrompt, submitForReview, activatePromptVersion } from "./quality/optimizer.js";
 import type { QATestSuite, QATestCase, QATestRun, QATestResult, QAIssue, QAStats } from "./quality/types.js";
 import { getAllHeartbeats, getHeartbeat, createTask as createAgentTask, updateTask as updateAgentTask, listTasks as listAgentTasks } from "./agent/heartbeat.js";
 import { getPermissionStates, resetPermission } from "./apple/permission-guard.js";
+import {
+  ensureAvatarStyleGuide,
+  generateAvatarAndStore,
+  generateAvatarsForAllAgents,
+  saveAvatarStyleGuide,
+  type AvatarRenderMode,
+} from "./social/avatar-studio.js";
 
 const config = loadConfig();
 
@@ -1822,6 +1829,7 @@ app.get("/api/settings", (_req, res) => {
       anthropicApiKey: config.auth.anthropicApiKey ? "sk-ant-***" + config.auth.anthropicApiKey.slice(-4) : null,
       openrouterApiKey: config.auth.openrouterApiKey ? "sk-or-***" + config.auth.openrouterApiKey.slice(-4) : null,
       openaiApiKey: config.auth.openaiApiKey ? "sk-***" + config.auth.openaiApiKey.slice(-4) : null,
+      googleApiKey: config.auth.googleApiKey ? "AIza***" + config.auth.googleApiKey.slice(-4) : null,
       elevenlabsApiKey: config.auth.elevenlabsApiKey ? "***" + config.auth.elevenlabsApiKey.slice(-4) : null,
     },
     telegram: {
@@ -1877,6 +1885,9 @@ app.put("/api/settings", (req, res) => {
       }
       if (updates.auth.openaiApiKey && !updates.auth.openaiApiKey.includes("***")) {
         (config as any).auth.openaiApiKey = updates.auth.openaiApiKey;
+      }
+      if (updates.auth.googleApiKey && !updates.auth.googleApiKey.includes("***")) {
+        (config as any).auth.googleApiKey = updates.auth.googleApiKey;
       }
       if (updates.auth.elevenlabsApiKey && !updates.auth.elevenlabsApiKey.includes("***")) {
         (config as any).auth.elevenlabsApiKey = updates.auth.elevenlabsApiKey;
@@ -5471,6 +5482,111 @@ app.delete("/api/logs", async (_req, res) => {
   }
 });
 
+// ── Agent Social Avatar API ──
+
+app.get("/api/agent-social/avatar-style", async (_req, res) => {
+  try {
+    const style = await ensureAvatarStyleGuide(config);
+    res.json({
+      source: style.source,
+      notePath: style.notePath,
+      created: style.created,
+      content: style.content,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message || "Failed to load avatar style guide." });
+  }
+});
+
+app.put("/api/agent-social/avatar-style", async (req, res) => {
+  try {
+    const content = String(req.body?.content || "").trim();
+    if (!content) return res.status(400).json({ error: "content is required" });
+
+    const style = await saveAvatarStyleGuide(config, content);
+    res.json({
+      saved: true,
+      source: style.source,
+      notePath: style.notePath,
+      content: style.content,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message || "Failed to save avatar style guide." });
+  }
+});
+
+app.post("/api/agent-social/avatar-generate", async (req, res) => {
+  try {
+    const agentId = String(req.body?.agentId || "").trim();
+    const agentName = String(req.body?.agentName || agentId).trim();
+    const prompt = String(req.body?.prompt || "").trim();
+    const soulDocument = req.body?.soulDocument ? String(req.body.soulDocument) : undefined;
+    const modeRaw = String(req.body?.mode || "nano").trim().toLowerCase();
+    const mode: AvatarRenderMode = modeRaw === "pro" ? "pro" : "nano";
+    const model = req.body?.model ? String(req.body.model).trim() : undefined;
+
+    if (!agentId) return res.status(400).json({ error: "agentId is required" });
+    if (!prompt) return res.status(400).json({ error: "prompt is required" });
+
+    const result = await generateAvatarAndStore({
+      config,
+      agentId,
+      agentName,
+      prompt,
+      soulDocument,
+      mode,
+      model,
+      conversationId: null,
+    });
+
+    res.json({
+      ok: true,
+      ...result,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message || "Avatar generation failed." });
+  }
+});
+
+app.post("/api/agent-social/avatar-generate-all", async (req, res) => {
+  try {
+    const prompt = req.body?.prompt ? String(req.body.prompt).trim() : undefined;
+    const modeRaw = String(req.body?.mode || "nano").trim().toLowerCase();
+    const mode: AvatarRenderMode = modeRaw === "pro" ? "pro" : "nano";
+    const model = req.body?.model ? String(req.body.model).trim() : undefined;
+
+    const results = await generateAvatarsForAllAgents({
+      config,
+      prompt,
+      mode,
+      model,
+      conversationId: null,
+    });
+
+    const succeeded = results.filter((r) => r.result);
+    const failed = results.filter((r) => r.error);
+
+    res.json({
+      ok: true,
+      total: results.length,
+      succeeded: succeeded.length,
+      failed: failed.length,
+      results: results.map((r) => ({
+        agentId: r.agentId,
+        agentName: r.agentName,
+        fileUrl: r.result?.fileUrl || null,
+        error: r.error || null,
+      })),
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message || "Bulk avatar generation failed." });
+  }
+});
+
 // ── Media API ──
 
 app.get("/api/media", async (req, res) => {
@@ -5559,9 +5675,16 @@ app.get("/api/media/:id/file", async (req, res) => {
     if (result.rows.length === 0) return res.status(404).json({ error: "Not found" });
     const { storage_path, mime_type, filename } = result.rows[0];
     const filePath = path.join(config.media.storagePath, storage_path);
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: "File missing on disk" });
     if (mime_type) res.type(mime_type);
     if (filename) res.set("Content-Disposition", `inline; filename="${filename}"`);
-    res.sendFile(filePath);
+    const stream = fs.createReadStream(filePath);
+    stream.on("error", (err) => {
+      console.error("[Media] File stream failed:", err);
+      if (!res.headersSent) res.status(500).json({ error: "Failed to stream file" });
+      else res.end();
+    });
+    stream.pipe(res);
   } catch (err) {
     console.error("[Media] File serve failed:", err);
     res.status(500).json({ error: "Failed to serve file" });
@@ -5578,11 +5701,25 @@ app.get("/api/media/:id/thumbnail", async (req, res) => {
       : null;
     if (thumbPath && fs.existsSync(thumbPath)) {
       res.type("image/webp");
-      res.sendFile(thumbPath);
+      const stream = fs.createReadStream(thumbPath);
+      stream.on("error", (err) => {
+        console.error("[Media] Thumbnail stream failed:", err);
+        if (!res.headersSent) res.status(500).json({ error: "Failed to stream thumbnail" });
+        else res.end();
+      });
+      stream.pipe(res);
     } else if (mime_type?.startsWith("image/")) {
       // Fallback to original for images without thumbnails
+      const originalPath = path.join(config.media.storagePath, storage_path);
+      if (!fs.existsSync(originalPath)) return res.status(404).json({ error: "File missing on disk" });
       res.type(mime_type);
-      res.sendFile(path.join(config.media.storagePath, storage_path));
+      const stream = fs.createReadStream(originalPath);
+      stream.on("error", (err) => {
+        console.error("[Media] Thumbnail fallback stream failed:", err);
+        if (!res.headersSent) res.status(500).json({ error: "Failed to stream file" });
+        else res.end();
+      });
+      stream.pipe(res);
     } else {
       res.status(404).json({ error: "No thumbnail available" });
     }
@@ -5867,10 +6004,51 @@ app.put("/api/quality/issues/:id", async (req, res) => {
   }
 });
 
+app.post("/api/quality/issues/autodev", async (req, res) => {
+  try {
+    const error = String(req.body?.error || "").trim();
+    if (!error) return res.status(400).json({ error: "error is required" });
+    const taskUuid = req.body?.taskUuid ? String(req.body.taskUuid).trim() : null;
+    const taskTitle = req.body?.taskTitle ? String(req.body.taskTitle).trim() : null;
+    const taskNotes = req.body?.taskNotes ? String(req.body.taskNotes) : null;
+    const projectTitle = req.body?.projectTitle ? String(req.body.projectTitle).trim() : null;
+    const headingTitle = req.body?.headingTitle ? String(req.body.headingTitle).trim() : null;
+    const tags = Array.isArray(req.body?.tags)
+      ? req.body.tags.map((tag: unknown) => String(tag).trim()).filter(Boolean)
+      : [];
+    const executor = req.body?.executor ? String(req.body.executor).trim() : null;
+    const agentId = req.body?.agentId ? String(req.body.agentId).trim() : null;
+    const skill = req.body?.skill ? String(req.body.skill).trim() : null;
+    const routeReason = req.body?.routeReason ? String(req.body.routeReason) : null;
+    const strict = typeof req.body?.strict === "boolean" ? req.body.strict : undefined;
+    const logExcerpt = req.body?.logExcerpt ? String(req.body.logExcerpt) : null;
+
+    const result = await createAutoDevRuntimeIssue({
+      error,
+      taskUuid,
+      taskTitle,
+      taskNotes,
+      projectTitle,
+      headingTitle,
+      tags,
+      executor,
+      agentId,
+      skill,
+      routeReason,
+      strict,
+      logExcerpt,
+    });
+
+    res.json({ created: result.created, issue: result.issue });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 app.post("/api/quality/issues/:id/autodev", async (req, res) => {
   try {
-    await pushToAutodev(req.params.id);
-    res.json({ pushed: true });
+    const issue = await pushToAutodev(req.params.id);
+    res.json({ pushed: true, issue });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }

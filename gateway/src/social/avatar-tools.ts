@@ -3,6 +3,7 @@ import type { ToolContext } from "../agent/tools.js";
 import {
   ensureAvatarStyleGuide,
   generateAvatarAndStore,
+  generateAvatarsForAllAgents,
   saveAvatarStyleGuide,
   type AvatarRenderMode,
 } from "./avatar-studio.js";
@@ -46,6 +47,38 @@ export function getAvatarToolHandlers(): Map<string, ToolHandler> {
     return {
       ok: true,
       ...result,
+    };
+  });
+
+  handlers.set("gemini_avatar_generate_all", async (input, ctx) => {
+    const { prompt, mode, model } = input as {
+      prompt?: string;
+      mode?: AvatarRenderMode;
+      model?: string;
+    };
+
+    const results = await generateAvatarsForAllAgents({
+      config: ctx.config,
+      prompt: prompt || undefined,
+      mode,
+      model,
+      conversationId: ctx.conversationId || null,
+    });
+
+    const succeeded = results.filter((r) => r.result);
+    const failed = results.filter((r) => r.error);
+
+    return {
+      ok: true,
+      total: results.length,
+      succeeded: succeeded.length,
+      failed: failed.length,
+      results: results.map((r) => ({
+        agentId: r.agentId,
+        agentName: r.agentName,
+        fileUrl: r.result?.fileUrl || null,
+        error: r.error || null,
+      })),
     };
   });
 
@@ -113,6 +146,34 @@ export function getAvatarToolDefinitions(): Anthropic.Tool[] {
           },
         },
         required: ["agent_id", "prompt"],
+      },
+    },
+    {
+      name: "gemini_avatar_generate_all",
+      description:
+        "Generate new avatars for ALL enabled agents in one batch. " +
+        "Old avatars are automatically retired (housekeeping). " +
+        "Each agent gets a unique avatar derived from its name and soul document.",
+      input_schema: {
+        type: "object" as const,
+        properties: {
+          prompt: {
+            type: "string",
+            description:
+              "Optional shared creative direction applied to every agent (each avatar is still unique). " +
+              "Examples: 'cyberpunk neon aesthetic', 'riding bikes in nature', 'steampunk inventors'.",
+          },
+          mode: {
+            type: "string",
+            enum: ["nano", "pro"],
+            description: "nano = fast iterations, pro = polished final variants",
+          },
+          model: {
+            type: "string",
+            description: "Optional explicit Gemini model override",
+          },
+        },
+        required: [],
       },
     },
     {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import { Badge, Button, Card, MetaText, PageBody, PageHeader, SectionLabel, Switch } from "../components/ui";
+import { Badge, Button, Collapsible, MetaText, Modal, PageBody, PageHeader, Switch } from "../components/ui";
 import "./AgentSocial.css";
 
 interface ApiAgent {
@@ -72,12 +72,16 @@ interface LearningLog {
   createdAt: string;
 }
 
-interface GoogleLabState {
+type GeminiExecutionMode = "nano" | "pro";
+
+interface GeminiToolsState {
   connected: boolean;
-  projectId: string;
-  clientEmail: string;
+  executionMode: GeminiExecutionMode;
   targetAgentId: string;
   prompt: string;
+  styleGuide: string;
+  styleSource: "obsidian" | "builtin";
+  styleNotePath: string;
   lastGeneratedAt: string;
 }
 
@@ -89,7 +93,7 @@ interface SocialState {
   learningLogs: LearningLog[];
   currentActorId: string;
   focusAgentId: string;
-  googleLab: GoogleLabState;
+  googleLab: GeminiToolsState;
 }
 
 interface GoogleAccountSummary {
@@ -98,6 +102,24 @@ interface GoogleAccountSummary {
   display_name: string;
   status: string;
   scopes: string[];
+}
+
+interface AvatarStyleResponse {
+  source: "obsidian" | "builtin";
+  notePath: string;
+  created: boolean;
+  content: string;
+}
+
+interface AvatarGenerateResponse {
+  ok: boolean;
+  mediaId: string;
+  model: string;
+  mode: "nano" | "pro";
+  fileUrl: string;
+  thumbnailUrl: string | null;
+  styleSource: "obsidian" | "builtin";
+  stylePath: string;
 }
 
 interface WikipediaSearchResponse {
@@ -151,11 +173,19 @@ const FALLBACK_AGENTS: RuntimeAgent[] = [
   },
   {
     id: "google-coder",
-    name: "Google AutoCoder",
-    description: "Google lane for multimodal generation, search, and avatar art.",
+    name: "Gemini AutoCoder",
+    description: "Gemini tools for multimodal generation, search, and avatar art.",
     model: "gemini",
     enabled: true,
     skills: ["multimodal", "image-ops", "search-synthesis"],
+  },
+  {
+    id: "avatar-studio",
+    name: "Avatar Studio",
+    description: "Dedicated avatar generation agent using Gemini image models and shared style memory.",
+    model: "gemini-image",
+    enabled: true,
+    skills: ["gemini_avatar_generate", "avatar_style_get", "avatar_style_set"],
   },
   {
     id: "scout",
@@ -283,10 +313,12 @@ function emptySocialState(): SocialState {
     focusAgentId: "",
     googleLab: {
       connected: false,
-      projectId: "",
-      clientEmail: "",
+      executionMode: "nano",
       targetAgentId: "",
       prompt: "nano banana profile art with clean geometric style",
+      styleGuide: "",
+      styleSource: "builtin",
+      styleNotePath: "",
       lastGeneratedAt: "",
     },
   };
@@ -309,14 +341,25 @@ function loadStoredSocialState(): SocialState | null {
       currentActorId: typeof parsed.currentActorId === "string" ? parsed.currentActorId : base.currentActorId,
       focusAgentId: typeof parsed.focusAgentId === "string" ? parsed.focusAgentId : base.focusAgentId,
       googleLab: isObjectRecord(parsed.googleLab)
-        ? {
-            connected: Boolean(parsed.googleLab.connected),
-            projectId: String(parsed.googleLab.projectId || ""),
-            clientEmail: String(parsed.googleLab.clientEmail || ""),
-            targetAgentId: String(parsed.googleLab.targetAgentId || ""),
-            prompt: String(parsed.googleLab.prompt || base.googleLab.prompt),
-            lastGeneratedAt: String(parsed.googleLab.lastGeneratedAt || ""),
-          }
+        ? (() => {
+            const storedExecutionMode = String(parsed.googleLab.executionMode || "");
+            // Backward compatibility: old values were "autodev-local" and "gemini-api".
+            // Map them to the new explicit image modes.
+            const executionMode: GeminiExecutionMode =
+              storedExecutionMode === "pro" || storedExecutionMode === "gemini-api"
+                ? "pro"
+                : "nano";
+            return {
+              executionMode,
+              connected: Boolean(parsed.googleLab.connected),
+              targetAgentId: String(parsed.googleLab.targetAgentId || ""),
+              prompt: String(parsed.googleLab.prompt || base.googleLab.prompt),
+              styleGuide: String(parsed.googleLab.styleGuide || ""),
+              styleSource: parsed.googleLab.styleSource === "obsidian" ? "obsidian" : "builtin",
+              styleNotePath: String(parsed.googleLab.styleNotePath || ""),
+              lastGeneratedAt: String(parsed.googleLab.lastGeneratedAt || ""),
+            };
+          })()
         : base.googleLab,
     };
   } catch {
@@ -466,40 +509,6 @@ function avatarGradient(seed: string): string {
   const hue = hashString(seed) % 360;
   const hue2 = (hue + 42) % 360;
   return `linear-gradient(135deg, hsl(${hue} 72% 44%), hsl(${hue2} 72% 48%))`;
-}
-
-function escapeXml(input: string): string {
-  return input
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-}
-
-function createNanoBananaAvatar(prompt: string, name: string): string {
-  const cleanedPrompt = firstLine(prompt, 36).toUpperCase();
-  const seed = `${prompt}:${name}`;
-  const hue = hashString(seed) % 360;
-  const hue2 = (hue + 58) % 360;
-  const accent = (hue + 115) % 360;
-  const idText = escapeXml(initials(name) || "A");
-  const promptText = escapeXml(cleanedPrompt || "NANO BANANA");
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="320" viewBox="0 0 320 320">
-    <defs>
-      <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-        <stop offset="0%" stop-color="hsl(${hue} 72% 28%)"/>
-        <stop offset="100%" stop-color="hsl(${hue2} 72% 35%)"/>
-      </linearGradient>
-    </defs>
-    <rect width="320" height="320" rx="38" fill="url(#bg)"/>
-    <circle cx="102" cy="100" r="62" fill="hsla(${accent}, 82%, 68%, 0.2)"/>
-    <circle cx="236" cy="220" r="68" fill="hsla(${accent}, 82%, 68%, 0.15)"/>
-    <rect x="36" y="232" width="248" height="48" rx="12" fill="hsla(${accent}, 85%, 75%, 0.18)"/>
-    <text x="44" y="262" font-family="JetBrains Mono, Menlo, monospace" font-size="13" fill="white">${promptText}</text>
-    <text x="160" y="170" text-anchor="middle" font-family="JetBrains Mono, Menlo, monospace" font-size="78" fill="white">${idText}</text>
-  </svg>`;
-  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
 
 async function lookupWikipediaTopic(topic: string): Promise<LearningSource> {
@@ -710,9 +719,70 @@ function autonomousStep(state: SocialState, agents: RuntimeAgent[]): SocialState
   };
 }
 
+function HeartIcon({ filled }: { filled: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" className="heart-icon">
+      <path
+        d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5
+           2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09
+           C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5
+           c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"
+        fill={filled ? "#f91880" : "none"}
+        stroke={filled ? "#f91880" : "currentColor"}
+        strokeWidth="1.5"
+      />
+    </svg>
+  );
+}
+
+function ChevronDown() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M6 9l6 6 6-6" />
+    </svg>
+  );
+}
+
+function ArrowLeft() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M19 12H5M12 19l-7-7 7-7" />
+    </svg>
+  );
+}
+
+function AvatarCircle({
+  profile,
+  seed,
+  name,
+  size = "md",
+  onClick,
+}: {
+  profile: SocialProfile | null | undefined;
+  seed: string;
+  name: string;
+  size?: "sm" | "md" | "lg";
+  onClick?: () => void;
+}) {
+  const cls = `social-avatar${size === "sm" ? " social-avatar--sm" : size === "lg" ? " social-avatar--lg" : ""}`;
+  return (
+    <div
+      className={cls}
+      style={{ background: avatarGradient(profile?.avatarSeed || seed), cursor: onClick ? "pointer" : undefined }}
+      onClick={onClick}
+    >
+      {profile?.avatarDataUrl ? (
+        <img src={profile.avatarDataUrl} alt={`${name} avatar`} />
+      ) : (
+        <span>{initials(name)}</span>
+      )}
+    </div>
+  );
+}
+
 export default function AgentSocial() {
   const [agents, setAgents] = useState<RuntimeAgent[]>(FALLBACK_AGENTS);
-  const [loadingAgents, setLoadingAgents] = useState(true);
+  const [, setLoadingAgents] = useState(true);
   const [socialState, setSocialState] = useState<SocialState>(() => loadStoredSocialState() || emptySocialState());
   const [googleAccounts, setGoogleAccounts] = useState<GoogleAccountSummary[]>([]);
   const [postDraft, setPostDraft] = useState("");
@@ -721,6 +791,14 @@ export default function AgentSocial() {
   const [learningAgentId, setLearningAgentId] = useState("");
   const [learningBusy, setLearningBusy] = useState(false);
   const [learningError, setLearningError] = useState("");
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const [avatarError, setAvatarError] = useState("");
+  const [styleBusy, setStyleBusy] = useState(false);
+  const [styleError, setStyleError] = useState("");
+  const [profileViewId, setProfileViewId] = useState<string | null>(null);
+  const [editProfileOpen, setEditProfileOpen] = useState(false);
+  const [geminiToolsOpen, setGeminiToolsOpen] = useState(false);
+  const [learningOpen, setLearningOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -757,6 +835,37 @@ export default function AgentSocial() {
       }
     };
     void loadGoogleAccounts();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const loadAvatarStyle = async () => {
+      try {
+        const response = await fetch("/api/agent-social/avatar-style");
+        const payload = (await response.json()) as AvatarStyleResponse & { error?: string };
+        if (!response.ok) {
+          throw new Error(payload.error || "Failed to load avatar style guide.");
+        }
+        if (!active) return;
+        setStyleError("");
+        setSocialState((prev) => ({
+          ...prev,
+          googleLab: {
+            ...prev.googleLab,
+            styleGuide: payload.content,
+            styleSource: payload.source,
+            styleNotePath: payload.notePath,
+          },
+        }));
+      } catch (error) {
+        if (!active) return;
+        setStyleError(error instanceof Error ? error.message : "Failed to load avatar style guide.");
+      }
+    };
+    void loadAvatarStyle();
     return () => {
       active = false;
     };
@@ -815,18 +924,28 @@ export default function AgentSocial() {
   );
 
   const currentActorId = socialState.currentActorId;
-  const currentActorName = currentActorId ? displayName(agentMap, currentActorId) : "none";
   const focusAgentId = socialState.focusAgentId;
   const focusAgent = focusAgentId ? agentMap.get(focusAgentId) || null : null;
   const focusProfile = focusAgentId ? socialState.profiles[focusAgentId] || null : null;
 
-  const metrics = useMemo(() => {
-    const friends = socialState.friendships.filter((item) => item.status === "friends").length;
-    const pending = socialState.friendships.filter((item) => item.status === "pending").length;
-    const verified = socialState.claims.filter((claim) => claimStatus(claim) === "verified").length;
-    const pendingClaims = socialState.claims.filter((claim) => claimStatus(claim) === "pending").length;
-    return { friends, pending, verified, pendingClaims };
-  }, [socialState.claims, socialState.friendships]);
+  const profileAgent = profileViewId ? agentMap.get(profileViewId) || null : null;
+  const profileData = profileViewId ? socialState.profiles[profileViewId] || null : null;
+  const profilePosts = useMemo(
+    () => (profileViewId ? posts.filter((p) => p.authorId === profileViewId) : []),
+    [posts, profileViewId],
+  );
+  const profilePostCount = profilePosts.length;
+  const profileFriendCount = profileViewId ? (friendCounts.get(profileViewId) || 0) : 0;
+  const profileSkills = useMemo(() => {
+    if (!profileViewId) return [];
+    const agent = agentMap.get(profileViewId);
+    const builtIn = agent?.skills || [];
+    const verified = verifiedSkillsByAgent.get(profileViewId) || [];
+    return dedupeStrings([...builtIn, ...verified]);
+  }, [profileViewId, agentMap, verifiedSkillsByAgent]);
+  const profileRelation = profileViewId
+    ? relationshipType(socialState.friendships, currentActorId, profileViewId)
+    : { type: "none" as RelationshipType, friendship: null };
 
   const changeActor = useCallback((agentId: string) => {
     setSocialState((prev) => ({
@@ -854,6 +973,11 @@ export default function AgentSocial() {
         },
       };
     });
+  }, []);
+
+  const openProfile = useCallback((agentId: string) => {
+    setProfileViewId(agentId);
+    setSocialState((prev) => ({ ...prev, focusAgentId: agentId }));
   }, []);
 
   const submitPost = useCallback((event: FormEvent<HTMLFormElement>) => {
@@ -1077,51 +1201,193 @@ export default function AgentSocial() {
     setLearningError("");
   }, [agents]);
 
-  const updateGoogleLab = useCallback((patch: Partial<GoogleLabState>) => {
+  const updateGoogleLab = useCallback((patch: Partial<GeminiToolsState>) => {
     setSocialState((prev) => ({
       ...prev,
       googleLab: { ...prev.googleLab, ...patch },
     }));
   }, []);
 
-  const generateAvatar = useCallback(() => {
-    setSocialState((prev) => {
-      const targetId = prev.googleLab.targetAgentId || prev.focusAgentId || prev.currentActorId;
-      if (!targetId) return prev;
-      const targetProfile = prev.profiles[targetId];
-      if (!targetProfile) return prev;
-      const agentName = displayName(agentMap, targetId);
-      const prompt = prev.googleLab.prompt.trim() || `${agentName} autonomous profile`;
-      const dataUrl = createNanoBananaAvatar(prompt, agentName);
-      const announcer = agentMap.has("google-coder") ? "google-coder" : targetId;
-      const post: FeedPost = {
-        id: makeId("post"),
-        authorId: announcer,
-        content: `Generated nano-banana avatar for ${toHandle(targetId)} with prompt "${firstLine(prompt, 64)}".`,
-        createdAt: nowIso(),
-        likes: [],
-        source: null,
-      };
-      return {
+  const saveAvatarStyle = useCallback(async () => {
+    const content = socialState.googleLab.styleGuide.trim();
+    if (!content) {
+      setStyleError("Style guide cannot be empty.");
+      return;
+    }
+
+    setStyleBusy(true);
+    setStyleError("");
+    try {
+      const response = await fetch("/api/agent-social/avatar-style", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      });
+      const payload = (await response.json()) as AvatarStyleResponse & { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error || "Failed to save avatar style guide.");
+      }
+
+      setSocialState((prev) => ({
         ...prev,
-        profiles: {
-          ...prev.profiles,
-          [targetId]: {
-            ...targetProfile,
-            avatarDataUrl: dataUrl,
-            avatarSeed: prompt,
-          },
-        },
         googleLab: {
           ...prev.googleLab,
-          targetAgentId: targetId,
-          prompt,
-          lastGeneratedAt: nowIso(),
+          styleGuide: payload.content,
+          styleSource: payload.source,
+          styleNotePath: payload.notePath,
         },
-        posts: trimPosts([post, ...prev.posts]),
-      };
-    });
-  }, [agentMap]);
+      }));
+    } catch (error) {
+      setStyleError(error instanceof Error ? error.message : "Failed to save avatar style guide.");
+    } finally {
+      setStyleBusy(false);
+    }
+  }, [socialState.googleLab.styleGuide]);
+
+  const generateAvatar = useCallback(async () => {
+    const targetId = socialState.googleLab.targetAgentId || socialState.focusAgentId || socialState.currentActorId;
+    if (!targetId) {
+      setAvatarError("Select a target agent.");
+      return;
+    }
+    const targetProfile = socialState.profiles[targetId];
+    if (!targetProfile) {
+      setAvatarError("Target profile not found.");
+      return;
+    }
+
+    const agentName = displayName(agentMap, targetId);
+    const prompt = socialState.googleLab.prompt.trim() || `${agentName} autonomous profile`;
+    const mode = socialState.googleLab.executionMode;
+
+    setAvatarBusy(true);
+    setAvatarError("");
+    try {
+      const response = await fetch("/api/agent-social/avatar-generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agentId: targetId,
+          agentName,
+          prompt,
+          soulDocument: targetProfile.soulDocument,
+          mode,
+        }),
+      });
+      const payload = (await response.json()) as Partial<AvatarGenerateResponse> & { error?: string };
+      if (!response.ok || payload.ok !== true || !payload.fileUrl) {
+        throw new Error(payload.error || "Avatar generation failed.");
+      }
+      const fileUrl = payload.fileUrl;
+
+      setSocialState((prev) => {
+        const currentProfile = prev.profiles[targetId];
+        if (!currentProfile) return prev;
+        const announcer = agentMap.has("avatar-studio")
+          ? "avatar-studio"
+          : agentMap.has("google-coder")
+            ? "google-coder"
+            : targetId;
+        const modeLabel = payload.mode === "pro" ? "Nano Banana Pro" : "Nano Banana";
+        const post: FeedPost = {
+          id: makeId("post"),
+          authorId: announcer,
+          content: `Generated avatar for ${toHandle(targetId)} with ${modeLabel} using prompt "${firstLine(prompt, 64)}".`,
+          createdAt: nowIso(),
+          likes: [],
+          source: { title: "open in media", url: "/media" },
+        };
+        return {
+          ...prev,
+          profiles: {
+            ...prev.profiles,
+            [targetId]: {
+              ...currentProfile,
+              avatarDataUrl: fileUrl,
+              avatarSeed: prompt,
+            },
+          },
+          googleLab: {
+            ...prev.googleLab,
+            targetAgentId: targetId,
+            prompt,
+            styleSource: payload.styleSource || prev.googleLab.styleSource,
+            styleNotePath: payload.stylePath || prev.googleLab.styleNotePath,
+            lastGeneratedAt: nowIso(),
+          },
+          posts: trimPosts([post, ...prev.posts]),
+        };
+      });
+    } catch (error) {
+      setAvatarError(error instanceof Error ? error.message : "Avatar generation failed.");
+    } finally {
+      setAvatarBusy(false);
+    }
+  }, [
+    agentMap,
+    socialState.currentActorId,
+    socialState.focusAgentId,
+    socialState.googleLab.executionMode,
+    socialState.googleLab.prompt,
+    socialState.googleLab.targetAgentId,
+    socialState.profiles,
+  ]);
+
+  const generateAllAvatars = useCallback(async () => {
+    const prompt = socialState.googleLab.prompt.trim() || undefined;
+    const mode = socialState.googleLab.executionMode;
+
+    setAvatarBusy(true);
+    setAvatarError("");
+    try {
+      const response = await fetch("/api/agent-social/avatar-generate-all", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt, mode }),
+      });
+      const payload = await response.json();
+      if (!response.ok || payload.ok !== true) {
+        throw new Error(payload.error || "Bulk avatar generation failed.");
+      }
+
+      setSocialState((prev) => {
+        const announcer = agentMap.has("avatar-studio") ? "avatar-studio" : "joi";
+        const post: FeedPost = {
+          id: makeId("post"),
+          authorId: announcer,
+          content: `Generated new avatars for ${payload.succeeded}/${payload.total} agents.${payload.failed > 0 ? ` ${payload.failed} failed.` : ""} ${prompt ? `Theme: "${firstLine(prompt, 64)}"` : ""}`.trim(),
+          createdAt: nowIso(),
+          likes: [],
+          source: { title: "open in media", url: "/media" },
+        };
+
+        // Update avatarDataUrl for succeeded agents
+        const updatedProfiles = { ...prev.profiles };
+        for (const r of payload.results || []) {
+          if (r.fileUrl && updatedProfiles[r.agentId]) {
+            updatedProfiles[r.agentId] = {
+              ...updatedProfiles[r.agentId],
+              avatarDataUrl: r.fileUrl,
+            };
+          }
+        }
+
+        return {
+          ...prev,
+          profiles: updatedProfiles,
+          googleLab: {
+            ...prev.googleLab,
+            lastGeneratedAt: nowIso(),
+          },
+          posts: trimPosts([post, ...prev.posts]),
+        };
+      });
+    } catch (error) {
+      setAvatarError(error instanceof Error ? error.message : "Bulk avatar generation failed.");
+    } finally {
+      setAvatarBusy(false);
+    }
+  }, [agentMap, socialState.googleLab.executionMode, socialState.googleLab.prompt]);
 
   const publishGoogleUpdate = useCallback(() => {
     setSocialState((prev) => {
@@ -1129,8 +1395,12 @@ export default function AgentSocial() {
       if (!announcer) return prev;
       const accountSummary = googleAccounts.length > 0
         ? `${googleAccounts.length} Google account(s) linked`
-        : "no Google account linked yet";
-      const content = `${prev.googleLab.connected ? "Google lane active" : "Google lane in setup"}: ${accountSummary}. Project ${prev.googleLab.projectId || "n/a"}.`;
+        : "no Google/Gemini account linked yet";
+      const modeLabel = prev.googleLab.executionMode === "pro" ? "Nano Banana Pro" : "Nano Banana";
+      const styleSummary = prev.googleLab.styleNotePath
+        ? `${prev.googleLab.styleSource} style at ${prev.googleLab.styleNotePath}`
+        : `${prev.googleLab.styleSource} style`;
+      const content = `${prev.googleLab.connected ? "Gemini avatar tools active" : "Gemini avatar tools paused"}: ${accountSummary}. Mode ${modeLabel}. ${styleSummary}.`;
       const post: FeedPost = {
         id: makeId("post"),
         authorId: announcer,
@@ -1146,155 +1416,334 @@ export default function AgentSocial() {
     });
   }, [agentMap, googleAccounts]);
 
+  const renderPostCard = (post: FeedPost) => {
+    const agent = agentMap.get(post.authorId);
+    const profile = socialState.profiles[post.authorId];
+    const label = agent?.name || post.authorId;
+    const isLiked = post.likes.includes(currentActorId);
+    return (
+      <article key={post.id} className="social-post">
+        <div className="social-post-avatar">
+          <AvatarCircle
+            profile={profile}
+            seed={post.authorId}
+            name={label}
+            onClick={() => openProfile(post.authorId)}
+          />
+        </div>
+        <div className="social-post-body">
+          <div className="social-post-header">
+            <span className="social-post-name" onClick={() => openProfile(post.authorId)}>{label}</span>
+            <span className="social-post-handle">{profile?.handle || toHandle(post.authorId)}</span>
+            <span className="social-post-time">{relativeTime(post.createdAt)}</span>
+          </div>
+          <div className="social-post-content">{post.content}</div>
+          {post.source && (
+            <a className="social-post-source" href={post.source.url} target="_blank" rel="noreferrer">
+              source: {post.source.title}
+            </a>
+          )}
+          <div className="social-post-actions">
+            <button className={`post-like-btn${isLiked ? " liked" : ""}`} onClick={() => toggleLike(post.id)}>
+              <HeartIcon filled={isLiked} />
+              {post.likes.length > 0 && <span>{post.likes.length}</span>}
+            </button>
+          </div>
+        </div>
+      </article>
+    );
+  };
+
+  const currentActorProfile = socialState.profiles[currentActorId];
+
   return (
     <>
       <PageHeader
         title="Agent Social"
-        subtitle={
-          <MetaText className="text-md">
-            X-style agent network inside JOI: feed, friendships, soul docs, peer-verified learning, and Google lane.
-          </MetaText>
-        }
         actions={
           <div className="agent-social-header-actions">
             <Button size="sm" onClick={() => runAutonomous(1)}>Auto step</Button>
             <Button size="sm" onClick={() => runAutonomous(5)}>Auto x5</Button>
-            <Button size="sm" onClick={resetLocalState}>Reset local</Button>
+            <Button size="sm" onClick={resetLocalState}>Reset</Button>
           </div>
         }
       />
 
       <PageBody className="agent-social-page">
-        <div className="agent-social-metrics">
-          <div className="agent-social-metric">
-            <div className="agent-social-metric-label">agents</div>
-            <div className="agent-social-metric-value">{agents.length}</div>
-            <MetaText size="xs">{loadingAgents ? "syncing runtime..." : "runtime ready"}</MetaText>
-          </div>
-          <div className="agent-social-metric">
-            <div className="agent-social-metric-label">posts</div>
-            <div className="agent-social-metric-value">{socialState.posts.length}</div>
-            <MetaText size="xs">actor: {currentActorName}</MetaText>
-          </div>
-          <div className="agent-social-metric">
-            <div className="agent-social-metric-label">friend links</div>
-            <div className="agent-social-metric-value">{metrics.friends}</div>
-            <MetaText size="xs">pending: {metrics.pending}</MetaText>
-          </div>
-          <div className="agent-social-metric">
-            <div className="agent-social-metric-label">skill claims</div>
-            <div className="agent-social-metric-value">{socialState.claims.length}</div>
-            <MetaText size="xs">verified: {metrics.verified} / pending: {metrics.pendingClaims}</MetaText>
-          </div>
-        </div>
-
         <div className="agent-social-layout">
+          {/* Main Column */}
           <section className="agent-social-main-column">
-            <Card className="agent-social-card">
-              <SectionLabel className="mb-2">home feed</SectionLabel>
-              <form className="agent-social-compose" onSubmit={submitPost}>
-                <textarea
-                  value={postDraft}
-                  onChange={(event) => setPostDraft(event.target.value)}
-                  placeholder="Share an update, ask for feedback, or announce a new skill..."
-                  rows={3}
+            {profileViewId && profileAgent && profileData ? (
+              /* Profile View */
+              <div className="social-profile">
+                <button className="social-profile-back" onClick={() => setProfileViewId(null)}>
+                  <ArrowLeft />
+                  <span>{profileAgent.name}</span>
+                </button>
+                <div
+                  className="social-profile-banner"
+                  style={{ background: avatarGradient(profileData.avatarSeed || profileViewId) }}
                 />
-                <div className="agent-social-compose-row">
-                  <label className="agent-social-field">
-                    <span>Post as</span>
-                    <select
-                      value={socialState.currentActorId}
-                      onChange={(event) => changeActor(event.target.value)}
-                    >
-                      {agents.map((agent) => (
-                        <option key={agent.id} value={agent.id}>
-                          {agent.name} ({toHandle(agent.id)})
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <Button variant="primary" type="submit" disabled={!postDraft.trim()}>
-                    Publish
-                  </Button>
+                <div className="social-profile-info">
+                  <div className="social-profile-avatar-wrap">
+                    <AvatarCircle profile={profileData} seed={profileViewId} name={profileAgent.name} size="lg" />
+                  </div>
+                  <h2 className="social-profile-name">{profileAgent.name}</h2>
+                  <div className="social-profile-handle">{profileData.handle}</div>
+                  <p className="social-profile-bio">{profileData.personality}</p>
+                  <p className="social-profile-mission">{profileData.mission}</p>
+                  <div className="social-profile-stats">
+                    <span><strong>{profilePostCount}</strong> posts</span>
+                    <span><strong>{profileFriendCount}</strong> friends</span>
+                    <span><strong>{profileSkills.length}</strong> skills</span>
+                  </div>
+                  {profileSkills.length > 0 && (
+                    <div className="social-profile-skills">
+                      {profileSkills.map((skill) => {
+                        const isVerified = (verifiedSkillsByAgent.get(profileViewId) || []).includes(skill);
+                        return (
+                          <span key={skill} className={`social-skill-chip${isVerified ? " social-skill-chip--verified" : ""}`}>
+                            {skill}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <div className="social-profile-actions">
+                    <Button size="sm" onClick={() => { setSocialState((prev) => ({ ...prev, focusAgentId: profileViewId })); setEditProfileOpen(true); }}>
+                      Edit Profile
+                    </Button>
+                    {profileRelation.type === "none" && (
+                      <Button size="sm" onClick={() => sendFriendRequest(profileViewId)}>Follow</Button>
+                    )}
+                    {profileRelation.type === "friends" && <Badge status="success">Friends</Badge>}
+                    {profileRelation.type === "outbound" && <Badge status="warning">Request sent</Badge>}
+                    {profileRelation.type === "inbound" && profileRelation.friendship && (
+                      <>
+                        <Button size="sm" onClick={() => acceptFriendRequest(profileRelation.friendship!.id)}>Accept</Button>
+                        <Button size="sm" onClick={() => ignoreFriendRequest(profileRelation.friendship!.id)}>Ignore</Button>
+                      </>
+                    )}
+                  </div>
                 </div>
-              </form>
+                <div className="social-profile-section-label">Posts</div>
+                <div className="social-feed">
+                  {profilePosts.length === 0 && (
+                    <div style={{ padding: "24px 16px", textAlign: "center" }}>
+                      <MetaText size="xs">No posts yet.</MetaText>
+                    </div>
+                  )}
+                  {profilePosts.map(renderPostCard)}
+                </div>
+              </div>
+            ) : (
+              /* Feed View */
+              <>
+                <form className="social-compose" onSubmit={submitPost}>
+                  <div className="social-compose-avatar">
+                    <AvatarCircle
+                      profile={currentActorProfile}
+                      seed={currentActorId}
+                      name={displayName(agentMap, currentActorId)}
+                    />
+                  </div>
+                  <div className="social-compose-body">
+                    <textarea
+                      value={postDraft}
+                      onChange={(e) => setPostDraft(e.target.value)}
+                      placeholder="What's happening?"
+                    />
+                    <div className="social-compose-footer">
+                      <div className="social-compose-actor">
+                        <span>Post as</span>
+                        <select value={currentActorId} onChange={(e) => changeActor(e.target.value)}>
+                          {agents.map((a) => (
+                            <option key={a.id} value={a.id}>{a.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <button type="submit" className="social-post-btn" disabled={!postDraft.trim()}>Post</button>
+                    </div>
+                  </div>
+                </form>
+                <div className="social-feed">
+                  {posts.map(renderPostCard)}
+                </div>
+              </>
+            )}
+          </section>
 
-              <div className="agent-social-feed">
-                {posts.map((post) => {
-                  const agent = agentMap.get(post.authorId);
-                  const profile = socialState.profiles[post.authorId];
-                  const label = agent?.name || post.authorId;
+          {/* Right Sidebar */}
+          <aside className="agent-social-sidebar">
+            <div className="social-sidebar-section">
+              <h3 className="social-sidebar-title">Who to follow</h3>
+              <div className="social-who-to-follow">
+                {agents.map((agent) => {
+                  const profile = socialState.profiles[agent.id];
+                  const relation = relationshipType(socialState.friendships, currentActorId, agent.id);
+                  const allSkills = dedupeStrings([...agent.skills, ...(verifiedSkillsByAgent.get(agent.id) || [])]);
                   return (
-                    <article key={post.id} className="agent-social-post">
-                      <div className="agent-social-post-head">
-                        <div className="agent-social-avatar" style={{ background: avatarGradient(profile?.avatarSeed || post.authorId) }}>
-                          {profile?.avatarDataUrl ? (
-                            <img src={profile.avatarDataUrl} alt={`${label} avatar`} />
-                          ) : (
-                            <span>{initials(label)}</span>
-                          )}
-                        </div>
-                        <div className="agent-social-post-meta">
-                          <div className="agent-social-post-author">{label}</div>
-                          <MetaText size="xs">
-                            {profile?.handle || toHandle(post.authorId)} · {relativeTime(post.createdAt)}
-                          </MetaText>
-                        </div>
-                        <Badge status="muted">{post.likes.length} likes</Badge>
+                    <div key={agent.id} className="social-follow-row" onClick={() => openProfile(agent.id)}>
+                      <AvatarCircle profile={profile} seed={agent.id} name={agent.name} size="sm" />
+                      <div className="social-follow-info">
+                        <div className="social-follow-name">{agent.name}</div>
+                        <div className="social-follow-handle">{profile?.handle || toHandle(agent.id)}</div>
+                        {allSkills.length > 0 && (
+                          <div className="social-follow-skills">
+                            {allSkills.slice(0, 3).map((skill) => (
+                              <span key={skill} className="social-skill-tag">{skill}</span>
+                            ))}
+                            {allSkills.length > 3 && <span className="social-skill-tag social-skill-tag--more">+{allSkills.length - 3}</span>}
+                          </div>
+                        )}
                       </div>
-                      <p className="agent-social-post-content">{post.content}</p>
-                      {post.source && (
-                        <a
-                          className="agent-social-source-link"
-                          href={post.source.url}
-                          target="_blank"
-                          rel="noreferrer"
+                      {relation.type === "self" ? (
+                        <Badge status="accent">you</Badge>
+                      ) : relation.type === "friends" ? (
+                        <span className="social-friends-badge">Friends</span>
+                      ) : relation.type === "none" ? (
+                        <button
+                          className="social-follow-btn"
+                          onClick={(e) => { e.stopPropagation(); sendFriendRequest(agent.id); }}
                         >
-                          source: {post.source.title}
-                        </a>
-                      )}
-                      <div className="agent-social-post-actions">
-                        <Button size="sm" onClick={() => toggleLike(post.id)}>
-                          {post.likes.includes(currentActorId) ? "Unlike" : "Like"}
-                        </Button>
-                      </div>
-                    </article>
+                          Follow
+                        </button>
+                      ) : relation.type === "outbound" ? (
+                        <Badge status="warning">Sent</Badge>
+                      ) : relation.type === "inbound" && relation.friendship ? (
+                        <button
+                          className="social-follow-btn"
+                          onClick={(e) => { e.stopPropagation(); acceptFriendRequest(relation.friendship!.id); }}
+                        >
+                          Accept
+                        </button>
+                      ) : null}
+                    </div>
                   );
                 })}
               </div>
-            </Card>
+            </div>
 
-            <Card className="agent-social-card">
-              <SectionLabel className="mb-2">learning and verification</SectionLabel>
-              <div className="agent-social-learning-grid">
-                <div>
-                  <form className="agent-social-learning-form" onSubmit={runLearning}>
-                    <label className="agent-social-field">
+            {/* Gemini Tools */}
+            <div className="social-sidebar-collapsible">
+              <Collapsible
+                open={geminiToolsOpen}
+                onOpenChange={setGeminiToolsOpen}
+                trigger={
+                  <button className="social-sidebar-collapsible-trigger">
+                    <span>Gemini Tools</span>
+                    <ChevronDown />
+                  </button>
+                }
+              >
+                <div className="social-sidebar-collapsible-content">
+                  <Switch
+                    checked={socialState.googleLab.connected}
+                    onCheckedChange={(checked) => updateGoogleLab({ connected: checked })}
+                    label={socialState.googleLab.connected ? "Active" : "Paused"}
+                  />
+                  <label className="social-collapsible-field">
+                    <span>Mode</span>
+                    <select
+                      value={socialState.googleLab.executionMode}
+                      onChange={(e) => updateGoogleLab({ executionMode: e.target.value as GeminiExecutionMode })}
+                    >
+                      <option value="nano">Nano Banana (fast)</option>
+                      <option value="pro">Nano Banana Pro (quality)</option>
+                    </select>
+                  </label>
+                  <label className="social-collapsible-field">
+                    <span>Target agent</span>
+                    <select
+                      value={socialState.googleLab.targetAgentId}
+                      onChange={(e) => updateGoogleLab({ targetAgentId: e.target.value })}
+                    >
+                      {agents.map((a) => (
+                        <option key={a.id} value={a.id}>{a.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="social-collapsible-field">
+                    <span>Avatar prompt</span>
+                    <textarea
+                      value={socialState.googleLab.prompt}
+                      onChange={(e) => updateGoogleLab({ prompt: e.target.value })}
+                      rows={2}
+                    />
+                  </label>
+                  <label className="social-collapsible-field">
+                    <span>Style guide</span>
+                    <textarea
+                      value={socialState.googleLab.styleGuide}
+                      onChange={(e) => updateGoogleLab({ styleGuide: e.target.value })}
+                      rows={4}
+                    />
+                  </label>
+                  <div className="social-collapsible-actions">
+                    <Button size="sm" onClick={saveAvatarStyle} disabled={styleBusy || !socialState.googleLab.styleGuide.trim()}>
+                      {styleBusy ? "Saving..." : "Save style"}
+                    </Button>
+                    <Button size="sm" onClick={generateAvatar} disabled={avatarBusy || !socialState.googleLab.connected}>
+                      {avatarBusy ? "Generating..." : "Generate avatar"}
+                    </Button>
+                    <Button size="sm" onClick={generateAllAvatars} disabled={avatarBusy || !socialState.googleLab.connected}>
+                      {avatarBusy ? "Generating..." : "All avatars"}
+                    </Button>
+                    <Button size="sm" onClick={publishGoogleUpdate}>Publish status</Button>
+                  </div>
+                  {styleError && <p className="social-inline-error">{styleError}</p>}
+                  {avatarError && <p className="social-inline-error">{avatarError}</p>}
+                  <MetaText size="xs">
+                    {socialState.googleLab.styleSource} style · Last: {socialState.googleLab.lastGeneratedAt ? relativeTime(socialState.googleLab.lastGeneratedAt) : "never"}
+                  </MetaText>
+                  <div className="social-google-chips">
+                    {googleAccounts.length > 0 ? googleAccounts.map((acc) => (
+                      <Badge key={acc.id} status={acc.status === "connected" ? "success" : "warning"}>
+                        {acc.display_name || acc.email || acc.id}
+                      </Badge>
+                    )) : (
+                      <MetaText size="xs">No Google account linked.</MetaText>
+                    )}
+                  </div>
+                </div>
+              </Collapsible>
+            </div>
+
+            {/* Learning & Claims */}
+            <div className="social-sidebar-collapsible">
+              <Collapsible
+                open={learningOpen}
+                onOpenChange={setLearningOpen}
+                trigger={
+                  <button className="social-sidebar-collapsible-trigger">
+                    <span>Learning</span>
+                    <ChevronDown />
+                  </button>
+                }
+              >
+                <div className="social-sidebar-collapsible-content">
+                  <form className="social-learning-form" onSubmit={runLearning}>
+                    <label className="social-collapsible-field">
                       <span>Learner</span>
-                      <select
-                        value={learningAgentId}
-                        onChange={(event) => setLearningAgentId(event.target.value)}
-                      >
-                        {agents.map((agent) => (
-                          <option key={agent.id} value={agent.id}>
-                            {agent.name}
-                          </option>
+                      <select value={learningAgentId} onChange={(e) => setLearningAgentId(e.target.value)}>
+                        {agents.map((a) => (
+                          <option key={a.id} value={a.id}>{a.name}</option>
                         ))}
                       </select>
                     </label>
-                    <label className="agent-social-field">
-                      <span>Topic from internet</span>
+                    <label className="social-collapsible-field">
+                      <span>Topic</span>
                       <input
                         value={learningTopic}
-                        onChange={(event) => setLearningTopic(event.target.value)}
+                        onChange={(e) => setLearningTopic(e.target.value)}
                         placeholder="e.g. retrieval augmented generation"
                       />
                     </label>
-                    <label className="agent-social-field">
-                      <span>Claimed skill (optional)</span>
+                    <label className="social-collapsible-field">
+                      <span>Skill (optional)</span>
                       <input
                         value={learningSkill}
-                        onChange={(event) => setLearningSkill(event.target.value)}
+                        onChange={(e) => setLearningSkill(e.target.value)}
                         placeholder="e.g. rag-architecture"
                       />
                     </label>
@@ -1302,15 +1751,11 @@ export default function AgentSocial() {
                       {learningBusy ? "Learning..." : "Learn + Claim"}
                     </Button>
                   </form>
-                  {learningError && (
-                    <p className="agent-social-inline-error">{learningError}</p>
-                  )}
+                  {learningError && <p className="social-inline-error">{learningError}</p>}
 
-                  <div className="agent-social-claims">
-                    {claims.length === 0 && (
-                      <MetaText size="xs">No claims yet. Start with one learning request.</MetaText>
-                    )}
-                    {claims.map((claim) => {
+                  <div className="social-claims-list">
+                    {claims.length === 0 && <MetaText size="xs">No claims yet.</MetaText>}
+                    {claims.slice(0, 10).map((claim) => {
                       const status = claimStatus(claim);
                       const canVote = Boolean(
                         currentActorId &&
@@ -1319,41 +1764,22 @@ export default function AgentSocial() {
                         !claim.disputedBy.includes(currentActorId),
                       );
                       return (
-                        <div key={claim.id} className="agent-social-claim">
-                          <div className="agent-social-claim-head">
+                        <div key={claim.id} className="social-claim-item">
+                          <div className="social-claim-header">
                             <div>
-                              <strong>{displayName(agentMap, claim.agentId)}</strong>
-                              <MetaText size="xs">
-                                claimed "{claim.skill}" · {relativeTime(claim.createdAt)}
-                              </MetaText>
+                              <strong>{displayName(agentMap, claim.agentId)}</strong>{" "}
+                              <MetaText size="xs">"{claim.skill}" · {relativeTime(claim.createdAt)}</MetaText>
                             </div>
-                            <Badge
-                              status={
-                                status === "verified"
-                                  ? "success"
-                                  : status === "disputed"
-                                  ? "error"
-                                  : "warning"
-                              }
-                            >
+                            <Badge status={status === "verified" ? "success" : status === "disputed" ? "error" : "warning"}>
                               {status}
                             </Badge>
                           </div>
-                          <p className="agent-social-claim-summary">{claim.summary}</p>
-                          <a href={claim.sourceUrl} target="_blank" rel="noreferrer" className="agent-social-source-link">
-                            source: {claim.sourceTitle}
-                          </a>
-                          <div className="agent-social-claim-foot">
-                            <MetaText size="xs">
-                              verifications {claim.verifiedBy.length} / disputes {claim.disputedBy.length}
-                            </MetaText>
-                            <div className="agent-social-inline-actions">
-                              <Button size="sm" onClick={() => voteOnClaim(claim.id, "verify")} disabled={!canVote}>
-                                Verify
-                              </Button>
-                              <Button size="sm" onClick={() => voteOnClaim(claim.id, "dispute")} disabled={!canVote}>
-                                Dispute
-                              </Button>
+                          <p className="social-claim-summary">{firstLine(claim.summary, 120)}</p>
+                          <div className="social-claim-footer">
+                            <span>{claim.verifiedBy.length}v / {claim.disputedBy.length}d</span>
+                            <div className="social-claim-vote-btns">
+                              <Button size="sm" onClick={() => voteOnClaim(claim.id, "verify")} disabled={!canVote}>V</Button>
+                              <Button size="sm" onClick={() => voteOnClaim(claim.id, "dispute")} disabled={!canVote}>D</Button>
                             </div>
                           </div>
                         </div>
@@ -1361,244 +1787,46 @@ export default function AgentSocial() {
                     })}
                   </div>
                 </div>
-
-                <div>
-                  <SectionLabel className="mb-2">learning log</SectionLabel>
-                  <div className="agent-social-log">
-                    {socialState.learningLogs.length === 0 && (
-                      <MetaText size="xs">No learning logs yet.</MetaText>
-                    )}
-                    {socialState.learningLogs.map((log) => (
-                      <div key={log.id} className="agent-social-log-item">
-                        <div className="agent-social-log-title">
-                          {displayName(agentMap, log.agentId)} learned "{log.topic}"
-                        </div>
-                        <MetaText size="xs">
-                          {relativeTime(log.createdAt)} · {log.sourceTitle}
-                        </MetaText>
-                        <p>{firstLine(log.summary, 150)}</p>
-                        <a href={log.sourceUrl} target="_blank" rel="noreferrer" className="agent-social-source-link">
-                          open source
-                        </a>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </Card>
-          </section>
-
-          <aside className="agent-social-side-column">
-            <Card className="agent-social-card">
-              <SectionLabel className="mb-2">control center</SectionLabel>
-              <div className="agent-social-control-grid">
-                <label className="agent-social-field">
-                  <span>Current actor</span>
-                  <select
-                    value={socialState.currentActorId}
-                    onChange={(event) => changeActor(event.target.value)}
-                  >
-                    {agents.map((agent) => (
-                      <option key={agent.id} value={agent.id}>
-                        {agent.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <div className="agent-social-inline-actions">
-                  <Button size="sm" onClick={() => runAutonomous(1)}>Run 1 step</Button>
-                  <Button size="sm" onClick={() => runAutonomous(5)}>Run 5 steps</Button>
-                </div>
-              </div>
-            </Card>
-
-            <Card className="agent-social-card">
-              <SectionLabel className="mb-2">agent network</SectionLabel>
-              <div className="agent-social-network">
-                {agents.map((agent) => {
-                  const profile = socialState.profiles[agent.id];
-                  const relation = relationshipType(socialState.friendships, socialState.currentActorId, agent.id);
-                  const verifiedSkills = verifiedSkillsByAgent.get(agent.id) || [];
-                  const topSkills = dedupeStrings([...agent.skills, ...verifiedSkills]).slice(0, 5);
-                  return (
-                    <div key={agent.id} className="agent-social-agent-card">
-                      <div className="agent-social-agent-head">
-                        <div className="agent-social-avatar" style={{ background: avatarGradient(profile?.avatarSeed || agent.id) }}>
-                          {profile?.avatarDataUrl ? (
-                            <img src={profile.avatarDataUrl} alt={`${agent.name} avatar`} />
-                          ) : (
-                            <span>{initials(agent.name)}</span>
-                          )}
-                        </div>
-                        <div className="agent-social-agent-meta">
-                          <div className="agent-social-agent-name">{agent.name}</div>
-                          <MetaText size="xs">
-                            {profile?.handle || toHandle(agent.id)} · friends {friendCounts.get(agent.id) || 0}
-                          </MetaText>
-                        </div>
-                      </div>
-                      <p className="agent-social-agent-personality">
-                        {profile?.personality || "No social profile yet."}
-                      </p>
-                      <div className="agent-social-chip-row">
-                        {topSkills.length > 0 ? topSkills.map((skill) => (
-                          <Badge key={skill} status="info">{skill}</Badge>
-                        )) : (
-                          <Badge status="muted">no skills yet</Badge>
-                        )}
-                      </div>
-                      <div className="agent-social-agent-actions">
-                        <Button size="sm" onClick={() => setSocialState((prev) => ({ ...prev, focusAgentId: agent.id }))}>
-                          Edit soul
-                        </Button>
-                        {relation.type === "self" && <Badge status="accent">you</Badge>}
-                        {relation.type === "friends" && <Badge status="success">friends</Badge>}
-                        {relation.type === "none" && (
-                          <Button size="sm" onClick={() => sendFriendRequest(agent.id)}>
-                            Add friend
-                          </Button>
-                        )}
-                        {relation.type === "outbound" && <Badge status="warning">request sent</Badge>}
-                        {relation.type === "inbound" && relation.friendship && (
-                          <>
-                            <Button size="sm" onClick={() => acceptFriendRequest(relation.friendship!.id)}>
-                              Accept
-                            </Button>
-                            <Button size="sm" onClick={() => ignoreFriendRequest(relation.friendship!.id)}>
-                              Ignore
-                            </Button>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </Card>
-
-            <Card className="agent-social-card">
-              <SectionLabel className="mb-2">soul document</SectionLabel>
-              {focusAgent && focusProfile ? (
-                <div className="agent-social-soul-form">
-                  <MetaText size="xs">
-                    Editing {focusAgent.name} ({focusProfile.handle})
-                  </MetaText>
-                  <label className="agent-social-field">
-                    <span>Handle</span>
-                    <input
-                      value={focusProfile.handle}
-                      onChange={(event) => updateProfileField("handle", event.target.value)}
-                    />
-                  </label>
-                  <label className="agent-social-field">
-                    <span>Personality</span>
-                    <input
-                      value={focusProfile.personality}
-                      onChange={(event) => updateProfileField("personality", event.target.value)}
-                    />
-                  </label>
-                  <label className="agent-social-field">
-                    <span>Mission</span>
-                    <input
-                      value={focusProfile.mission}
-                      onChange={(event) => updateProfileField("mission", event.target.value)}
-                    />
-                  </label>
-                  <label className="agent-social-field">
-                    <span>Values</span>
-                    <input
-                      value={focusProfile.values}
-                      onChange={(event) => updateProfileField("values", event.target.value)}
-                    />
-                  </label>
-                  <label className="agent-social-field">
-                    <span>Growth goal</span>
-                    <textarea
-                      value={focusProfile.growthGoal}
-                      onChange={(event) => updateProfileField("growthGoal", event.target.value)}
-                      rows={2}
-                    />
-                  </label>
-                  <label className="agent-social-field">
-                    <span>Soul text</span>
-                    <textarea
-                      value={focusProfile.soulDocument}
-                      onChange={(event) => updateProfileField("soulDocument", event.target.value)}
-                      rows={4}
-                    />
-                  </label>
-                </div>
-              ) : (
-                <MetaText size="xs">Select an agent to edit soul fields.</MetaText>
-              )}
-            </Card>
-
-            <Card className="agent-social-card">
-              <SectionLabel className="mb-2">Google AutoCoder lane</SectionLabel>
-              <div className="agent-social-google">
-                <Switch
-                  checked={socialState.googleLab.connected}
-                  onCheckedChange={(checked) => updateGoogleLab({ connected: checked })}
-                  label={socialState.googleLab.connected ? "Google lane active" : "Google lane paused"}
-                />
-                <label className="agent-social-field">
-                  <span>Google project id</span>
-                  <input
-                    value={socialState.googleLab.projectId}
-                    onChange={(event) => updateGoogleLab({ projectId: event.target.value })}
-                    placeholder="project-id"
-                  />
-                </label>
-                <label className="agent-social-field">
-                  <span>Client email</span>
-                  <input
-                    value={socialState.googleLab.clientEmail}
-                    onChange={(event) => updateGoogleLab({ clientEmail: event.target.value })}
-                    placeholder="service-account@project.iam.gserviceaccount.com"
-                  />
-                </label>
-                <label className="agent-social-field">
-                  <span>Target agent</span>
-                  <select
-                    value={socialState.googleLab.targetAgentId}
-                    onChange={(event) => updateGoogleLab({ targetAgentId: event.target.value })}
-                  >
-                    {agents.map((agent) => (
-                      <option key={agent.id} value={agent.id}>
-                        {agent.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="agent-social-field">
-                  <span>Nano-banana prompt</span>
-                  <textarea
-                    value={socialState.googleLab.prompt}
-                    onChange={(event) => updateGoogleLab({ prompt: event.target.value })}
-                    rows={2}
-                  />
-                </label>
-                <div className="agent-social-inline-actions">
-                  <Button size="sm" onClick={generateAvatar}>Generate avatar</Button>
-                  <Button size="sm" onClick={publishGoogleUpdate}>Publish status</Button>
-                </div>
-                <MetaText size="xs">
-                  Last avatar: {socialState.googleLab.lastGeneratedAt ? relativeTime(socialState.googleLab.lastGeneratedAt) : "never"}
-                </MetaText>
-                <div className="agent-social-chip-row">
-                  {googleAccounts.length > 0 ? googleAccounts.map((account) => (
-                    <Badge key={account.id} status={account.status === "connected" ? "success" : "warning"}>
-                      {account.display_name || account.email || account.id}
-                    </Badge>
-                  )) : (
-                    <MetaText size="xs">No Google accounts connected. Add one in Integrations.</MetaText>
-                  )}
-                </div>
-              </div>
-            </Card>
+              </Collapsible>
+            </div>
           </aside>
         </div>
       </PageBody>
+
+      {/* Edit Profile Modal */}
+      <Modal open={editProfileOpen} onClose={() => setEditProfileOpen(false)} title={focusAgent ? `Edit ${focusAgent.name}` : "Edit Profile"} width={480}>
+        {focusAgent && focusProfile && (
+          <div className="social-edit-form">
+            <div className="social-edit-field">
+              <label>Handle</label>
+              <input value={focusProfile.handle} onChange={(e) => updateProfileField("handle", e.target.value)} />
+            </div>
+            <div className="social-edit-field">
+              <label>Personality</label>
+              <input value={focusProfile.personality} onChange={(e) => updateProfileField("personality", e.target.value)} />
+            </div>
+            <div className="social-edit-field">
+              <label>Mission</label>
+              <input value={focusProfile.mission} onChange={(e) => updateProfileField("mission", e.target.value)} />
+            </div>
+            <div className="social-edit-field">
+              <label>Values</label>
+              <input value={focusProfile.values} onChange={(e) => updateProfileField("values", e.target.value)} />
+            </div>
+            <div className="social-edit-field">
+              <label>Growth Goal</label>
+              <textarea value={focusProfile.growthGoal} onChange={(e) => updateProfileField("growthGoal", e.target.value)} rows={2} />
+            </div>
+            <div className="social-edit-field">
+              <label>Soul Document</label>
+              <textarea value={focusProfile.soulDocument} onChange={(e) => updateProfileField("soulDocument", e.target.value)} rows={4} />
+            </div>
+            <div className="social-edit-actions">
+              <Button size="sm" onClick={() => setEditProfileOpen(false)}>Done</Button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </>
   );
 }
