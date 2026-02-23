@@ -154,10 +154,24 @@ async function run() {
     const buffer = Buffer.from(AVATAR_SVG, "utf-8");
     await writeFile(fullPath, buffer);
 
-    // Also create a PNG rasterization via sharp for thumbnail
+    // ── Housekeeping: mark old avatars for this agent as 'replaced' ──
+    await pool.query(
+      `UPDATE media
+          SET status = 'replaced', updated_at = NOW()
+        WHERE sender_id = $1
+          AND channel_type = 'agent-social'
+          AND media_type = 'photo'
+          AND status = 'ready'`,
+      [AGENT_ID],
+    );
+
+    // Try PNG rasterization via sharp, fall back to SVG
+    let finalMediaId = mediaId;
+    let finalStoragePath = storagePath;
     let thumbnailPath: string | null = null;
     let width: number | null = 512;
     let height: number | null = 512;
+    let usedPng = false;
 
     try {
       const sharp = (await import("sharp")).default;
@@ -166,7 +180,7 @@ async function run() {
         .png()
         .toBuffer();
 
-      // Save PNG version too
+      // Save PNG version
       const pngStoragePath = `${year}/${month}/${mediaId}.png`;
       const pngFullPath = join(MEDIA_ROOT, pngStoragePath);
       await writeFile(pngFullPath, pngBuffer);
@@ -186,9 +200,10 @@ async function run() {
       const meta = await sharp(pngBuffer).metadata();
       width = meta.width ?? 512;
       height = meta.height ?? 512;
+      finalStoragePath = pngStoragePath;
+      usedPng = true;
 
-      // Use PNG as main stored file (better compatibility for avatars)
-      const pngMediaId = mediaId;
+      // Insert media record (use ON CONFLICT to be idempotent)
       await pool.query(
         `INSERT INTO media (
            id, message_id, conversation_id, channel_type, channel_id, sender_id,
@@ -198,9 +213,15 @@ async function run() {
            $1, NULL, NULL, $2, $3, $4,
            'photo', $5, $6, $7, $8, $9,
            $10, $11, NULL, 'ready', $12
-         )`,
+         )
+         ON CONFLICT (id) DO UPDATE SET
+           storage_path = EXCLUDED.storage_path,
+           thumbnail_path = EXCLUDED.thumbnail_path,
+           size_bytes = EXCLUDED.size_bytes,
+           status = 'ready',
+           updated_at = NOW()`,
         [
-          pngMediaId,
+          mediaId,
           "agent-social",
           "agent-social",
           AGENT_ID,
@@ -215,24 +236,17 @@ async function run() {
         ],
       );
 
-      console.log(`✅ Avatar created successfully!`);
-      console.log(`   Media ID: ${pngMediaId}`);
+      console.log(`✅ Avatar created successfully (PNG)!`);
+      console.log(`   Media ID: ${mediaId}`);
       console.log(`   Agent: ${AGENT_NAME} (${AGENT_ID})`);
       console.log(`   Storage: ${pngStoragePath}`);
       console.log(`   Thumbnail: ${thumbnailPath}`);
       console.log(`   Size: ${pngBuffer.length} bytes (${width}x${height})`);
-      console.log(`   URL: /api/media/${pngMediaId}/file`);
     } catch (sharpErr) {
-      // If we already inserted into DB, don't try again in fallback
       const errorStr = sharpErr instanceof Error ? sharpErr.message : String(sharpErr);
-      if (errorStr.includes("duplicate key value violates unique constraint")) {
-        console.log("✅ Avatar already stored in DB.");
-        return;
-      }
-
-      // Fallback: store SVG directly
       console.warn("Sharp not available, storing SVG directly:", errorStr);
 
+      // Fallback: store SVG directly (also idempotent)
       await pool.query(
         `INSERT INTO media (
            id, message_id, conversation_id, channel_type, channel_id, sender_id,
@@ -242,7 +256,12 @@ async function run() {
            $1, NULL, NULL, $2, $3, $4,
            'photo', $5, $6, $7, $8, $9,
            $10, $11, NULL, 'ready', $12
-         )`,
+         )
+         ON CONFLICT (id) DO UPDATE SET
+           storage_path = EXCLUDED.storage_path,
+           size_bytes = EXCLUDED.size_bytes,
+           status = 'ready',
+           updated_at = NOW()`,
         [
           mediaId,
           "agent-social",
@@ -262,8 +281,27 @@ async function run() {
       console.log(`✅ Avatar created (SVG fallback)!`);
       console.log(`   Media ID: ${mediaId}`);
       console.log(`   Storage: ${storagePath}`);
-      console.log(`   URL: /api/media/${mediaId}/file`);
     }
+
+    // ── Update agent's avatar_url (if column exists) ──
+    const avatarUrl = `/api/media/${finalMediaId}/file`;
+    try {
+      await pool.query(
+        `UPDATE agents SET avatar_url = $1, updated_at = NOW() WHERE id = $2`,
+        [avatarUrl, AGENT_ID],
+      );
+      console.log(`   avatar_url: ${avatarUrl}`);
+    } catch (urlErr) {
+      // Column may not exist yet if migration 045 hasn't run
+      const msg = urlErr instanceof Error ? urlErr.message : String(urlErr);
+      if (msg.includes("avatar_url")) {
+        console.warn(`   ⚠ avatar_url column not found (run migration 045 first)`);
+      } else {
+        throw urlErr;
+      }
+    }
+
+    console.log(`   URL: /api/media/${finalMediaId}/file`);
   } finally {
     await pool.end();
   }

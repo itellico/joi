@@ -283,7 +283,7 @@ export async function generateAvatarAndStore(opts: GenerateAvatarOptions): Promi
     [opts.agentId],
   );
 
-  // ── Insert new avatar media record ──
+  // ── Insert new avatar media record (idempotent with ON CONFLICT) ──
   await query(
     `INSERT INTO media (
        id, message_id, conversation_id, channel_type, channel_id, sender_id,
@@ -293,7 +293,14 @@ export async function generateAvatarAndStore(opts: GenerateAvatarOptions): Promi
        $1, NULL, $2, $3, $4, $5,
        'photo', $6, $7, $8, $9, $10,
        $11, $12, NULL, 'ready', $13
-     )`,
+     )
+     ON CONFLICT (id) DO UPDATE SET
+       storage_path = EXCLUDED.storage_path,
+       thumbnail_path = EXCLUDED.thumbnail_path,
+       size_bytes = EXCLUDED.size_bytes,
+       mime_type = EXCLUDED.mime_type,
+       status = 'ready',
+       updated_at = NOW()`,
     [
       mediaId,
       opts.conversationId || null,
@@ -313,10 +320,20 @@ export async function generateAvatarAndStore(opts: GenerateAvatarOptions): Promi
 
   // ── Update the agent's avatar_url column so it always points to the latest ──
   const avatarUrl = `/api/media/${mediaId}/file`;
-  await query(
-    `UPDATE agents SET avatar_url = $1, updated_at = NOW() WHERE id = $2`,
-    [avatarUrl, opts.agentId],
-  );
+  try {
+    await query(
+      `UPDATE agents SET avatar_url = $1, updated_at = NOW() WHERE id = $2`,
+      [avatarUrl, opts.agentId],
+    );
+  } catch (err) {
+    // Gracefully handle if avatar_url column doesn't exist yet (migration 045 pending)
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("avatar_url")) {
+      console.warn(`[avatar-studio] avatar_url column not found for agent ${opts.agentId} — run migration 045`);
+    } else {
+      throw err;
+    }
+  }
 
   return {
     mediaId,
