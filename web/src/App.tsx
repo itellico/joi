@@ -290,14 +290,14 @@ function App() {
             <span className={`sidebar-health-dot ${health.memory?.status || "orange"}`} />
             <span>Memory</span>
             {health.memory?.status !== "green" && health.memory?.detail && (
-              <span className="sidebar-health-detail">{health.memory.detail}</span>
+              <span className="sidebar-health-detail" title={health.memory.detail}>{health.memory.detail}</span>
             )}
           </div>
           <div className="sidebar-health-row">
             <span className={`sidebar-health-dot ${health.watchdog?.status || "red"}`} />
             <span>Watchdog</span>
             {health.watchdog?.detail && (
-              <span className="sidebar-health-detail">{health.watchdog.detail}</span>
+              <span className="sidebar-health-detail" title={health.watchdog.detail}>{health.watchdog.detail}</span>
             )}
             <button
               className={`sidebar-health-restart ${restartingService === "watchdog" ? "spinning" : ""}`}
