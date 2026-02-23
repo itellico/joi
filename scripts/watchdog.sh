@@ -217,7 +217,13 @@ check_web() {
 }
 
 check_autodev() {
-  pgrep -f "$PROJECT_ROOT/gateway.*autodev/worker" >/dev/null 2>&1
+  # Process must exist AND gateway must see it as connected.
+  # Without the WS check, a zombie worker (alive but disconnected after
+  # gateway restart) would appear healthy to pgrep.
+  pgrep -f "$PROJECT_ROOT/gateway.*autodev/worker" >/dev/null 2>&1 || return 1
+  local resp
+  resp=$(curl -sf -m 3 "http://127.0.0.1:3100/api/autodev/status" 2>/dev/null) || return 1
+  echo "$resp" | grep -q '"workerConnected":true'
 }
 
 check_livekit() {
