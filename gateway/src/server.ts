@@ -50,6 +50,10 @@ import { configureAPNs, closeAPNs } from "./notifications/apns.js";
 import { createPushDispatcher, getNotificationLog, getDeviceCount } from "./notifications/dispatcher.js";
 import { generateToken } from "./livekit/token.js";
 import { AutoDevProxy } from "./autodev/proxy.js";
+import { runTestSuite } from "./quality/runner.js";
+import { createIssuesFromRun, listIssues, updateIssue, pushToAutodev } from "./quality/issues.js";
+import { generatePromptCandidate, abTestPrompt, submitForReview, activatePromptVersion } from "./quality/optimizer.js";
+import type { QATestSuite, QATestCase, QATestRun, QATestResult, QAIssue, QAStats } from "./quality/types.js";
 
 const config = loadConfig();
 
@@ -5517,6 +5521,343 @@ app.delete("/api/media/:id", async (req, res) => {
   }
 });
 
+// ─── Quality Center API ───
+
+// Suites
+app.get("/api/quality/suites", async (_req, res) => {
+  try {
+    const result = await query<QATestSuite & { case_count: number; last_run_status: string | null; last_run_at: string | null }>(
+      `SELECT s.*,
+         (SELECT COUNT(*) FROM qa_test_cases WHERE suite_id = s.id)::int AS case_count,
+         (SELECT status FROM qa_test_runs WHERE suite_id = s.id ORDER BY created_at DESC LIMIT 1) AS last_run_status,
+         (SELECT created_at FROM qa_test_runs WHERE suite_id = s.id ORDER BY created_at DESC LIMIT 1) AS last_run_at
+       FROM qa_test_suites s ORDER BY s.name`,
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/api/quality/suites", async (req, res) => {
+  try {
+    const { name, description, agent_id, config: suiteConfig, tags } = req.body;
+    const result = await query<QATestSuite>(
+      `INSERT INTO qa_test_suites (name, description, agent_id, config, tags)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [name, description || null, agent_id || "personal", JSON.stringify(suiteConfig || {}), tags || []],
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get("/api/quality/suites/:id", async (req, res) => {
+  try {
+    const suite = await query<QATestSuite>("SELECT * FROM qa_test_suites WHERE id = $1", [req.params.id]);
+    if (suite.rows.length === 0) return res.status(404).json({ error: "Not found" });
+    const cases = await query<QATestCase>(
+      "SELECT * FROM qa_test_cases WHERE suite_id = $1 ORDER BY sort_order, created_at",
+      [req.params.id],
+    );
+    res.json({ ...suite.rows[0], cases: cases.rows });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.put("/api/quality/suites/:id", async (req, res) => {
+  try {
+    const { name, description, agent_id, config: suiteConfig, tags, enabled } = req.body;
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    let idx = 1;
+    if (name !== undefined) { sets.push(`name = $${idx++}`); vals.push(name); }
+    if (description !== undefined) { sets.push(`description = $${idx++}`); vals.push(description); }
+    if (agent_id !== undefined) { sets.push(`agent_id = $${idx++}`); vals.push(agent_id); }
+    if (suiteConfig !== undefined) { sets.push(`config = $${idx++}`); vals.push(JSON.stringify(suiteConfig)); }
+    if (tags !== undefined) { sets.push(`tags = $${idx++}`); vals.push(tags); }
+    if (enabled !== undefined) { sets.push(`enabled = $${idx++}`); vals.push(enabled); }
+    sets.push("updated_at = NOW()");
+    vals.push(req.params.id);
+    const result = await query<QATestSuite>(
+      `UPDATE qa_test_suites SET ${sets.join(", ")} WHERE id = $${idx} RETURNING *`,
+      vals,
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: "Not found" });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.delete("/api/quality/suites/:id", async (req, res) => {
+  try {
+    await query("DELETE FROM qa_test_suites WHERE id = $1", [req.params.id]);
+    res.json({ deleted: true });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// Cases
+app.post("/api/quality/suites/:id/cases", async (req, res) => {
+  try {
+    const { name, description, input_message, expected_tools, unexpected_tools, expected_content_patterns, max_latency_ms, min_quality_score } = req.body;
+    const result = await query<QATestCase>(
+      `INSERT INTO qa_test_cases (suite_id, name, description, input_message, expected_tools, unexpected_tools, expected_content_patterns, max_latency_ms, min_quality_score)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [req.params.id, name, description || null, input_message, expected_tools || [], unexpected_tools || [], expected_content_patterns || [], max_latency_ms || null, min_quality_score || 0.5],
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.put("/api/quality/cases/:id", async (req, res) => {
+  try {
+    const { name, description, input_message, expected_tools, unexpected_tools, expected_content_patterns, max_latency_ms, min_quality_score, enabled } = req.body;
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    let idx = 1;
+    if (name !== undefined) { sets.push(`name = $${idx++}`); vals.push(name); }
+    if (description !== undefined) { sets.push(`description = $${idx++}`); vals.push(description); }
+    if (input_message !== undefined) { sets.push(`input_message = $${idx++}`); vals.push(input_message); }
+    if (expected_tools !== undefined) { sets.push(`expected_tools = $${idx++}`); vals.push(expected_tools); }
+    if (unexpected_tools !== undefined) { sets.push(`unexpected_tools = $${idx++}`); vals.push(unexpected_tools); }
+    if (expected_content_patterns !== undefined) { sets.push(`expected_content_patterns = $${idx++}`); vals.push(expected_content_patterns); }
+    if (max_latency_ms !== undefined) { sets.push(`max_latency_ms = $${idx++}`); vals.push(max_latency_ms); }
+    if (min_quality_score !== undefined) { sets.push(`min_quality_score = $${idx++}`); vals.push(min_quality_score); }
+    if (enabled !== undefined) { sets.push(`enabled = $${idx++}`); vals.push(enabled); }
+    sets.push("updated_at = NOW()");
+    vals.push(req.params.id);
+    const result = await query<QATestCase>(
+      `UPDATE qa_test_cases SET ${sets.join(", ")} WHERE id = $${idx} RETURNING *`,
+      vals,
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: "Not found" });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.delete("/api/quality/cases/:id", async (req, res) => {
+  try {
+    await query("DELETE FROM qa_test_cases WHERE id = $1", [req.params.id]);
+    res.json({ deleted: true });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// Runs
+app.post("/api/quality/suites/:id/run", async (req, res) => {
+  try {
+    const { modelOverrides } = req.body || {};
+    // Start run asynchronously, return the run ID immediately
+    const suiteCheck = await query("SELECT id FROM qa_test_suites WHERE id = $1", [req.params.id]);
+    if (suiteCheck.rows.length === 0) return res.status(404).json({ error: "Suite not found" });
+
+    const runRow = await query<QATestRun>(
+      `INSERT INTO qa_test_runs (suite_id, status, triggered_by, model_config, total_cases)
+       VALUES ($1, 'running', 'manual', $2,
+         (SELECT COUNT(*) FROM qa_test_cases WHERE suite_id = $1 AND enabled = true))
+       RETURNING *`,
+      [req.params.id, JSON.stringify(modelOverrides || {})],
+    );
+    const runId = runRow.rows[0].id;
+
+    res.json({ runId, status: "running" });
+
+    // Execute in background
+    runTestSuite(req.params.id, config, {
+      modelOverrides,
+      triggeredBy: "manual",
+      broadcast: wsBroadcast,
+    }).then(async (completedRun) => {
+      // Auto-create issues for failures
+      await createIssuesFromRun(completedRun).catch((err) =>
+        console.error("[QA] Issue creation failed:", err),
+      );
+    }).catch((err) => {
+      console.error("[QA] Run failed:", err);
+      query(
+        "UPDATE qa_test_runs SET status = 'failed', completed_at = NOW() WHERE id = $1",
+        [runId],
+      ).catch(() => {});
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get("/api/quality/runs", async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 20;
+    const offset = parseInt(req.query.offset as string) || 0;
+    const suiteId = req.query.suiteId as string;
+
+    const where = suiteId ? "WHERE tr.suite_id = $3" : "";
+    const params: unknown[] = [limit, offset];
+    if (suiteId) params.push(suiteId);
+
+    const result = await query<QATestRun & { suite_name: string }>(
+      `SELECT tr.*, s.name AS suite_name
+       FROM qa_test_runs tr
+       JOIN qa_test_suites s ON tr.suite_id = s.id
+       ${where}
+       ORDER BY tr.created_at DESC
+       LIMIT $1 OFFSET $2`,
+      params,
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get("/api/quality/runs/:id", async (req, res) => {
+  try {
+    const run = await query<QATestRun & { suite_name: string }>(
+      `SELECT tr.*, s.name AS suite_name
+       FROM qa_test_runs tr
+       JOIN qa_test_suites s ON tr.suite_id = s.id
+       WHERE tr.id = $1`,
+      [req.params.id],
+    );
+    if (run.rows.length === 0) return res.status(404).json({ error: "Not found" });
+
+    const results = await query<QATestResult & { case_name: string; input_message: string }>(
+      `SELECT r.*, c.name AS case_name, c.input_message
+       FROM qa_test_results r
+       JOIN qa_test_cases c ON r.case_id = c.id
+       WHERE r.run_id = $1
+       ORDER BY c.sort_order, r.created_at`,
+      [req.params.id],
+    );
+
+    res.json({ ...run.rows[0], results: results.rows });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// Issues
+app.get("/api/quality/issues", async (req, res) => {
+  try {
+    const { status, severity, category, limit, offset } = req.query as Record<string, string>;
+    const result = await listIssues({
+      status, severity, category,
+      limit: parseInt(limit) || 50,
+      offset: parseInt(offset) || 0,
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.put("/api/quality/issues/:id", async (req, res) => {
+  try {
+    const issue = await updateIssue(req.params.id, req.body);
+    res.json(issue);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/api/quality/issues/:id/autodev", async (req, res) => {
+  try {
+    await pushToAutodev(req.params.id);
+    res.json({ pushed: true });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// Stats (dashboard aggregates)
+app.get("/api/quality/stats", async (_req, res) => {
+  try {
+    const [suites, cases, runs, issues, criticalIssues, lastRun] = await Promise.all([
+      query<{ count: string }>("SELECT COUNT(*) FROM qa_test_suites"),
+      query<{ count: string }>("SELECT COUNT(*) FROM qa_test_cases"),
+      query<{ count: string }>("SELECT COUNT(*) FROM qa_test_runs"),
+      query<{ count: string }>("SELECT COUNT(*) FROM qa_issues WHERE status NOT IN ('closed', 'verified')"),
+      query<{ count: string }>("SELECT COUNT(*) FROM qa_issues WHERE severity = 'critical' AND status NOT IN ('closed', 'verified')"),
+      query<QATestRun>("SELECT * FROM qa_test_runs ORDER BY created_at DESC LIMIT 1"),
+    ]);
+
+    const totalRuns = parseInt(runs.rows[0].count);
+    let passRate: number | null = null;
+    if (totalRuns > 0) {
+      const passResult = await query<{ total_passed: string; total_cases: string }>(
+        "SELECT SUM(passed) AS total_passed, SUM(total_cases) AS total_cases FROM qa_test_runs WHERE status = 'completed'",
+      );
+      const { total_passed, total_cases } = passResult.rows[0];
+      if (parseInt(total_cases) > 0) {
+        passRate = parseInt(total_passed) / parseInt(total_cases);
+      }
+    }
+
+    const stats: QAStats = {
+      total_suites: parseInt(suites.rows[0].count),
+      total_cases: parseInt(cases.rows[0].count),
+      total_runs: totalRuns,
+      last_run: lastRun.rows[0] || null,
+      pass_rate: passRate,
+      open_issues: parseInt(issues.rows[0].count),
+      critical_issues: parseInt(criticalIssues.rows[0].count),
+    };
+
+    res.json(stats);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// Prompt optimization
+app.post("/api/quality/runs/:id/optimize", async (req, res) => {
+  try {
+    const candidate = await generatePromptCandidate(config, req.params.id);
+    if (!candidate) return res.status(400).json({ error: "No failures to optimize or optimization failed" });
+    res.json(candidate);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/api/quality/prompt-versions/:id/ab-test", async (req, res) => {
+  try {
+    const { suiteId } = req.body;
+    if (!suiteId) return res.status(400).json({ error: "suiteId required" });
+    const result = await abTestPrompt(config, req.params.id, suiteId, wsBroadcast);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/api/quality/prompt-versions/:id/submit-review", async (req, res) => {
+  try {
+    const reviewId = await submitForReview(req.params.id);
+    res.json({ reviewId });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/api/quality/prompt-versions/:id/activate", async (req, res) => {
+  try {
+    await activatePromptVersion(req.params.id);
+    res.json({ activated: true });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 // WebSocket Server
 const wss = new WebSocketServer({ noServer: true });
 
@@ -6318,6 +6659,15 @@ If everything looks normal, do NOT create a review item.`],
    - title: "Friday OKR Scorecard: [date]"
    - tags: ["okr", "weekly", "scorecard"]
    - Include score changes, wins, and areas needing attention.`],
+  );
+
+  // ─── Quality Center nightly test runs ───
+  await query(
+    `INSERT INTO cron_jobs (agent_id, name, description, schedule_kind, schedule_cron_expr,
+       schedule_cron_tz, session_target, payload_kind, payload_text, enabled)
+     VALUES ('system', 'run_qa_tests', 'Nightly QA test suite execution across all enabled suites',
+       'cron', '0 3 * * *', 'Europe/Vienna', 'isolated', 'system_event', 'run_qa_tests', true)
+     ON CONFLICT (name) DO NOTHING`,
   );
 
   console.log("[Server] Built-in cron jobs registered");

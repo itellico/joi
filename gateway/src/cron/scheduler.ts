@@ -13,6 +13,8 @@ import { scanAllChannels } from "../channels/scanner.js";
 import { scanEmailInboxes } from "../channels/email-scanner.js";
 import { checkBirthdays } from "../contacts/birthday-checker.js";
 import { runSelfRepair } from "./self-repair.js";
+import { runTestSuite } from "../quality/runner.js";
+import { createIssuesFromRun } from "../quality/issues.js";
 import type { JoiConfig } from "../config/schema.js";
 
 export interface CronJob {
@@ -247,6 +249,25 @@ async function executeJob(job: CronJob): Promise<void> {
         case "self_repair":
           await runSelfRepair(schedulerConfig!);
           break;
+        case "run_qa_tests": {
+          // Run all enabled QA test suites
+          const suites = await query<{ id: string; name: string }>(
+            "SELECT id, name FROM qa_test_suites WHERE enabled = true ORDER BY name",
+          );
+          for (const suite of suites.rows) {
+            console.log(`[QA] Running suite: ${suite.name}`);
+            try {
+              const run = await runTestSuite(suite.id, schedulerConfig!, {
+                triggeredBy: "cron",
+              });
+              await createIssuesFromRun(run);
+              console.log(`[QA] Suite "${suite.name}": ${run.passed} passed, ${run.failed} failed, ${run.errored} errored`);
+            } catch (err) {
+              console.error(`[QA] Suite "${suite.name}" failed:`, err);
+            }
+          }
+          break;
+        }
         default:
           console.warn(`[Cron] Unknown system_event: ${job.payload_text}`);
       }

@@ -23,6 +23,7 @@ import OKRs from "./pages/OKRs";
 import Reports from "./pages/Reports";
 import AutoDev from "./pages/AutoDev";
 import Media from "./pages/Media";
+import QualityCenter from "./pages/QualityCenter";
 import AssistantChat from "./components/AssistantChat";
 import JoiOrb from "./components/JoiOrb";
 
@@ -159,6 +160,9 @@ function App() {
           <NavLink to="/autodev">
             AutoDev
           </NavLink>
+          <NavLink to="/quality">
+            Quality
+          </NavLink>
           <NavLink to="/terminal">
             Terminal
           </NavLink>
@@ -260,13 +264,13 @@ function App() {
             <span className={`sidebar-health-dot ${health.database?.status || "red"}`} />
             <span>Database</span>
             {health.database?.status !== "green" && health.database?.detail && (
-              <span className="sidebar-health-detail">{health.database.detail}</span>
+              <span className="sidebar-health-detail" title={health.database.detail}>{health.database.detail}</span>
             )}
           </div>
           <div className="sidebar-health-row sidebar-health-clickable" onClick={() => navigate("/autodev")}>
             <span className={`sidebar-health-dot ${health.autodev?.status || "red"}`} />
             <span>AutoDev</span>
-            <span className="sidebar-health-detail">{autodevState}</span>
+            <span className="sidebar-health-detail" title={autodevState}>{autodevState}</span>
             <button
               className={`sidebar-health-restart ${restartingService === "autodev" ? "spinning" : ""}`}
               title="Restart AutoDev"
@@ -325,6 +329,7 @@ function App() {
           <Route path="/reviews" element={<Reviews ws={ws} />} />
           <Route path="/integrations" element={<Channels ws={ws} />} />
           <Route path="/autodev" element={<AutoDev ws={ws} />} />
+          <Route path="/quality" element={<QualityCenter ws={ws} />} />
           <Route path="/channels" element={<Navigate to="/integrations" replace />} />
         </Routes>
       </main>

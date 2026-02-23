@@ -42,6 +42,10 @@ export type FrameType =
   | "autodev.task_complete" // Gateway → Client: task completed
   | "autodev.error"      // Gateway → Client: error
   | "autodev.worker_hello" // Worker → Gateway: initial sync on connect
+  | "qa.run_started"    // Gateway → Client: QA test run started
+  | "qa.case_result"    // Gateway → Client: individual test case result
+  | "qa.run_completed"  // Gateway → Client: QA test run finished
+  | "qa.issue_created"  // Gateway → Client: new QA issue created
   | "system.ping"       // Client → Gateway: keepalive
   | "system.pong";      // Gateway → Client: keepalive response
 

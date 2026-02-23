@@ -1,0 +1,258 @@
+// Quality Center — Test Runner
+// Executes test suites by calling runAgent() and capturing tool interactions
+
+import { query } from "../db/client.js";
+import { runAgent, ensureConversation } from "../agent/runtime.js";
+import { evaluateResponse, runRuleChecks } from "./evaluator.js";
+import type { JoiConfig } from "../config/schema.js";
+import type {
+  QATestSuite,
+  QATestCase,
+  QATestRun,
+  QATestResult,
+  CapturedToolInteraction,
+  JudgeScores,
+} from "./types.js";
+
+export interface RunTestSuiteOptions {
+  modelOverrides?: Record<string, unknown>;
+  triggeredBy?: string;
+  broadcast?: (type: string, data: unknown) => void;
+}
+
+export async function runTestSuite(
+  suiteId: string,
+  config: JoiConfig,
+  options: RunTestSuiteOptions = {},
+): Promise<QATestRun> {
+  const { triggeredBy = "manual", broadcast } = options;
+
+  // Load suite and cases
+  const suiteResult = await query<QATestSuite>(
+    "SELECT * FROM qa_test_suites WHERE id = $1",
+    [suiteId],
+  );
+  if (suiteResult.rows.length === 0) throw new Error(`Suite not found: ${suiteId}`);
+  const suite = suiteResult.rows[0];
+
+  const casesResult = await query<QATestCase>(
+    "SELECT * FROM qa_test_cases WHERE suite_id = $1 AND enabled = true ORDER BY sort_order, created_at",
+    [suiteId],
+  );
+  const testCases = casesResult.rows;
+
+  if (testCases.length === 0) throw new Error(`No enabled test cases in suite: ${suite.name}`);
+
+  // Create test run
+  const runResult = await query<QATestRun>(
+    `INSERT INTO qa_test_runs (suite_id, status, triggered_by, model_config, total_cases)
+     VALUES ($1, 'running', $2, $3, $4)
+     RETURNING *`,
+    [suiteId, triggeredBy, JSON.stringify(options.modelOverrides || {}), testCases.length],
+  );
+  const run = runResult.rows[0];
+
+  broadcast?.("qa.run_started", { runId: run.id, suiteId, suiteName: suite.name, totalCases: testCases.length });
+
+  let passed = 0;
+  let failed = 0;
+  let errored = 0;
+  let totalLatency = 0;
+  let totalCost = 0;
+  const allScores: JudgeScores[] = [];
+
+  // Execute each test case sequentially
+  for (const testCase of testCases) {
+    try {
+      const result = await runTestCase(run.id, testCase, suite, config, options);
+
+      if (result.status === "passed") passed++;
+      else if (result.status === "failed") failed++;
+      else if (result.status === "errored") errored++;
+
+      if (result.latency_ms) totalLatency += result.latency_ms;
+      totalCost += result.cost_usd;
+      if (result.judge_scores) allScores.push(result.judge_scores);
+
+      broadcast?.("qa.case_result", {
+        runId: run.id,
+        caseId: testCase.id,
+        caseName: testCase.name,
+        status: result.status,
+        judgeScores: result.judge_scores,
+        failureReasons: result.failure_reasons,
+        latencyMs: result.latency_ms,
+      });
+    } catch (err) {
+      errored++;
+      console.error(`[QA] Error executing case "${testCase.name}":`, err);
+
+      // Save error result
+      await query(
+        `INSERT INTO qa_test_results (run_id, case_id, status, failure_reasons)
+         VALUES ($1, $2, 'errored', $3)`,
+        [run.id, testCase.id, JSON.stringify([err instanceof Error ? err.message : String(err)])],
+      );
+
+      broadcast?.("qa.case_result", {
+        runId: run.id,
+        caseId: testCase.id,
+        caseName: testCase.name,
+        status: "errored",
+        failureReasons: [err instanceof Error ? err.message : String(err)],
+      });
+    }
+  }
+
+  // Compute averages
+  const avgCorrectness = allScores.length > 0
+    ? allScores.reduce((s, sc) => s + sc.correctness, 0) / allScores.length : null;
+  const avgToolAccuracy = allScores.length > 0
+    ? allScores.reduce((s, sc) => s + sc.tool_accuracy, 0) / allScores.length : null;
+  const avgResponseQuality = allScores.length > 0
+    ? allScores.reduce((s, sc) => s + sc.response_quality, 0) / allScores.length : null;
+
+  // Update run record
+  const finalStatus = errored > 0 && passed === 0 && failed === 0 ? "failed" : "completed";
+  const updatedRun = await query<QATestRun>(
+    `UPDATE qa_test_runs SET
+       status = $1, passed = $2, failed = $3, errored = $4,
+       avg_correctness = $5, avg_tool_accuracy = $6, avg_response_quality = $7,
+       total_latency_ms = $8, total_cost_usd = $9, completed_at = NOW()
+     WHERE id = $10
+     RETURNING *`,
+    [finalStatus, passed, failed, errored, avgCorrectness, avgToolAccuracy, avgResponseQuality, totalLatency, totalCost, run.id],
+  );
+
+  broadcast?.("qa.run_completed", {
+    runId: run.id,
+    suiteId,
+    suiteName: suite.name,
+    status: finalStatus,
+    passed,
+    failed,
+    errored,
+    avgCorrectness,
+    avgToolAccuracy,
+    avgResponseQuality,
+    totalCost,
+  });
+
+  return updatedRun.rows[0];
+}
+
+async function runTestCase(
+  runId: string,
+  testCase: QATestCase,
+  suite: QATestSuite,
+  config: JoiConfig,
+  options: RunTestSuiteOptions,
+): Promise<QATestResult> {
+  // Create isolated conversation tagged as QA test
+  const conversationId = await ensureConversation(undefined, suite.agent_id, {
+    source: "qa-test",
+    suiteId: suite.id,
+    caseId: testCase.id,
+    runId,
+  });
+
+  // Capture tool interactions
+  const capturedTools: CapturedToolInteraction[] = [];
+  const pendingTools = new Map<string, CapturedToolInteraction>();
+
+  // Insert running result row
+  const resultRow = await query<QATestResult>(
+    `INSERT INTO qa_test_results (run_id, case_id, status, conversation_id)
+     VALUES ($1, $2, 'running', $3)
+     RETURNING *`,
+    [runId, testCase.id, conversationId],
+  );
+  const resultId = resultRow.rows[0].id;
+
+  const startTime = Date.now();
+
+  // Run agent
+  const agentResult = await runAgent({
+    conversationId,
+    agentId: suite.agent_id,
+    userMessage: testCase.input_message,
+    config,
+    model: (options.modelOverrides as Record<string, string>)?.model,
+    onToolUse: (name: string, input: unknown, id: string) => {
+      const interaction: CapturedToolInteraction = { name, input, id };
+      pendingTools.set(id, interaction);
+      capturedTools.push(interaction);
+    },
+    onToolResult: (id: string, result: unknown) => {
+      const pending = pendingTools.get(id);
+      if (pending) {
+        pending.result = result;
+        pendingTools.delete(id);
+      }
+    },
+  });
+
+  const latencyMs = Date.now() - startTime;
+  const actualContent = agentResult.content;
+
+  // Run rule-based checks
+  const ruleChecks = runRuleChecks(testCase, actualContent, capturedTools, latencyMs);
+
+  // Run LLM judge evaluation
+  const judgeScores = await evaluateResponse(config, testCase, actualContent, capturedTools);
+
+  // Determine pass/fail
+  const failureReasons: string[] = [...ruleChecks.details];
+  const avgScore = (judgeScores.correctness + judgeScores.tool_accuracy + judgeScores.response_quality) / 3;
+
+  if (avgScore < testCase.min_quality_score) {
+    failureReasons.push(`Average quality score ${avgScore.toFixed(2)} below minimum ${testCase.min_quality_score}`);
+  }
+
+  const allRulesPass = ruleChecks.tools_ok && ruleChecks.patterns_ok && ruleChecks.latency_ok;
+  const status = failureReasons.length === 0 && allRulesPass ? "passed" : "failed";
+
+  // Update result row
+  const updated = await query<QATestResult>(
+    `UPDATE qa_test_results SET
+       status = $1, actual_content = $2, actual_tools = $3,
+       judge_scores = $4, rule_checks = $5, failure_reasons = $6,
+       latency_ms = $7, cost_usd = $8, model = $9, provider = $10
+     WHERE id = $11
+     RETURNING *`,
+    [
+      status,
+      actualContent,
+      JSON.stringify(capturedTools),
+      JSON.stringify(judgeScores),
+      JSON.stringify(ruleChecks),
+      JSON.stringify(failureReasons),
+      latencyMs,
+      agentResult.costUsd,
+      agentResult.model,
+      agentResult.provider,
+      resultId,
+    ],
+  );
+
+  // ─── Cleanup: prevent QA test data from polluting real data ───
+  // Delete memories created during this test conversation
+  await query(
+    `DELETE FROM memories WHERE conversation_id = $1`,
+    [conversationId],
+  ).catch(() => {}); // Table column may not exist — best-effort
+
+  // Delete messages from the QA conversation (keep conversation row for audit trail)
+  await query(
+    `DELETE FROM messages WHERE conversation_id = $1`,
+    [conversationId],
+  ).catch(() => {});
+
+  // Mark conversation as QA-completed so it's excluded from session lists
+  await query(
+    `UPDATE conversations SET metadata = metadata || '{"qa_completed": true}'::jsonb WHERE id = $1`,
+    [conversationId],
+  ).catch(() => {});
+
+  return updated.rows[0];
+}
