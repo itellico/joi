@@ -37,9 +37,13 @@ import { getKnowledgeSyncToolHandlers, getKnowledgeSyncToolDefinitions } from ".
 import { getStoreToolHandlers, getStoreToolDefinitions } from "../store/tools.js";
 import { getOKRToolHandlers, getOKRToolDefinitions } from "../okr/tools.js";
 import { getSSHToolHandlers, getSSHToolDefinitions } from "../ssh/tools.js";
-import { readFileSync, existsSync, statSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
+import { getAvatarToolHandlers, getAvatarToolDefinitions } from "../social/avatar-tools.js";
+import {
+  getMediaIntegrationToolHandlers,
+  getMediaIntegrationToolDefinitions,
+} from "../media/integration-tools.js";
+import { readFileSync } from "node:fs";
+import { resolveSkillPathByName } from "../skills/catalog.js";
 import { runClaudeCode } from "./claude-code.js";
 import { updateHeartbeat, createTask, updateTask, listTasks } from "./heartbeat.js";
 
@@ -151,11 +155,17 @@ async function enrichContactFromMemory(content: string, memoryId: string): Promi
 // ─── memory_search: Unified hybrid search across memories + documents ───
 
 toolRegistry.set("memory_search", async (input, ctx) => {
-  const { query: searchQuery, areas, limit } = input as {
+  const { query: searchQuery, areas, limit, scope, tags, visibility } = input as {
     query: string;
     areas?: string[];
     limit?: number;
+    scope?: string;
+    tags?: string[];
+    visibility?: string;
   };
+
+  // Resolve effective scope: explicit param > context scope > null (all)
+  const effectiveScope = scope || (ctx.allowGlobalDataAccess ? undefined : ctx.scope) || undefined;
 
   if (isMem0Enabled(ctx.config)) {
     const allowedScopes = resolveAllowedScopes({
@@ -163,7 +173,7 @@ toolRegistry.set("memory_search", async (input, ctx) => {
       allowedScopes: ctx.allowedScopes,
       allowGlobalDataAccess: ctx.allowGlobalDataAccess,
     });
-    const tenantScope = ctx.allowGlobalDataAccess ? undefined : (ctx.scope || allowedScopes?.[0]);
+    const tenantScope = ctx.allowGlobalDataAccess ? undefined : (effectiveScope || allowedScopes?.[0]);
     const hits = await searchMem0(
       ctx.config,
       searchQuery,
@@ -202,6 +212,9 @@ toolRegistry.set("memory_search", async (input, ctx) => {
     {
       query: searchQuery,
       areas: areas as MemoryArea[] | undefined,
+      scope: effectiveScope,
+      visibility: (visibility as any) || undefined,
+      tags,
       limit: limit || 10,
     },
     ctx.config,
@@ -224,6 +237,8 @@ toolRegistry.set("memory_search", async (input, ctx) => {
       summary: r.memory.summary,
       tags: r.memory.tags,
       confidence: r.memory.confidence,
+      scope: r.memory.scope,
+      visibility: r.memory.visibility,
       score: Math.round(r.score * 1000) / 1000,
       source: r.memory.source,
       pinned: r.memory.pinned,
@@ -242,6 +257,8 @@ toolRegistry.set("memory_store", async (input, ctx) => {
     tags,
     confidence,
     source = "user",
+    scope: inputScope,
+    visibility: inputVisibility,
   } = input as {
     content: string;
     area?: string;
@@ -249,9 +266,15 @@ toolRegistry.set("memory_store", async (input, ctx) => {
     tags?: string[];
     confidence?: number;
     source?: string;
+    scope?: string;
+    visibility?: string;
   };
   const targetArea = area as MemoryArea;
   const targetConfidence = confidence ?? (source === "user" ? 1.0 : 0.7);
+
+  // Resolve scope: explicit input > context scope > null
+  const effectiveScope = inputScope || ctx.scope || undefined;
+  const effectiveVisibility = (inputVisibility as any) || "shared";
 
   let localMemoryId: string | null = null;
   if (!isMem0Enabled(ctx.config) || ctx.config.memory.mem0.shadowWriteLocal) {
@@ -264,6 +287,8 @@ toolRegistry.set("memory_store", async (input, ctx) => {
         confidence: targetConfidence,
         source: source as MemorySource,
         conversationId: ctx.conversationId,
+        scope: effectiveScope,
+        visibility: effectiveVisibility,
       },
       ctx.config,
     );
@@ -398,18 +423,27 @@ toolRegistry.set("memory_manage", async (input, ctx) => {
 // ─── document_search: Search indexed documents (Outline wiki, Obsidian vault) ───
 
 toolRegistry.set("document_search", async (input, ctx) => {
-  const { query: searchQuery, source, limit } = input as {
+  const { query: searchQuery, source, scope: inputScope, limit } = input as {
     query: string;
     source?: string;
+    scope?: string;
     limit?: number;
   };
 
   const maxResults = limit || 8;
-  const allowedScopes = resolveAllowedScopes({
-    scope: ctx.scope,
-    allowedScopes: ctx.allowedScopes,
-    allowGlobalDataAccess: ctx.allowGlobalDataAccess,
-  });
+
+  // Use explicit scope param if provided, otherwise fall back to context-based scoping
+  let allowedScopes: string[] | null;
+  if (inputScope) {
+    // Explicit scope: filter to that scope (unscoped docs included via buildScopeFilterSql)
+    allowedScopes = [inputScope];
+  } else {
+    allowedScopes = resolveAllowedScopes({
+      scope: ctx.scope,
+      allowedScopes: ctx.allowedScopes,
+      allowGlobalDataAccess: ctx.allowGlobalDataAccess,
+    });
+  }
 
   // Try hybrid: vector + FTS
   let queryEmbedding: number[] | null = null;
@@ -683,7 +717,6 @@ toolRegistry.set("spawn_agent", async (input, ctx) => {
     const result = await ctx.spawnAgent({
       agentId: agent_id,
       message,
-      parentConversationId: ctx.conversationId,
     });
 
     return {
@@ -828,26 +861,32 @@ toolRegistry.set("review_status", async (input, ctx) => {
   return { items: result.rows, count: result.rows.length };
 });
 
-// ─── skill_read: Load a Claude Code SKILL.md by name ───
+// ─── skill_read: Load an external SKILL.md by name ───
 
 toolRegistry.set("skill_read", async (input) => {
-  const { name } = input as { name: string };
+  const { name, source } = input as { name: string; source?: string };
 
   // Sanitize: only allow simple directory names (no path traversal)
   if (!name || /[/\\.]/.test(name)) {
     return { error: "Invalid skill name." };
   }
 
-  const skillsDir = join(homedir(), ".claude", "skills");
-  const mdPath = join(skillsDir, name, "SKILL.md");
+  if (source && !/^[a-z0-9_-]+$/i.test(source)) {
+    return { error: "Invalid skill source." };
+  }
 
-  if (!existsSync(mdPath)) {
-    return { error: `Skill '${name}' not found at ~/.claude/skills/${name}/SKILL.md` };
+  const mdPath = resolveSkillPathByName(name, source);
+
+  if (!mdPath) {
+    const sourceHint = source
+      ? ` in source '${source}'`
+      : "";
+    return { error: `Skill '${name}' not found${sourceHint}.` };
   }
 
   try {
     const content = readFileSync(mdPath, "utf-8");
-    return { name, content, path: mdPath };
+    return { name, source: source || null, content, path: mdPath };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { error: `Failed to read skill: ${message}` };
@@ -1093,6 +1132,16 @@ for (const [name, handler] of getSSHToolHandlers()) {
   toolRegistry.set(name, handler);
 }
 
+// Register Avatar/Gemini image tools into main registry
+for (const [name, handler] of getAvatarToolHandlers()) {
+  toolRegistry.set(name, handler);
+}
+
+// Register media integration tools (Emby + Jellyseerr) into main registry
+for (const [name, handler] of getMediaIntegrationToolHandlers()) {
+  toolRegistry.set(name, handler);
+}
+
 // Core tools always available to every agent (memory, scheduling, system)
 const CORE_TOOLS = new Set([
   "memory_search", "memory_store", "memory_manage",
@@ -1113,7 +1162,9 @@ export function getToolDefinitions(allowedSkills?: string[] | null): Anthropic.T
     {
       name: "memory_search",
       description:
-        "Search memories and knowledge. Searches across 5 memory areas (identity, preferences, knowledge, solutions, episodes) using hybrid BM25 + vector search. Use this to recall anything about the user, past conversations, or stored knowledge.",
+        "Search memories and knowledge. Searches across 5 memory areas (identity, preferences, knowledge, solutions, episodes) using hybrid BM25 + vector search. " +
+        "Supports filtering by scope (e.g. company name like 'creditreform', 'itellico'), visibility ('shared', 'private'), and tags. " +
+        "Use this to recall anything about the user, past conversations, or stored knowledge.",
       input_schema: {
         type: "object" as const,
         properties: {
@@ -1126,6 +1177,20 @@ export function getToolDefinitions(allowedSkills?: string[] | null): Anthropic.T
             items: { type: "string", enum: ["identity", "preferences", "knowledge", "solutions", "episodes"] },
             description: "Specific memory areas to search (optional, defaults to all)",
           },
+          scope: {
+            type: "string",
+            description: "Filter by scope/company (e.g. 'creditreform', 'personal', 'itellico-at'). Unscoped memories are always included.",
+          },
+          tags: {
+            type: "array",
+            items: { type: "string" },
+            description: "Filter by tags — results must have ALL specified tags",
+          },
+          visibility: {
+            type: "string",
+            enum: ["shared", "private", "restricted"],
+            description: "Filter by visibility level (default: all visibilities)",
+          },
           limit: {
             type: "number",
             description: "Maximum results (default: 10)",
@@ -1137,7 +1202,8 @@ export function getToolDefinitions(allowedSkills?: string[] | null): Anthropic.T
     {
       name: "memory_store",
       description:
-        "Store a memory. Use area='identity' for user facts, 'preferences' for how they like things, 'knowledge' for project/technical facts, 'solutions' for problem/fix pairs, 'episodes' for session summaries.",
+        "Store a memory. Use area='identity' for user facts, 'preferences' for how they like things, 'knowledge' for project/technical facts, 'solutions' for problem/fix pairs, 'episodes' for session summaries. " +
+        "Set scope to associate with a company/project (e.g. 'creditreform', 'joi'). Set visibility='private' for personal notes.",
       input_schema: {
         type: "object" as const,
         properties: {
@@ -1158,6 +1224,15 @@ export function getToolDefinitions(allowedSkills?: string[] | null): Anthropic.T
             type: "array",
             items: { type: "string" },
             description: "Tags for categorization",
+          },
+          scope: {
+            type: "string",
+            description: "Scope/company to associate this memory with (e.g. 'creditreform', 'itellico-at', 'personal'). Inherits from conversation scope if not set.",
+          },
+          visibility: {
+            type: "string",
+            enum: ["shared", "private", "restricted"],
+            description: "Visibility level (default: shared). Use 'private' for personal notes.",
           },
           confidence: {
             type: "number",
@@ -1203,7 +1278,9 @@ export function getToolDefinitions(allowedSkills?: string[] | null): Anthropic.T
     {
       name: "document_search",
       description:
-        "Search indexed documents from Outline wiki, Obsidian vault, and other ingested sources. Uses hybrid vector + full-text search across document chunks. Use this for company knowledge, wiki articles, project docs, processes, and reference material.",
+        "Search indexed documents from Outline wiki, Obsidian vault, and other ingested sources. Uses hybrid vector + full-text search across document chunks. " +
+        "Supports scope filtering to narrow results to a specific company/project. " +
+        "Use this for company knowledge, wiki articles, project docs, processes, and reference material.",
       input_schema: {
         type: "object" as const,
         properties: {
@@ -1215,6 +1292,10 @@ export function getToolDefinitions(allowedSkills?: string[] | null): Anthropic.T
             type: "string",
             enum: ["obsidian", "file", "web", "manual"],
             description: "Filter by document source (optional, defaults to all sources)",
+          },
+          scope: {
+            type: "string",
+            description: "Filter by scope/company (e.g. 'creditreform', 'itellico-at'). Unscoped documents are always included.",
           },
           limit: {
             type: "number",
@@ -1383,13 +1464,18 @@ export function getToolDefinitions(allowedSkills?: string[] | null): Anthropic.T
     {
       name: "skill_read",
       description:
-        "Read the full SKILL.md instructions for a Claude Code skill by name. The system prompt lists available skills with short descriptions — use this tool to load the complete skill instructions when a task matches a skill. Then follow the instructions using your native tools.",
+        "Read the full SKILL.md instructions for an installed skill by name. The system prompt lists available skills with short descriptions — use this tool to load the complete instructions when a task matches a skill, then execute with native tools.",
       input_schema: {
         type: "object" as const,
         properties: {
           name: {
             type: "string",
-            description: "The skill name (directory name under ~/.claude/skills/), e.g. 'copywriting', 'seo-audit', 'ab-test-setup'",
+            description: "Skill name, e.g. 'copywriting', 'seo-audit', 'skill-creator'.",
+          },
+          source: {
+            type: "string",
+            enum: ["claude-code", "gemini", "codex", "codex-system", "codex-project"],
+            description: "Optional source selector. If omitted, resolve across installed sources.",
           },
         },
         required: ["name"],
@@ -1404,8 +1490,8 @@ export function getToolDefinitions(allowedSkills?: string[] | null): Anthropic.T
         properties: {
           type: {
             type: "string",
-            enum: ["approve", "classify", "match", "select", "verify", "freeform"],
-            description: "Type of review: approve (yes/no), classify (pick category), match (confirm pairing), select (pick from options), verify (confirm data), freeform (open response)",
+            enum: ["approve", "classify", "match", "select", "verify", "freeform", "info", "triage", "soul_update"],
+            description: "Type of review: approve (yes/no), classify (pick category), match (confirm pairing), select (pick from options), verify (confirm data), freeform (open response), info (non-blocking summary), triage (inbox action plan), soul_update (agent soul evolution proposal)",
           },
           title: {
             type: "string",
@@ -1622,6 +1708,8 @@ export function getToolDefinitions(allowedSkills?: string[] | null): Anthropic.T
     ...getStoreToolDefinitions(),
     ...getOKRToolDefinitions(),
     ...getSSHToolDefinitions(),
+    ...getAvatarToolDefinitions(),
+    ...getMediaIntegrationToolDefinitions(),
   ];
 
   // No filter = return everything (personal JOI agent)

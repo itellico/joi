@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import express from "express";
 import cors from "cors";
@@ -33,6 +34,7 @@ import { log as writeLog, getRecentLogs, queryLogs, pruneLogs, setLogBroadcast }
 import { getActiveTasks, getProjects, getTags, getAreas, getCompletedTasks, getCompletedTasksByProject, createTask, completeTask, uncompleteTask, updateTask, moveTask, duplicateTask, createProject, createArea, deleteProject, appendChecklistItems, getProjectHeadings, showInThings, toggleChecklistItem, deleteChecklistItem, deleteTask, getAllHeadingsForProjects, type ThingsList } from "./things/client.js";
 import { createOutlineWebhookRouter } from "./sync/outline-webhook.js";
 import { fullOutlineSync, scanObsidianToOutline, getSyncStatus, getConflicts, resolveConflict } from "./sync/outline-sync.js";
+import { createMediaWebhookRouter } from "./channels/media-webhooks.js";
 import {
   initChannelManager,
   connectChannel,
@@ -63,6 +65,43 @@ import {
   saveAvatarStyleGuide,
   type AvatarRenderMode,
 } from "./social/avatar-studio.js";
+import {
+  ensureAgentSoulDocument,
+  getGlobalSoulPath,
+  readGlobalSoulDocument,
+  writeAgentSoulDocument,
+} from "./agent/soul-documents.js";
+import {
+  getSoulSpecSummary,
+  validateSoulDocument,
+} from "./agent/soul-spec.js";
+import {
+  createSoulVersion,
+  ensureSoulVersion,
+  getActiveSoulVersion,
+  getSoulVersionById,
+  listSoulVersions,
+} from "./agent/soul-versions.js";
+import { SOUL_ROLLOUT_POLICY } from "./agent/soul-policy.js";
+import {
+  cancelActiveSoulRolloutForAgent,
+  evaluateAllActiveSoulRollouts,
+  evaluateSoulRollout,
+  getActiveSoulRolloutForAgent,
+  getSoulGovernanceSummary,
+  getSoulRollout,
+  listSoulRollouts,
+  startSoulRollout,
+  type SoulRollout,
+  type SoulRolloutStatus,
+} from "./agent/soul-rollouts.js";
+import {
+  listExternalSkillCatalog,
+  mapRegistryRowsToCatalog,
+  resolveSkillPathByName,
+  summarizeSkillCatalog,
+  type RegistrySkillRow,
+} from "./skills/catalog.js";
 
 const config = loadConfig();
 
@@ -76,6 +115,7 @@ const TOOL_ANNOUNCEMENT_RULES: Array<{ pattern: RegExp; phrase: string }> = [
   { pattern: /(task|todo|things|okr)/i, phrase: "checking your task list" },
   { pattern: /(channel_send|whatsapp|telegram|imessage|slack|discord|sms|message)/i, phrase: "preparing that message" },
   { pattern: /(notion)/i, phrase: "checking Notion" },
+  { pattern: /(emby|jellyseerr|movie|series|watchlist)/i, phrase: "checking your media library" },
   { pattern: /(code|autodev|terminal|shell|command|git)/i, phrase: "running that task" },
 ];
 const VOICE_TOOL_FILLER_INITIAL_DELAY_MS = Math.max(
@@ -341,7 +381,7 @@ function getDelayedVoiceToolFiller(toolName: string, toolInput: unknown, toolUse
 }
 
 // Voice-specific tool intent gate. Keep narrow so small-talk stays fast.
-const VOICE_TOOL_INTENT_REGEX = /\b(task|todo|things|okr|email|inbox|calendar|event|schedule|contact|weather|forecast|search|find|lookup|check|show|list|open|send|message|whatsapp|telegram|imessage|sms|notion|memory|knowledge)\b/i;
+const VOICE_TOOL_INTENT_REGEX = /\b(task|todo|things|okr|email|inbox|calendar|event|schedule|contact|weather|forecast|search|find|lookup|check|show|list|open|send|message|whatsapp|telegram|imessage|sms|notion|emby|jellyseerr|movie|series|watchlist|memory|knowledge)\b/i;
 function shouldEnableVoiceTools(message: string): boolean {
   const trimmed = message.trim();
   if (!trimmed) return false;
@@ -437,6 +477,357 @@ function isVerifyFactReview(type: string | null | undefined, proposedAction: unk
   return kind === "verify_fact" && factId.trim().length > 0;
 }
 
+interface AgentSoulRecord {
+  id: string;
+  name: string | null;
+  description: string | null;
+  model: string | null;
+  skills: string[] | null;
+}
+
+type ReviewResolutionStatus = "approved" | "rejected" | "modified";
+
+interface ParsedSoulUpdateAction {
+  kind: "soul_update";
+  agentId: string;
+  content: string;
+  summary: string | null;
+  source: string | null;
+  author: string | null;
+  runQualityGate: boolean;
+  qualitySuiteId: string | null;
+  metadata: Record<string, unknown> | null;
+  baseVersionId: string | null;
+  rolloutTrafficPercent: number | null;
+  rolloutMinimumSampleSize: number | null;
+}
+
+interface SoulQualityGateResult {
+  status: "not_run" | "passed" | "failed";
+  suiteId: string | null;
+  run: QATestRun | null;
+  skippedReason: string | null;
+}
+
+interface SoulReviewApplyResult {
+  applied: boolean;
+  agentId: string;
+  validation: ReturnType<typeof validateSoulDocument>;
+  version: Awaited<ReturnType<typeof createSoulVersion>> | null;
+  rollout: SoulRollout | null;
+  rolloutMode: "canary" | "direct";
+  quality: SoulQualityGateResult;
+  action: ParsedSoulUpdateAction;
+}
+
+function normalizeOptionalString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeOptionalBoolean(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+function normalizeOptionalNumber(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return value;
+}
+
+function parseSoulUpdateAction(value: unknown, fallbackAgentId?: string | null): ParsedSoulUpdateAction | null {
+  const action = asRecord(value);
+  if (!action) return null;
+
+  const kind = normalizeOptionalString(action.kind) || "soul_update";
+  if (kind !== "soul_update") return null;
+
+  const agentId = normalizeOptionalString(action.agentId)
+    || normalizeOptionalString(action.agent_id)
+    || normalizeOptionalString(action.targetAgentId)
+    || normalizeOptionalString(action.target_agent_id)
+    || normalizeOptionalString(fallbackAgentId || null);
+
+  const content = normalizeOptionalString(action.content)
+    || normalizeOptionalString(action.soul)
+    || normalizeOptionalString(action.soulContent)
+    || normalizeOptionalString(action.soul_content)
+    || normalizeOptionalString(action.newContent)
+    || normalizeOptionalString(action.new_content);
+
+  if (!agentId || !content) return null;
+
+  const metadata = asRecord(action.metadata);
+  const runQualityGate =
+    normalizeOptionalBoolean(action.runQualityGate)
+    ?? normalizeOptionalBoolean(action.qualityGate)
+    ?? false;
+
+  return {
+    kind: "soul_update",
+    agentId,
+    content,
+    summary: normalizeOptionalString(action.summary)
+      || normalizeOptionalString(action.changeSummary)
+      || normalizeOptionalString(action.change_summary),
+    source: normalizeOptionalString(action.source),
+    author: normalizeOptionalString(action.author)
+      || normalizeOptionalString(action.proposer)
+      || normalizeOptionalString(action.proposed_by),
+    runQualityGate,
+    qualitySuiteId: normalizeOptionalString(action.qualitySuiteId)
+      || normalizeOptionalString(action.quality_suite_id)
+      || normalizeOptionalString(action.suiteId),
+    metadata,
+    baseVersionId: normalizeOptionalString(action.baseVersionId)
+      || normalizeOptionalString(action.base_version_id)
+      || normalizeOptionalString(action.parentVersionId),
+    rolloutTrafficPercent:
+      normalizeOptionalNumber(action.rolloutTrafficPercent)
+      ?? normalizeOptionalNumber(action.rollout_traffic_percent)
+      ?? normalizeOptionalNumber(action.canaryTrafficPercent),
+    rolloutMinimumSampleSize:
+      normalizeOptionalNumber(action.rolloutMinimumSampleSize)
+      ?? normalizeOptionalNumber(action.rollout_minimum_sample_size)
+      ?? normalizeOptionalNumber(action.canaryMinimumSampleSize),
+  };
+}
+
+function isSoulUpdateReview(type: string | null | undefined, proposedAction: unknown): boolean {
+  if (type !== "soul_update") return false;
+  return parseSoulUpdateAction(proposedAction) !== null;
+}
+
+async function loadAgentSoulRecord(agentId: string): Promise<AgentSoulRecord | null> {
+  const result = await query<AgentSoulRecord>(
+    "SELECT id, name, description, model, skills FROM agents WHERE id = $1",
+    [agentId],
+  );
+  return result.rows[0] || null;
+}
+
+async function findEnabledQualitySuiteForAgent(agentId: string): Promise<string | null> {
+  const result = await query<{ id: string }>(
+    `SELECT id
+     FROM qa_test_suites
+     WHERE agent_id = $1 AND enabled = true
+     ORDER BY updated_at DESC, created_at DESC
+     LIMIT 1`,
+    [agentId],
+  );
+  return result.rows[0]?.id || null;
+}
+
+async function runSoulQualityGate(params: {
+  agentId: string;
+  requestedSuiteId: string | null;
+  runQualityGate: boolean;
+  triggeredBy: string;
+}): Promise<SoulQualityGateResult> {
+  if (!params.runQualityGate) {
+    return {
+      status: "not_run",
+      suiteId: null,
+      run: null,
+      skippedReason: null,
+    };
+  }
+
+  const suiteId = params.requestedSuiteId || await findEnabledQualitySuiteForAgent(params.agentId);
+  if (!suiteId) {
+    return {
+      status: "not_run",
+      suiteId: null,
+      run: null,
+      skippedReason: `No enabled quality suite found for agent "${params.agentId}".`,
+    };
+  }
+
+  const suiteResult = await query<{ id: string; agent_id: string; enabled: boolean }>(
+    "SELECT id, agent_id, enabled FROM qa_test_suites WHERE id = $1",
+    [suiteId],
+  );
+  const suite = suiteResult.rows[0];
+  if (!suite) {
+    throw new Error(`Quality suite "${suiteId}" not found.`);
+  }
+  if (suite.agent_id !== params.agentId) {
+    throw new Error(`Quality suite "${suiteId}" does not belong to agent "${params.agentId}".`);
+  }
+  if (!suite.enabled) {
+    throw new Error(`Quality suite "${suiteId}" is disabled.`);
+  }
+
+  const run = await runTestSuite(suiteId, config, {
+    triggeredBy: params.triggeredBy,
+    broadcast: wsBroadcast,
+  });
+
+  await createIssuesFromRun(run).catch((err) => {
+    console.warn("[Soul] Failed to auto-create QA issues from quality gate run:", err);
+  });
+
+  const passed = run.status === "completed" && run.failed === 0 && run.errored === 0;
+  return {
+    status: passed ? "passed" : "failed",
+    suiteId,
+    run,
+    skippedReason: null,
+  };
+}
+
+async function applySoulReviewResolution(params: {
+  reviewId: string;
+  status: ReviewResolutionStatus;
+  resolution: unknown;
+  proposedAction: unknown;
+  resolvedBy: string;
+  fallbackAgentId?: string | null;
+}): Promise<SoulReviewApplyResult | null> {
+  if (params.status === "rejected") return null;
+
+  const action = parseSoulUpdateAction(params.resolution, params.fallbackAgentId)
+    || parseSoulUpdateAction(params.proposedAction, params.fallbackAgentId);
+
+  if (!action) {
+    throw new Error("Soul review resolution must include a valid soul_update action with agentId and content.");
+  }
+
+  const agent = await loadAgentSoulRecord(action.agentId);
+  if (!agent) {
+    throw new Error(`Agent "${action.agentId}" not found.`);
+  }
+
+  const validation = validateSoulDocument(action.content);
+  if (!validation.valid) {
+    throw new Error(`Soul validation failed: ${validation.issues.join(" ")}`);
+  }
+
+  const currentSoul = ensureAgentSoulDocument(agent);
+  let activeVersion = await getActiveSoulVersion(agent.id);
+  if (!activeVersion) {
+    activeVersion = await ensureSoulVersion(agent.id, currentSoul.content);
+  }
+
+  const quality = await runSoulQualityGate({
+    agentId: agent.id,
+    requestedSuiteId: action.qualitySuiteId,
+    runQualityGate: action.runQualityGate,
+    triggeredBy: `review:soul_update:${params.reviewId}`,
+  });
+
+  if (action.runQualityGate && quality.status !== "passed") {
+    const qualityMessage = quality.skippedReason
+      || `Quality gate failed (failed=${quality.run?.failed ?? 0}, errored=${quality.run?.errored ?? 0}).`;
+    throw new Error(qualityMessage);
+  }
+
+  const normalizedContent = `${action.content.trim()}\n`;
+  const activeContent = activeVersion?.content || "";
+  if (activeVersion && activeContent.trim() === normalizedContent.trim()) {
+    return {
+      applied: true,
+      agentId: agent.id,
+      validation,
+      version: activeVersion,
+      rollout: null,
+      rolloutMode: "direct",
+      quality,
+      action,
+    };
+  }
+
+  const metadata = action.metadata || {};
+  const rolloutEnabledOverride = typeof metadata.rolloutEnabled === "boolean"
+    ? metadata.rolloutEnabled
+    : null;
+  const rolloutModeFromMetadata = typeof metadata.rolloutMode === "string"
+    ? String(metadata.rolloutMode).trim().toLowerCase()
+    : null;
+  const shouldCanary = (rolloutEnabledOverride ?? SOUL_ROLLOUT_POLICY.canary.enabledByDefault)
+    && rolloutModeFromMetadata !== "direct";
+
+  let rollout: SoulRollout | null = null;
+  let version: Awaited<ReturnType<typeof createSoulVersion>>;
+
+  if (shouldCanary) {
+    version = await createSoulVersion({
+      agentId: agent.id,
+      content: normalizedContent,
+      source: action.source || "review",
+      author: action.author || params.resolvedBy || "human",
+      reviewId: params.reviewId,
+      qualityRunId: quality.run?.id || null,
+      qualityStatus: quality.status,
+      changeSummary: action.summary,
+      parentVersionId: activeVersion?.id || action.baseVersionId || null,
+      metadata: {
+        ...metadata,
+        appliedVia: "review.resolve",
+        runQualityGate: action.runQualityGate,
+        qualitySuiteId: quality.suiteId,
+        rolloutMode: "canary",
+        policyVersion: SOUL_ROLLOUT_POLICY.version,
+      },
+      activate: false,
+    });
+
+    if (!activeVersion?.id) {
+      throw new Error(`Cannot start soul rollout for "${agent.id}" without an active baseline version.`);
+    }
+    rollout = await startSoulRollout({
+      agentId: agent.id,
+      candidateVersionId: version.id,
+      baselineVersionId: activeVersion.id,
+      trafficPercent: action.rolloutTrafficPercent ?? SOUL_ROLLOUT_POLICY.canary.defaultTrafficPercent,
+      minimumSampleSize: action.rolloutMinimumSampleSize ?? SOUL_ROLLOUT_POLICY.canary.minimumSampleSize,
+      metadata: {
+        reviewId: params.reviewId,
+        source: action.source || "review",
+        summary: action.summary || null,
+        qualityRunId: quality.run?.id || null,
+        qualityStatus: quality.status,
+        policyVersion: SOUL_ROLLOUT_POLICY.version,
+      },
+      decisionReason: "Started from approved soul review",
+    });
+  } else {
+    await cancelActiveSoulRolloutForAgent(agent.id, "Cancelled by direct soul activation");
+    const saved = writeAgentSoulDocument(agent.id, normalizedContent);
+    version = await createSoulVersion({
+      agentId: agent.id,
+      content: saved.content,
+      source: action.source || "review",
+      author: action.author || params.resolvedBy || "human",
+      reviewId: params.reviewId,
+      qualityRunId: quality.run?.id || null,
+      qualityStatus: quality.status,
+      changeSummary: action.summary,
+      parentVersionId: activeVersion?.id || action.baseVersionId || null,
+      metadata: {
+        ...metadata,
+        appliedVia: "review.resolve",
+        runQualityGate: action.runQualityGate,
+        qualitySuiteId: quality.suiteId,
+        rolloutMode: "direct",
+        policyVersion: SOUL_ROLLOUT_POLICY.version,
+      },
+      activate: true,
+    });
+  }
+
+  return {
+    applied: true,
+    agentId: agent.id,
+    validation,
+    version,
+    rollout,
+    rolloutMode: shouldCanary ? "canary" : "direct",
+    quality,
+    action,
+  };
+}
+
 // Configure APNs if credentials are available
 if (config.apns.keyPath && config.apns.keyId && config.apns.teamId) {
   configureAPNs({
@@ -497,6 +888,155 @@ function requireAuth(req: express.Request, res: express.Response, next: express.
   next();
 }
 
+function firstHeaderValue(value: string | string[] | undefined): string | undefined {
+  if (!value) return undefined;
+  const raw = Array.isArray(value) ? value[0] : value;
+  const first = raw.split(",")[0]?.trim();
+  return first && first.length > 0 ? first : undefined;
+}
+
+function isLocalHostname(hostname: string): boolean {
+  const lower = hostname.trim().toLowerCase();
+  return lower === "localhost"
+    || lower === "127.0.0.1"
+    || lower === "::1"
+    || lower === "0.0.0.0"
+    || lower === "::";
+}
+
+function normalizeWebhookBaseUrl(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return null;
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+  if (isLocalHostname(parsed.hostname)) return null;
+  return `${parsed.protocol}//${parsed.host}`;
+}
+
+function isPrivateIpv4(address: string): boolean {
+  if (address.startsWith("10.")) return true;
+  if (address.startsWith("192.168.")) return true;
+  const match = address.match(/^172\.(\d{1,2})\./);
+  if (!match) return false;
+  const second = Number(match[1]);
+  return Number.isFinite(second) && second >= 16 && second <= 31;
+}
+
+function isCarrierGradeNatIpv4(address: string): boolean {
+  const match = address.match(/^100\.(\d{1,3})\./);
+  if (!match) return false;
+  const second = Number(match[1]);
+  return Number.isFinite(second) && second >= 64 && second <= 127;
+}
+
+function interfacePriority(name: string): number {
+  if (/^en\d+$/i.test(name)) return 0;      // macOS physical interfaces (Wi-Fi/Ethernet)
+  if (/^eth\d+$/i.test(name)) return 1;
+  if (/^(wlan|wl)\d*/i.test(name)) return 1;
+  if (/^bridge/i.test(name)) return 5;
+  if (/^(utun|tun|tap)/i.test(name)) return 6;
+  return 3;
+}
+
+function addressPriority(address: string): number {
+  if (address.startsWith("192.168.")) return 0;
+  if (address.startsWith("10.")) return 1;
+  if (isPrivateIpv4(address)) return 2;
+  if (isCarrierGradeNatIpv4(address)) return 4;
+  return 3;
+}
+
+function getLanIpv4Candidates(): string[] {
+  const results: Array<{ name: string; address: string }> = [];
+  const interfaces = os.networkInterfaces();
+  for (const [name, entries] of Object.entries(interfaces)) {
+    for (const entry of entries || []) {
+      if (!entry) continue;
+      if (entry.family !== "IPv4") continue;
+      if (entry.internal) continue;
+      if (!entry.address) continue;
+      results.push({ name, address: entry.address });
+    }
+  }
+
+  results.sort((a, b) => {
+    const ifaceDiff = interfacePriority(a.name) - interfacePriority(b.name);
+    if (ifaceDiff !== 0) return ifaceDiff;
+
+    const addrDiff = addressPriority(a.address) - addressPriority(b.address);
+    if (addrDiff !== 0) return addrDiff;
+
+    const nameDiff = a.name.localeCompare(b.name);
+    if (nameDiff !== 0) return nameDiff;
+
+    return a.address.localeCompare(b.address);
+  });
+
+  const deduped: string[] = [];
+  for (const row of results) {
+    if (deduped.includes(row.address)) continue;
+    deduped.push(row.address);
+  }
+  return deduped;
+}
+
+function resolveWebhookBase(req: express.Request): {
+  webhookBaseUrl: string | null;
+  source: string | null;
+  candidates: Array<{ source: string; url: string }>;
+} {
+  const candidates: Array<{ source: string; url: string }> = [];
+  const pushCandidate = (source: string, rawUrl: string | undefined | null) => {
+    const normalized = normalizeWebhookBaseUrl(rawUrl || undefined);
+    if (!normalized) return;
+    if (candidates.some((c) => c.url === normalized)) return;
+    candidates.push({ source, url: normalized });
+  };
+
+  const requestProto = firstHeaderValue(req.headers["x-forwarded-proto"]) || req.protocol || "http";
+  const requestHost = firstHeaderValue(req.headers["x-forwarded-host"]) || req.headers.host || "";
+  const requestBaseRaw = requestHost ? `${requestProto}://${requestHost}` : undefined;
+
+  let requestIsLocal = true;
+  if (requestBaseRaw) {
+    try {
+      const parsed = new URL(requestBaseRaw);
+      requestIsLocal = isLocalHostname(parsed.hostname);
+    } catch {
+      requestIsLocal = true;
+    }
+  }
+
+  if (!requestIsLocal) {
+    pushCandidate("request", requestBaseRaw);
+    pushCandidate("config.publicUrl", config.gateway.publicUrl);
+  } else {
+    for (const ip of getLanIpv4Candidates()) {
+      pushCandidate("lan-ip", `http://${ip}:${config.gateway.port}`);
+    }
+    const host = config.gateway.host;
+    if (host && !isLocalHostname(host)) {
+      pushCandidate("config.host", `http://${host}:${config.gateway.port}`);
+    }
+    pushCandidate("config.publicUrl", config.gateway.publicUrl);
+  }
+
+  const first = candidates[0] || null;
+  return {
+    webhookBaseUrl: first?.url || null,
+    source: first?.source || null,
+    candidates,
+  };
+}
+
 // Health check (no auth required)
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
@@ -527,8 +1067,8 @@ app.get("/health/db", async (_req, res) => {
 
 // Apply auth to all /api/* routes EXCEPT webhooks
 app.use("/api", (req, res, next) => {
-  // Outline webhook path is exempt — it uses its own signature verification
-  if (req.path.startsWith("/webhooks/outline")) return next();
+  // Webhook paths are exempt — they do per-channel secret validation
+  if (req.path.startsWith("/webhooks/")) return next();
   requireAuth(req, res, next);
 });
 
@@ -1399,10 +1939,10 @@ app.post("/api/skills/improve", async (req, res) => {
 
     const improved = await utilityCall(
       config,
-      `You are an expert at writing SKILL.md files for Claude Code skills. Your task is to improve the given skill definition while preserving its intent and capabilities.
+      `You are an expert at writing SKILL.md files for Claude, Codex, and Gemini skills. Your task is to improve the given skill definition while preserving its intent and capabilities.
 
 Rules:
-- Preserve the YAML frontmatter structure (name, description, triggers)
+- Preserve the YAML frontmatter structure (name, description, metadata fields)
 - Make instructions clearer and more specific
 - Improve trigger patterns for better activation
 - Add structure with markdown headings and bullet points where helpful
@@ -1895,6 +2435,12 @@ app.get("/api/settings", (_req, res) => {
     },
   };
   res.json(masked);
+});
+
+// GET /api/gateway/webhook-base — resolve best public/LAN base URL for inbound webhooks
+app.get("/api/gateway/webhook-base", (req, res) => {
+  const resolved = resolveWebhookBase(req);
+  res.json(resolved);
 });
 
 // PUT /api/settings — update config sections
@@ -2921,12 +3467,15 @@ app.post("/api/knowledge/repair", async (_req, res) => {
   }
 });
 
-// GET /api/memories — list memories by area
+// GET /api/memories — list memories by area, scope, tags
 app.get("/api/memories", async (req, res) => {
   try {
     const area = req.query.area as string | undefined;
+    const scope = req.query.scope as string | undefined;
+    const visibility = req.query.visibility as string | undefined;
+    const tags = req.query.tags ? (req.query.tags as string).split(",").map((t) => t.trim()).filter(Boolean) : undefined;
     const limit = Number(req.query.limit) || 50;
-    const memories = await listMemories(area, limit);
+    const memories = await listMemories(area, limit, { scope, tags, visibility });
     res.json({ memories });
   } catch (err) {
     console.error("Failed to list memories:", err);
@@ -2957,9 +3506,12 @@ app.get("/api/memories/stats", async (_req, res) => {
 // POST /api/memories/search — hybrid search across memories
 app.post("/api/memories/search", async (req, res) => {
   try {
-    const { query: searchQuery, areas, limit } = req.body as {
+    const { query: searchQuery, areas, scope, tags, visibility, limit } = req.body as {
       query: string;
       areas?: string[];
+      scope?: string | string[];
+      tags?: string[];
+      visibility?: string;
       limit?: number;
     };
     if (!searchQuery) {
@@ -2967,7 +3519,14 @@ app.post("/api/memories/search", async (req, res) => {
       return;
     }
     const results = await searchMemories(
-      { query: searchQuery, areas: areas as any, limit: limit || 10 },
+      {
+        query: searchQuery,
+        areas: areas as any,
+        scope: scope || undefined,
+        tags: tags || undefined,
+        visibility: (visibility as any) || undefined,
+        limit: limit || 10,
+      },
       config,
     );
     res.json({
@@ -2978,6 +3537,8 @@ app.post("/api/memories/search", async (req, res) => {
         summary: r.memory.summary,
         tags: r.memory.tags,
         confidence: r.memory.confidence,
+        scope: r.memory.scope,
+        visibility: r.memory.visibility,
         score: Math.round(r.score * 1000) / 1000,
         source: r.memory.source,
         createdAt: r.memory.createdAt,
@@ -3056,6 +3617,7 @@ app.post("/api/obsidian/watch/stop", (_req, res) => {
 
 // ─── Outline Sync API ───
 
+app.use("/api/webhooks", createMediaWebhookRouter(config));
 app.use("/api/webhooks/outline", createOutlineWebhookRouter(config));
 
 app.get("/api/outline/status", async (_req, res) => {
@@ -3540,6 +4102,7 @@ app.put("/api/reviews/:id/resolve", async (req, res) => {
 
     // Fetch the review before updating (need type + conversation_id for triage handling + learning)
     const reviewResult = await query<{
+      agent_id: string;
       type: string;
       conversation_id: string | null;
       proposed_action: unknown;
@@ -3547,7 +4110,7 @@ app.put("/api/reviews/:id/resolve", async (req, res) => {
       description: string | null;
       content: unknown;
     }>(
-      "SELECT type, conversation_id, proposed_action, title, description, content FROM review_queue WHERE id = $1",
+      "SELECT agent_id, type, conversation_id, proposed_action, title, description, content FROM review_queue WHERE id = $1",
       [req.params.id],
     );
     const row = reviewResult.rows[0];
@@ -3555,30 +4118,58 @@ app.put("/api/reviews/:id/resolve", async (req, res) => {
       res.status(404).json({ error: "Review not found" });
       return;
     }
+
+    const resolvedBy = resolved_by || "human";
     const isFactVerify = isVerifyFactReview(row.type, row.proposed_action);
+    const isSoulUpdate = isSoulUpdateReview(row.type, row.proposed_action);
     const effectiveResolution = status === "rejected"
       ? (resolution ?? null)
       : (resolution ?? row.proposed_action ?? null);
+    const soulResult = isSoulUpdate && (status === "approved" || status === "modified")
+      ? await applySoulReviewResolution({
+          reviewId: req.params.id,
+          status,
+          resolution: effectiveResolution,
+          proposedAction: row.proposed_action,
+          resolvedBy,
+          fallbackAgentId: row.agent_id,
+        })
+      : null;
+
+    const persistedResolution = status === "rejected"
+      ? (resolution ?? null)
+      : (soulResult?.action ?? effectiveResolution ?? null);
 
     await query(
       `UPDATE review_queue
        SET status = $1, resolution = $2, resolved_by = $3, resolved_at = NOW()
        WHERE id = $4`,
-      [status, effectiveResolution ? JSON.stringify(effectiveResolution) : null, resolved_by || "human", req.params.id],
+      [status, persistedResolution ? JSON.stringify(persistedResolution) : null, resolvedBy, req.params.id],
     );
 
     // Broadcast resolution to agents waiting on it
     broadcast("review.resolved", {
       id: req.params.id,
       status,
-      resolution: effectiveResolution,
-      resolvedBy: resolved_by || "human",
+      resolution: persistedResolution,
+      resolvedBy,
+      soul: soulResult
+        ? {
+            agentId: soulResult.agentId,
+            versionId: soulResult.version?.id || null,
+            rolloutId: soulResult.rollout?.id || null,
+            rolloutMode: soulResult.rolloutMode,
+            qualityStatus: soulResult.quality.status,
+            qualityRunId: soulResult.quality.run?.id || null,
+            qualitySuiteId: soulResult.quality.suiteId,
+          }
+        : null,
     });
 
     // Handle triage review actions
     if (row?.type === "triage" && row.conversation_id) {
       if (status === "approved" || status === "modified") {
-        const actions = (effectiveResolution || row.proposed_action) as import("./channels/triage.js").TriageAction[] | null;
+        const actions = (persistedResolution || row.proposed_action) as import("./channels/triage.js").TriageAction[] | null;
         if (actions && Array.isArray(actions)) {
           executeTriageActions(req.params.id, row.conversation_id, actions, broadcast)
             .catch((err) => console.error("[Reviews] Triage action execution failed:", err));
@@ -3592,9 +4183,9 @@ app.put("/api/reviews/:id/resolve", async (req, res) => {
     if (isFactVerify) {
       applyFactReviewResolution({
         status,
-        resolution: effectiveResolution,
+        resolution: persistedResolution,
         proposedAction: row.proposed_action,
-        resolvedBy: resolved_by || "human",
+        resolvedBy,
       }).catch((err) => console.warn("[Reviews] Fact verification apply failed:", err));
     }
 
@@ -3610,16 +4201,40 @@ app.put("/api/reviews/:id/resolve", async (req, res) => {
           description: row.description,
           contentBlocks: row.content,
           proposedAction: row.proposed_action,
-          resolution: effectiveResolution,
+          resolution: persistedResolution,
         },
         config,
       ).catch((err) => console.warn("[Learner]", err));
     }
 
-    res.json({ resolved: true });
+    res.json({
+      resolved: true,
+      soul: soulResult
+        ? {
+            applied: true,
+            agentId: soulResult.agentId,
+            versionId: soulResult.version?.id || null,
+            rolloutId: soulResult.rollout?.id || null,
+            rolloutStatus: soulResult.rollout?.status || null,
+            rolloutMode: soulResult.rolloutMode,
+            validation: soulResult.validation,
+            quality: {
+              status: soulResult.quality.status,
+              suiteId: soulResult.quality.suiteId,
+              runId: soulResult.quality.run?.id || null,
+              failed: soulResult.quality.run?.failed ?? null,
+              errored: soulResult.quality.run?.errored ?? null,
+              skippedReason: soulResult.quality.skippedReason,
+            },
+          }
+        : null,
+    });
   } catch (err) {
     console.error("Failed to resolve review:", err);
-    res.status(500).json({ error: "Failed to resolve review" });
+    const message = err instanceof Error ? err.message : "Failed to resolve review";
+    const isUserInputError = err instanceof Error
+      && /(validation|quality|must include|not found|does not belong|disabled|failed)/i.test(err.message);
+    res.status(isUserInputError ? 400 : 500).json({ error: message });
   }
 });
 
@@ -3735,62 +4350,19 @@ app.post("/api/self-repair/run", async (_req, res) => {
 
 app.get("/api/skills", async (_req, res) => {
   try {
-    const result = await query(
+    const result = await query<RegistrySkillRow>(
       "SELECT id, name, description, source, path, enabled, agent_ids, created_at FROM skills_registry ORDER BY source, name",
     );
-    const dbSkills = result.rows;
-
-    // Merge Claude Code skills from disk (~/.claude/skills/)
-    const home = process.env.HOME || "/tmp";
-    const skillsDir = path.resolve(home, ".claude/skills");
-    const dbNames = new Set(dbSkills.map((s) => (s as { name: string }).name));
-
-    let claudeSkills: Array<{
-      id: string; name: string; description: string | null; source: string;
-      path: string; enabled: boolean; agent_ids: string[]; created_at: string;
-    }> = [];
-
-    if (fs.existsSync(skillsDir)) {
-      const dirs = fs.readdirSync(skillsDir, { withFileTypes: true }).filter((d) => {
-        if (d.isDirectory()) return true;
-        if (d.isSymbolicLink()) {
-          try { return fs.statSync(path.join(skillsDir, d.name)).isDirectory(); } catch { return false; }
-        }
-        return false;
-      });
-      for (const d of dirs) {
-        if (dbNames.has(d.name)) continue; // skip if already in DB
-        const mdPath = path.join(skillsDir, d.name, "SKILL.md");
-        if (!fs.existsSync(mdPath)) continue;
-
-        // Extract description from SKILL.md frontmatter
-        const raw = fs.readFileSync(mdPath, "utf-8");
-        let desc: string | null = null;
-        if (raw.startsWith("---\n")) {
-          const endIdx = raw.indexOf("\n---", 4);
-          if (endIdx !== -1) {
-            const fm = raw.slice(4, endIdx);
-            const descMatch = fm.match(/description:\s*"([^"]+)"/);
-            if (descMatch) desc = descMatch[1];
-          }
-        }
-
-        claudeSkills.push({
-          id: `claude-skill-${d.name}`,
-          name: d.name,
-          description: desc,
-          source: "claude-code",
-          path: mdPath,
-          enabled: true,
-          agent_ids: [],
-          created_at: fs.statSync(mdPath).mtime.toISOString(),
-        });
-      }
-    }
-
-    res.json({ skills: [...dbSkills, ...claudeSkills] });
+    const dbSkills = mapRegistryRowsToCatalog(result.rows);
+    const dbNames = new Set(result.rows.map((s) => s.name));
+    const externalSkills = listExternalSkillCatalog({ excludeNames: dbNames });
+    const skills = [...dbSkills, ...externalSkills];
+    res.json({ skills, summary: summarizeSkillCatalog(skills) });
   } catch {
-    res.json({ skills: [] });
+    res.json({
+      skills: [],
+      summary: { total: 0, byKind: {}, bySource: {}, byRuntime: {}, byScope: {} },
+    });
   }
 });
 
@@ -3809,28 +4381,22 @@ app.put("/api/skills/:id/toggle", async (req, res) => {
 app.get("/api/skills/:name/content", async (req, res) => {
   try {
     const skillName = req.params.name;
-    const home = process.env.HOME || "/tmp";
+    const source = typeof req.query.source === "string" ? req.query.source : undefined;
+    const externalSourceRequested = source === "claude-code" || source === "gemini" || source?.startsWith("codex");
 
-    // 1. Try exact match: ~/.claude/skills/:name/SKILL.md
-    const skillPath = path.resolve(home, `.claude/skills/${skillName}/SKILL.md`);
-    if (fs.existsSync(skillPath)) {
-      const content = fs.readFileSync(skillPath, "utf-8");
-      res.json({ content, path: skillPath });
+    const externalSkillPath = resolveSkillPathByName(skillName, source);
+    if (externalSkillPath && fs.existsSync(externalSkillPath)) {
+      const content = fs.readFileSync(externalSkillPath, "utf-8");
+      res.json({ content, path: externalSkillPath });
       return;
     }
 
-    // 2. Try converting underscore names to hyphenated (e.g. skill_scan_claude → skill-scan-claude)
-    const hyphenated = skillName.replace(/_/g, "-");
-    if (hyphenated !== skillName) {
-      const altPath = path.resolve(home, `.claude/skills/${hyphenated}/SKILL.md`);
-      if (fs.existsSync(altPath)) {
-        const content = fs.readFileSync(altPath, "utf-8");
-        res.json({ content, path: altPath });
-        return;
-      }
+    if (externalSourceRequested) {
+      res.status(404).json({ error: `No SKILL.md found for '${skillName}' in source '${source}'` });
+      return;
     }
 
-    // 3. Check if the skill has a path stored in the DB
+    // Check if the skill has a path stored in the DB
     const dbResult = await query<{ path: string | null }>(
       "SELECT path FROM skills_registry WHERE name = $1 LIMIT 1", [skillName],
     );
@@ -3855,28 +4421,22 @@ app.put("/api/skills/:name/content", async (req, res) => {
       res.status(400).json({ error: "content is required" });
       return;
     }
-    const home = process.env.HOME || "/tmp";
+    const source = typeof req.query.source === "string" ? req.query.source : undefined;
+    const externalSourceRequested = source === "claude-code" || source === "gemini" || source?.startsWith("codex");
 
-    // 1. Try exact match: ~/.claude/skills/:name/SKILL.md
-    const skillPath = path.resolve(home, `.claude/skills/${skillName}/SKILL.md`);
-    if (fs.existsSync(skillPath)) {
-      fs.writeFileSync(skillPath, content, "utf-8");
-      res.json({ saved: true, path: skillPath });
+    const externalSkillPath = resolveSkillPathByName(skillName, source);
+    if (externalSkillPath && fs.existsSync(externalSkillPath)) {
+      fs.writeFileSync(externalSkillPath, content, "utf-8");
+      res.json({ saved: true, path: externalSkillPath });
       return;
     }
 
-    // 2. Try hyphenated variant
-    const hyphenated = skillName.replace(/_/g, "-");
-    if (hyphenated !== skillName) {
-      const altPath = path.resolve(home, `.claude/skills/${hyphenated}/SKILL.md`);
-      if (fs.existsSync(altPath)) {
-        fs.writeFileSync(altPath, content, "utf-8");
-        res.json({ saved: true, path: altPath });
-        return;
-      }
+    if (externalSourceRequested) {
+      res.status(404).json({ error: `No SKILL.md found for '${skillName}' in source '${source}'` });
+      return;
     }
 
-    // 3. Check DB path
+    // Check DB path
     const dbResult = await query<{ path: string | null }>(
       "SELECT path FROM skills_registry WHERE name = $1 LIMIT 1", [skillName],
     );
@@ -3922,13 +4482,133 @@ app.get("/api/claude-skills", (_req, res) => {
   }
 });
 
+app.get("/api/codex-skills", (_req, res) => {
+  try {
+    const skills = listExternalSkillCatalog()
+      .filter((entry) => entry.source.startsWith("codex"))
+      .map((entry) => ({
+        name: entry.name,
+        source: entry.source,
+        scope: entry.scope,
+        path: entry.path,
+        hasContent: Boolean(entry.path),
+      }));
+    res.json({ skills });
+  } catch {
+    res.json({ skills: [] });
+  }
+});
+
+app.get("/api/gemini-skills", (_req, res) => {
+  try {
+    const skills = listExternalSkillCatalog()
+      .filter((entry) => entry.source === "gemini")
+      .map((entry) => ({
+        name: entry.name,
+        source: entry.source,
+        scope: entry.scope,
+        path: entry.path,
+        hasContent: Boolean(entry.path),
+      }));
+    res.json({ skills });
+  } catch {
+    res.json({ skills: [] });
+  }
+});
+
 // ─── Soul Document API ───
+
+app.get("/api/soul/schema", (_req, res) => {
+  res.json(getSoulSpecSummary());
+});
+
+app.get("/api/soul/policy", (_req, res) => {
+  res.json({ policy: SOUL_ROLLOUT_POLICY });
+});
+
+app.get("/api/soul/governance/summary", async (_req, res) => {
+  try {
+    const summary = await getSoulGovernanceSummary();
+    res.json({ summary, policy: SOUL_ROLLOUT_POLICY });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to load soul governance summary.";
+    res.status(500).json({ error: message });
+  }
+});
+
+app.get("/api/soul/rollouts", async (req, res) => {
+  try {
+    const agentId = normalizeOptionalString(req.query.agentId);
+    const status = normalizeOptionalString(req.query.status);
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 50, 200));
+    const rollouts = await listSoulRollouts({
+      agentId,
+      status: status as SoulRolloutStatus | "all" | null,
+      limit,
+    });
+    res.json({ rollouts });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to list soul rollouts.";
+    res.status(500).json({ error: message });
+  }
+});
+
+app.post("/api/soul/rollouts/:rolloutId/evaluate", async (req, res) => {
+  try {
+    const rolloutId = String(req.params.rolloutId || "").trim();
+    if (!rolloutId) {
+      return res.status(400).json({ error: "rolloutId is required" });
+    }
+    const applyDecision = req.body?.applyDecision !== false;
+    const evaluation = await evaluateSoulRollout(rolloutId, { applyDecision });
+    const rollout = await getSoulRollout(rolloutId);
+    res.json({
+      ok: true,
+      evaluation,
+      rollout,
+      policy: SOUL_ROLLOUT_POLICY,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to evaluate soul rollout.";
+    const isUserInputError = err instanceof Error
+      && /(not found|not active|must|without)/i.test(err.message);
+    res.status(isUserInputError ? 400 : 500).json({ error: message });
+  }
+});
+
+app.post("/api/soul/rollouts/evaluate-all", async (req, res) => {
+  try {
+    const applyDecision = req.body?.applyDecision !== false;
+    const limit = Math.max(1, Math.min(Number(req.body?.limit) || 100, 300));
+    const evaluations = await evaluateAllActiveSoulRollouts({ applyDecision, limit });
+    res.json({
+      ok: true,
+      count: evaluations.length,
+      evaluations,
+      policy: SOUL_ROLLOUT_POLICY,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to evaluate active soul rollouts.";
+    res.status(500).json({ error: message });
+  }
+});
+
+app.post("/api/soul/validate", (req, res) => {
+  const content = String(req.body?.content || "");
+  const validation = validateSoulDocument(content);
+  res.json({ validation });
+});
 
 app.get("/api/soul", (_req, res) => {
   try {
-    const soulPath = path.resolve(import.meta.dirname || process.cwd(), "../soul.md");
-    const content = fs.readFileSync(soulPath, "utf-8");
-    res.json({ content, path: soulPath });
+    const soul = readGlobalSoulDocument();
+    const validation = validateSoulDocument(soul.content);
+    res.json({
+      content: soul.content,
+      path: soul.path,
+      source: soul.source,
+      validation,
+    });
   } catch (err) {
     res.status(500).json({ error: "Failed to read soul.md" });
   }
@@ -3936,11 +4616,453 @@ app.get("/api/soul", (_req, res) => {
 
 app.put("/api/soul", (req, res) => {
   try {
-    const soulPath = path.resolve(import.meta.dirname || process.cwd(), "../soul.md");
-    fs.writeFileSync(soulPath, req.body.content, "utf-8");
-    res.json({ ok: true });
+    const content = String(req.body?.content || "").trim();
+    const enforceValidation = req.body?.enforceValidation !== false;
+    if (!content) {
+      return res.status(400).json({ error: "content is required" });
+    }
+
+    const validation = validateSoulDocument(content);
+    if (enforceValidation && !validation.valid) {
+      return res.status(400).json({
+        error: "Global soul document failed validation.",
+        validation,
+      });
+    }
+
+    const soulPath = getGlobalSoulPath();
+    fs.writeFileSync(soulPath, `${content}\n`, "utf-8");
+    res.json({
+      ok: true,
+      path: soulPath,
+      content: `${content}\n`,
+      validation,
+    });
   } catch (err) {
     res.status(500).json({ error: "Failed to write soul.md" });
+  }
+});
+
+app.get("/api/souls", async (_req, res) => {
+  try {
+    const { rows } = await query<AgentSoulRecord>(
+      "SELECT id, name, description, model, skills FROM agents ORDER BY name",
+    );
+
+    const souls: Record<string, {
+      content: string;
+      path: string;
+      created: boolean;
+      validation: ReturnType<typeof validateSoulDocument>;
+      activeVersionId: string | null;
+      activeRolloutId: string | null;
+    }> = {};
+    for (const agent of rows) {
+      const soul = ensureAgentSoulDocument({
+        id: agent.id,
+        name: agent.name,
+        description: agent.description,
+        model: agent.model,
+        skills: agent.skills,
+      });
+      const validation = validateSoulDocument(soul.content);
+      const activeVersion = await ensureSoulVersion(agent.id, soul.content);
+      const activeRollout = await getActiveSoulRolloutForAgent(agent.id);
+
+      souls[agent.id] = {
+        ...soul,
+        validation,
+        activeVersionId: activeVersion?.id || null,
+        activeRolloutId: activeRollout?.id || null,
+      };
+    }
+
+    res.json({ souls });
+  } catch {
+    res.status(500).json({ error: "Failed to load agent soul documents." });
+  }
+});
+
+app.get("/api/soul/:agentId", async (req, res) => {
+  try {
+    const agentId = String(req.params.agentId || "").trim();
+    if (!agentId) {
+      return res.status(400).json({ error: "agentId is required" });
+    }
+
+    const agent = await loadAgentSoulRecord(agentId);
+    if (!agent) {
+      return res.status(404).json({ error: `Agent "${agentId}" not found.` });
+    }
+
+    const soul = ensureAgentSoulDocument({
+      id: agent.id,
+      name: agent.name,
+      description: agent.description,
+      model: agent.model,
+      skills: agent.skills,
+    });
+    const validation = validateSoulDocument(soul.content);
+    const activeVersion = await ensureSoulVersion(agent.id, soul.content);
+    const activeRollout = await getActiveSoulRolloutForAgent(agent.id);
+
+    res.json({
+      agentId: agent.id,
+      content: soul.content,
+      path: soul.path,
+      created: soul.created,
+      validation,
+      activeVersion,
+      activeRollout,
+    });
+  } catch (err) {
+    console.error("Failed to load agent soul document:", err);
+    res.status(500).json({ error: "Failed to load agent soul document." });
+  }
+});
+
+app.put("/api/soul/:agentId", async (req, res) => {
+  try {
+    const agentId = String(req.params.agentId || "").trim();
+    if (!agentId) {
+      return res.status(400).json({ error: "agentId is required" });
+    }
+    const content = String(req.body?.content || "").trim();
+    if (!content) {
+      return res.status(400).json({ error: "content is required" });
+    }
+
+    const agent = await loadAgentSoulRecord(agentId);
+    if (!agent) {
+      return res.status(404).json({ error: `Agent "${agentId}" not found.` });
+    }
+
+    const validation = validateSoulDocument(content);
+    const enforceValidation = req.body?.enforceValidation !== false;
+    if (enforceValidation && !validation.valid) {
+      return res.status(400).json({
+        error: "Soul document failed validation.",
+        validation,
+      });
+    }
+
+    const requestedSuiteId = normalizeOptionalString(req.body?.qualitySuiteId);
+    const runQualityGate = req.body?.runQualityGate === true;
+    const quality = await runSoulQualityGate({
+      agentId,
+      requestedSuiteId,
+      runQualityGate,
+      triggeredBy: `soul:manual:${agentId}`,
+    });
+    if (runQualityGate && quality.status !== "passed") {
+      return res.status(409).json({
+        error: quality.skippedReason || "Soul quality gate failed.",
+        validation,
+        quality,
+      });
+    }
+
+    const currentSoul = ensureAgentSoulDocument(agent);
+    let activeVersion = await getActiveSoulVersion(agent.id);
+    if (!activeVersion) {
+      activeVersion = await ensureSoulVersion(agent.id, currentSoul.content);
+    }
+
+    const saved = writeAgentSoulDocument(agentId, content);
+    const source = normalizeOptionalString(req.body?.source) || "manual";
+    const author = normalizeOptionalString(req.body?.author) || "human";
+    const reviewId = normalizeOptionalString(req.body?.reviewId);
+    const changeSummary = normalizeOptionalString(req.body?.changeSummary)
+      || normalizeOptionalString(req.body?.summary);
+    const metadata = asRecord(req.body?.metadata);
+    await cancelActiveSoulRolloutForAgent(agentId, "Cancelled by manual soul update");
+
+    const version = await createSoulVersion({
+      agentId,
+      content: saved.content,
+      source,
+      author,
+      reviewId,
+      qualityRunId: quality.run?.id || null,
+      qualityStatus: quality.status,
+      changeSummary,
+      parentVersionId: activeVersion?.id || null,
+      metadata: {
+        ...(metadata || {}),
+        runQualityGate,
+        qualitySuiteId: quality.suiteId,
+      },
+      activate: true,
+    });
+
+    res.json({
+      ok: true,
+      agentId,
+      content: saved.content,
+      path: saved.path,
+      validation,
+      quality,
+      version,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to write agent soul document.";
+    res.status(500).json({ error: message });
+  }
+});
+
+app.get("/api/soul/:agentId/versions", async (req, res) => {
+  try {
+    const agentId = String(req.params.agentId || "").trim();
+    if (!agentId) {
+      return res.status(400).json({ error: "agentId is required" });
+    }
+
+    const agent = await loadAgentSoulRecord(agentId);
+    if (!agent) {
+      return res.status(404).json({ error: `Agent "${agentId}" not found.` });
+    }
+
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 25, 200));
+    const soul = ensureAgentSoulDocument(agent);
+    await ensureSoulVersion(agentId, soul.content);
+    const versions = await listSoulVersions(agentId, limit);
+    const activeVersion = versions.find((version) => version.is_active) || null;
+    const activeRollout = await getActiveSoulRolloutForAgent(agentId);
+    res.json({ agentId, activeVersionId: activeVersion?.id || null, activeRollout, versions });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to load soul versions.";
+    res.status(500).json({ error: message });
+  }
+});
+
+app.post("/api/soul/:agentId/rollback", async (req, res) => {
+  try {
+    const agentId = String(req.params.agentId || "").trim();
+    const versionId = normalizeOptionalString(req.body?.versionId);
+    if (!agentId) return res.status(400).json({ error: "agentId is required" });
+    if (!versionId) return res.status(400).json({ error: "versionId is required" });
+
+    const agent = await loadAgentSoulRecord(agentId);
+    if (!agent) return res.status(404).json({ error: `Agent "${agentId}" not found.` });
+
+    const currentSoul = ensureAgentSoulDocument(agent);
+    let activeVersion = await getActiveSoulVersion(agent.id);
+    if (!activeVersion) {
+      activeVersion = await ensureSoulVersion(agent.id, currentSoul.content);
+    }
+
+    const targetVersion = await getSoulVersionById(agentId, versionId);
+    if (!targetVersion) {
+      return res.status(404).json({ error: `Soul version "${versionId}" not found for agent "${agentId}".` });
+    }
+
+    const validation = validateSoulDocument(targetVersion.content);
+    if (!validation.valid) {
+      return res.status(409).json({
+        error: "Cannot rollback to an invalid soul version.",
+        validation,
+      });
+    }
+
+    const requestedSuiteId = normalizeOptionalString(req.body?.qualitySuiteId);
+    const runQualityGate = req.body?.runQualityGate === true;
+    const quality = await runSoulQualityGate({
+      agentId,
+      requestedSuiteId,
+      runQualityGate,
+      triggeredBy: `soul:rollback:${agentId}:${versionId}`,
+    });
+    if (runQualityGate && quality.status !== "passed") {
+      return res.status(409).json({
+        error: quality.skippedReason || "Rollback quality gate failed.",
+        validation,
+        quality,
+      });
+    }
+
+    await cancelActiveSoulRolloutForAgent(agentId, `Cancelled due to rollback to version ${versionId}`);
+    const saved = writeAgentSoulDocument(agentId, targetVersion.content);
+    const version = await createSoulVersion({
+      agentId,
+      content: saved.content,
+      source: normalizeOptionalString(req.body?.source) || "rollback",
+      author: normalizeOptionalString(req.body?.author) || "human",
+      qualityRunId: quality.run?.id || null,
+      qualityStatus: quality.status,
+      changeSummary: normalizeOptionalString(req.body?.summary) || `Rollback to soul version ${versionId}`,
+      parentVersionId: activeVersion?.id || null,
+      metadata: {
+        rollbackToVersionId: versionId,
+        rollbackFromVersionId: activeVersion?.id || null,
+        runQualityGate,
+        qualitySuiteId: quality.suiteId,
+      },
+      activate: true,
+    });
+
+    res.json({
+      ok: true,
+      agentId,
+      rolledBackToVersionId: versionId,
+      validation,
+      quality,
+      version,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to rollback soul version.";
+    res.status(500).json({ error: message });
+  }
+});
+
+app.post("/api/soul/:agentId/propose", async (req, res) => {
+  try {
+    const agentId = String(req.params.agentId || "").trim();
+    if (!agentId) return res.status(400).json({ error: "agentId is required" });
+
+    const agent = await loadAgentSoulRecord(agentId);
+    if (!agent) return res.status(404).json({ error: `Agent "${agentId}" not found.` });
+
+    const content = String(req.body?.content || "").trim();
+    if (!content) return res.status(400).json({ error: "content is required" });
+
+    const validation = validateSoulDocument(content);
+    if (!validation.valid) {
+      return res.status(400).json({
+        error: "Proposed soul document failed validation.",
+        validation,
+      });
+    }
+
+    const currentSoul = ensureAgentSoulDocument(agent);
+    const activeVersion = await ensureSoulVersion(agent.id, currentSoul.content);
+
+    const requestedQualityGate = req.body?.runQualityGate !== false;
+    const requestedSuiteId = normalizeOptionalString(req.body?.qualitySuiteId);
+    const fallbackSuiteId = requestedQualityGate && !requestedSuiteId
+      ? await findEnabledQualitySuiteForAgent(agentId)
+      : null;
+    const qualitySuiteId = requestedSuiteId || fallbackSuiteId;
+    const rolloutTrafficPercent = normalizeOptionalNumber(req.body?.rolloutTrafficPercent);
+    const rolloutMinimumSampleSize = normalizeOptionalNumber(req.body?.rolloutMinimumSampleSize);
+
+    const action: ParsedSoulUpdateAction = {
+      kind: "soul_update",
+      agentId,
+      content,
+      summary: normalizeOptionalString(req.body?.summary),
+      source: normalizeOptionalString(req.body?.source) || "proposal",
+      author: normalizeOptionalString(req.body?.author) || "agent-social",
+      runQualityGate: requestedQualityGate && Boolean(qualitySuiteId),
+      qualitySuiteId: qualitySuiteId || null,
+      metadata: asRecord(req.body?.metadata),
+      baseVersionId: activeVersion?.id || null,
+      rolloutTrafficPercent,
+      rolloutMinimumSampleSize,
+    };
+
+    const qualityGateWarning = requestedQualityGate && !qualitySuiteId
+      ? `No enabled quality suite found for "${agentId}", so this proposal will skip the quality gate unless a suite is set before approval.`
+      : null;
+
+    const tagsFromBody = Array.isArray(req.body?.tags)
+      ? req.body.tags.filter((tag: unknown): tag is string => typeof tag === "string" && tag.trim().length > 0)
+      : [];
+    const tags = Array.from(new Set(["soul", "governance", ...tagsFromBody]));
+    const title = normalizeOptionalString(req.body?.title) || `Soul update proposal: ${agent.name || agent.id}`;
+    const description = normalizeOptionalString(req.body?.description)
+      || action.summary
+      || qualityGateWarning
+      || `Review and approve the proposed soul update for agent "${agent.id}".`;
+    const priority = Number.isFinite(req.body?.priority) ? Number(req.body.priority) : 4;
+
+    const reviewContent = [
+      {
+        type: "text",
+        label: "Proposal Summary",
+        content: description,
+      },
+      {
+        type: "json",
+        label: "Soul Validation",
+        data: validation,
+      },
+      {
+        type: "json",
+        label: "Soul Proposal Metadata",
+        data: {
+          source: action.source,
+          author: action.author,
+          runQualityGate: action.runQualityGate,
+          qualitySuiteId: action.qualitySuiteId,
+          baseVersionId: action.baseVersionId,
+          rolloutTrafficPercent: action.rolloutTrafficPercent ?? SOUL_ROLLOUT_POLICY.canary.defaultTrafficPercent,
+          rolloutMinimumSampleSize: action.rolloutMinimumSampleSize ?? SOUL_ROLLOUT_POLICY.canary.minimumSampleSize,
+          rolloutMode: SOUL_ROLLOUT_POLICY.canary.enabledByDefault ? "canary" : "direct",
+          policyVersion: SOUL_ROLLOUT_POLICY.version,
+        },
+      },
+      {
+        type: "text",
+        label: "Proposed Soul Document",
+        content,
+      },
+    ];
+
+    const review = await query<{ id: string }>(
+      `INSERT INTO review_queue (
+         agent_id, conversation_id, type, title, description,
+         content, proposed_action, alternatives, priority, tags, batch_id
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, $8, $9, $10)
+       RETURNING id`,
+      [
+        agentId,
+        null,
+        "soul_update",
+        title,
+        description,
+        JSON.stringify(reviewContent),
+        JSON.stringify(action),
+        priority,
+        tags,
+        normalizeOptionalString(req.body?.batch_id),
+      ],
+    );
+    const reviewId = review.rows[0]?.id;
+
+    if (reviewId) {
+      broadcast("review.created", {
+        id: reviewId,
+        agentId,
+        type: "soul_update",
+        title,
+        priority,
+        tags,
+      });
+    }
+
+    res.json({
+      ok: true,
+      reviewId,
+      agentId,
+      action,
+      validation,
+      policy: SOUL_ROLLOUT_POLICY,
+      qualityGate: {
+        requested: requestedQualityGate,
+        runOnApprove: action.runQualityGate,
+        qualitySuiteId: action.qualitySuiteId,
+        warning: qualityGateWarning,
+      },
+      rollout: {
+        mode: SOUL_ROLLOUT_POLICY.canary.enabledByDefault ? "canary" : "direct",
+        trafficPercent: action.rolloutTrafficPercent ?? SOUL_ROLLOUT_POLICY.canary.defaultTrafficPercent,
+        minimumSampleSize: action.rolloutMinimumSampleSize ?? SOUL_ROLLOUT_POLICY.canary.minimumSampleSize,
+      },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to create soul proposal.";
+    res.status(500).json({ error: message });
   }
 });
 
@@ -4253,7 +5375,15 @@ app.get("/api/autodev/log", (_req, res) => {
 app.get("/api/channels", async (_req, res) => {
   try {
     const result = await query(
-      "SELECT id, channel_type, config, enabled, status, display_name, error_message, last_connected_at, scope, scope_metadata, language, created_at, updated_at FROM channel_configs ORDER BY created_at",
+      `SELECT id, channel_type, config, enabled, status, display_name, error_message, last_connected_at,
+              scope, scope_metadata, language, created_at, updated_at,
+              CASE
+                WHEN channel_type IN ('emby', 'jellyseerr', 'webhook')
+                  THEN NULLIF(config->>'webhookSecret', '')
+                ELSE NULL
+              END AS webhook_secret
+         FROM channel_configs
+        ORDER BY created_at`,
     );
     // Merge live adapter statuses
     const liveStatuses = getAllStatuses();
@@ -4265,6 +5395,7 @@ app.get("/api/channels", async (_req, res) => {
         config: undefined, // Don't expose secrets to frontend
         status: live?.status || row.status,
         error_message: live?.error || row.error_message,
+        webhook_secret: row.webhook_secret || null,
       };
     });
     res.json({ channels });
@@ -6541,10 +7672,11 @@ wss.on("connection", (ws) => {
           }
           // Fetch review for triage handling + learning
           const wsReviewResult = await query<{
+            agent_id: string;
             type: string; conversation_id: string | null; proposed_action: unknown;
             title: string; description: string | null; content: unknown;
           }>(
-            "SELECT type, conversation_id, proposed_action, title, description, content FROM review_queue WHERE id = $1",
+            "SELECT agent_id, type, conversation_id, proposed_action, title, description, content FROM review_queue WHERE id = $1",
             [data.id],
           );
           const wsRow = wsReviewResult.rows[0];
@@ -6552,26 +7684,53 @@ wss.on("connection", (ws) => {
             ws.send(frame("chat.error", { error: "Review not found" }, msg.id));
             break;
           }
+          const wsResolvedBy = data.resolved_by || "human";
           const wsIsFactVerify = isVerifyFactReview(wsRow.type, wsRow.proposed_action);
+          const wsIsSoulUpdate = isSoulUpdateReview(wsRow.type, wsRow.proposed_action);
           const effectiveResolution = data.status === "rejected"
             ? (data.resolution ?? null)
             : (data.resolution ?? wsRow.proposed_action ?? null);
+          const wsSoulResult = wsIsSoulUpdate && (data.status === "approved" || data.status === "modified")
+            ? await applySoulReviewResolution({
+                reviewId: data.id,
+                status: data.status as ReviewResolutionStatus,
+                resolution: effectiveResolution,
+                proposedAction: wsRow.proposed_action,
+                resolvedBy: wsResolvedBy,
+                fallbackAgentId: wsRow.agent_id,
+              })
+            : null;
+          const persistedResolution = data.status === "rejected"
+            ? (data.resolution ?? null)
+            : (wsSoulResult?.action ?? effectiveResolution ?? null);
+
           await query(
             `UPDATE review_queue
              SET status = $1, resolution = $2, resolved_by = $3, resolved_at = NOW()
              WHERE id = $4`,
-            [data.status, effectiveResolution ? JSON.stringify(effectiveResolution) : null, data.resolved_by || "human", data.id],
+            [data.status, persistedResolution ? JSON.stringify(persistedResolution) : null, wsResolvedBy, data.id],
           );
           broadcast("review.resolved", {
             id: data.id,
             status: data.status,
-            resolution: effectiveResolution,
-            resolvedBy: data.resolved_by || "human",
+            resolution: persistedResolution,
+            resolvedBy: wsResolvedBy,
+            soul: wsSoulResult
+              ? {
+                  agentId: wsSoulResult.agentId,
+                  versionId: wsSoulResult.version?.id || null,
+                  rolloutId: wsSoulResult.rollout?.id || null,
+                  rolloutMode: wsSoulResult.rolloutMode,
+                  qualityStatus: wsSoulResult.quality.status,
+                  qualityRunId: wsSoulResult.quality.run?.id || null,
+                  qualitySuiteId: wsSoulResult.quality.suiteId,
+                }
+              : null,
           });
           // Handle triage actions (same as REST path)
           if (wsRow?.type === "triage" && wsRow.conversation_id) {
             if (data.status === "approved" || data.status === "modified") {
-              const actions = (effectiveResolution || wsRow.proposed_action) as import("./channels/triage.js").TriageAction[] | null;
+              const actions = (persistedResolution || wsRow.proposed_action) as import("./channels/triage.js").TriageAction[] | null;
               if (actions && Array.isArray(actions)) {
                 executeTriageActions(data.id, wsRow.conversation_id, actions, broadcast)
                   .catch((err) => console.error("[Reviews] WS triage action execution failed:", err));
@@ -6584,9 +7743,9 @@ wss.on("connection", (ws) => {
           if (wsIsFactVerify) {
             applyFactReviewResolution({
               status: data.status as "approved" | "rejected" | "modified",
-              resolution: effectiveResolution,
+              resolution: persistedResolution,
               proposedAction: wsRow.proposed_action,
-              resolvedBy: data.resolved_by || "human",
+              resolvedBy: wsResolvedBy,
             }).catch((err) => console.warn("[Reviews] WS fact verification apply failed:", err));
           }
           // Fire-and-forget: learning pipeline
@@ -6601,7 +7760,7 @@ wss.on("connection", (ws) => {
                 description: wsRow.description,
                 contentBlocks: wsRow.content,
                 proposedAction: wsRow.proposed_action,
-                resolution: effectiveResolution,
+                resolution: persistedResolution,
               },
               config,
             ).catch((err) => console.warn("[Learner]", err));
@@ -7017,6 +8176,24 @@ If everything looks normal, do NOT create a review item.`],
        schedule_cron_tz, session_target, payload_kind, payload_text, enabled)
      VALUES ('system', 'run_qa_tests', 'Nightly QA test suite execution across all enabled suites',
        'cron', '0 3 * * *', 'Europe/Vienna', 'isolated', 'system_event', 'run_qa_tests', true)
+     ON CONFLICT (name) DO NOTHING`,
+  );
+
+  // Weekly soul rollout evaluation — Sunday 7 AM
+  await query(
+    `INSERT INTO cron_jobs (agent_id, name, description, schedule_kind, schedule_cron_expr,
+       schedule_cron_tz, session_target, payload_kind, payload_text, enabled)
+     VALUES ('system', 'evaluate_soul_rollouts_weekly', 'Weekly evaluation/promotion/rollback pass for active soul canaries',
+       'cron', '0 7 * * 0', 'Europe/Vienna', 'isolated', 'system_event', 'evaluate_soul_rollouts', true)
+     ON CONFLICT (name) DO NOTHING`,
+  );
+
+  // Monthly soul governance review — first day of month at 9 AM
+  await query(
+    `INSERT INTO cron_jobs (agent_id, name, description, schedule_kind, schedule_cron_expr,
+       schedule_cron_tz, session_target, payload_kind, payload_text, enabled)
+     VALUES ('system', 'soul_governance_monthly_review', 'Monthly governance summary and review item for soul lifecycle quality',
+       'cron', '0 9 1 * *', 'Europe/Vienna', 'isolated', 'system_event', 'soul_governance_review', true)
      ON CONFLICT (name) DO NOTHING`,
   );
 

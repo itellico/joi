@@ -20,8 +20,8 @@ export async function writeMemory(
 
   const result = await query<Memory>(
     `INSERT INTO memories (area, content, summary, tags, confidence, source,
-       conversation_id, channel_id, project_id, pinned, expires_at, embedding)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       conversation_id, channel_id, project_id, scope, visibility, pinned, expires_at, embedding)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
      RETURNING *`,
     [
       req.area,
@@ -33,6 +33,8 @@ export async function writeMemory(
       req.conversationId || null,
       req.channelId || null,
       req.projectId || null,
+      req.scope || null,
+      req.visibility || "shared",
       req.pinned || false,
       req.expiresAt || null,
       embedding ? `[${embedding.join(",")}]` : null,
@@ -131,36 +133,56 @@ export async function getMemory(id: string): Promise<Memory | null> {
   return result.rows[0] || null;
 }
 
-// List memories by area
+// List memories by area, with optional scope and tag filters
 export async function listMemories(
   area?: string,
   limit = 50,
+  options?: { scope?: string; tags?: string[]; visibility?: string },
 ): Promise<Memory[]> {
   // "Active" memories only: exclude superseded/expired and ultra-low-confidence leftovers.
-  const activeWhere =
-    "superseded_by IS NULL AND (expires_at IS NULL OR expires_at > NOW()) AND confidence > 0.05";
+  const conditions: string[] = [
+    "superseded_by IS NULL",
+    "(expires_at IS NULL OR expires_at > NOW())",
+    "confidence > 0.05",
+  ];
+  const params: unknown[] = [];
+  let idx = 1;
 
   if (area) {
-    const result = await query<Memory>(
-      `SELECT * FROM memories
-       WHERE area = $1
-         AND ${activeWhere}
-       ORDER BY confidence DESC, updated_at DESC
-       LIMIT $2`,
-      [area, limit],
-    );
-    return result.rows;
+    conditions.push(`area = $${idx++}`);
+    params.push(area);
+  } else {
+    conditions.push(`area = ANY($${idx++}::text[])`);
+    params.push(["knowledge", "solutions", "episodes"]);
   }
 
-  // Default list is operational memory only.
-  // Identity/preferences are served from Facts + Mem0 session context.
+  // Scope filter: match specific scope OR include unscoped (global) rows
+  if (options?.scope) {
+    conditions.push(`(scope = $${idx} OR scope IS NULL)`);
+    params.push(options.scope);
+    idx++;
+  }
+
+  // Tag filter: memories must contain ALL specified tags
+  if (options?.tags && options.tags.length > 0) {
+    conditions.push(`tags @> $${idx++}::text[]`);
+    params.push(options.tags);
+  }
+
+  // Visibility filter
+  if (options?.visibility) {
+    conditions.push(`visibility = $${idx++}`);
+    params.push(options.visibility);
+  }
+
+  params.push(limit);
+
   const result = await query<Memory>(
     `SELECT * FROM memories
-     WHERE area = ANY($1::text[])
-       AND ${activeWhere}
-     ORDER BY updated_at DESC
-     LIMIT $2`,
-    [["knowledge", "solutions", "episodes"], limit],
+     WHERE ${conditions.join(" AND ")}
+     ORDER BY ${area ? "confidence DESC, " : ""}updated_at DESC
+     LIMIT $${idx}`,
+    params,
   );
   return result.rows;
 }

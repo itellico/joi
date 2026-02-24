@@ -97,6 +97,8 @@ interface RawSearchRow {
   conversation_id: string | null;
   channel_id: string | null;
   project_id: string | null;
+  scope: string | null;
+  visibility: string;
   pinned: boolean;
   superseded_by: string | null;
   created_at: Date;
@@ -111,7 +113,10 @@ export async function searchMemories(
   options: MemorySearchOptions,
   config: JoiConfig,
 ): Promise<MemorySearchResult[]> {
-  const { query: searchQuery, areas, limit = 10, minConfidence, includeSuperseded = false } = options;
+  const {
+    query: searchQuery, areas, limit = 10, minConfidence, includeSuperseded = false,
+    scope, visibility, tags,
+  } = options;
 
   // Load area configs
   let areaConfigs: Map<MemoryArea, AreaSearchConfig>;
@@ -135,6 +140,11 @@ export async function searchMemories(
 
   const allResults: MemorySearchResult[] = [];
 
+  // Normalize scope filter to array
+  const scopeFilter: string[] | null = scope
+    ? (Array.isArray(scope) ? scope : [scope])
+    : null;
+
   // Search each area with its specific weights
   for (const area of targetAreas) {
     const areaConfig = areaConfigs.get(area) || FALLBACK_CONFIGS[area];
@@ -154,6 +164,25 @@ export async function searchMemories(
 
     // Check for expired memories
     conditions.push(`(expires_at IS NULL OR expires_at > NOW())`);
+
+    // Scope filter: match specific scopes OR include unscoped (global) rows
+    if (scopeFilter && scopeFilter.length > 0) {
+      conditions.push(`(scope = ANY($${paramIdx}::text[]) OR scope IS NULL)`);
+      params.push(scopeFilter);
+      paramIdx++;
+    }
+
+    // Visibility filter
+    if (visibility) {
+      conditions.push(`visibility = $${paramIdx++}`);
+      params.push(visibility);
+    }
+
+    // Tag filter: memories must contain ALL specified tags
+    if (tags && tags.length > 0) {
+      conditions.push(`tags @> $${paramIdx++}::text[]`);
+      params.push(tags);
+    }
 
     const whereClause = conditions.join(" AND ");
 
@@ -238,6 +267,8 @@ export async function searchMemories(
           conversationId: row.conversation_id,
           channelId: row.channel_id,
           projectId: row.project_id,
+          scope: row.scope || null,
+          visibility: (row.visibility || "shared") as any,
           pinned: row.pinned,
           supersededBy: row.superseded_by,
           createdAt: new Date(row.created_at),

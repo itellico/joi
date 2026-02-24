@@ -2,6 +2,7 @@
 
 export type MemoryArea = "identity" | "preferences" | "knowledge" | "solutions" | "episodes";
 export type MemorySource = "user" | "inferred" | "solution_capture" | "episode" | "flush" | "feedback";
+export type Visibility = "shared" | "private" | "restricted";
 
 export interface Memory {
   id: string;
@@ -16,6 +17,8 @@ export interface Memory {
   conversationId: string | null;
   channelId: string | null;
   projectId: string | null;
+  scope: string | null;
+  visibility: Visibility;
   pinned: boolean;
   supersededBy: string | null;
   createdAt: Date;
@@ -34,6 +37,8 @@ export interface MemoryWriteRequest {
   conversationId?: string;
   channelId?: string;
   projectId?: string;
+  scope?: string;
+  visibility?: Visibility;
   pinned?: boolean;
   expiresAt?: Date;
 }
@@ -42,6 +47,9 @@ export interface MemorySearchOptions {
   query: string;
   areas?: MemoryArea[];
   projectId?: string | null;
+  scope?: string | string[] | null;
+  visibility?: Visibility | null;
+  tags?: string[];
   limit?: number;
   minConfidence?: number;
   includeSuperseded?: boolean;

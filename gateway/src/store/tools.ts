@@ -427,9 +427,11 @@ export function getStoreToolHandlers(): Map<string, ToolHandler> {
   // ─── store_search ───
 
   handlers.set("store_search", async (input, ctx) => {
-    const { query: searchQuery, collection, limit } = input as {
+    const { query: searchQuery, collection, scope: inputScope, tags: inputTags, limit } = input as {
       query: string;
       collection?: string;
+      scope?: string;
+      tags?: string[];
       limit?: number;
     };
 
@@ -453,15 +455,30 @@ export function getStoreToolHandlers(): Map<string, ToolHandler> {
       idx++;
     }
 
-    const allowedScopes = resolveAllowedScopes({
-      scope: ctx.scope,
-      allowedScopes: ctx.allowedScopes,
-      allowGlobalDataAccess: ctx.allowGlobalDataAccess,
-    });
-    if (allowedScopes) {
-      conditions.push(buildScopeFilterSql("o.data->>'scope'", idx));
-      params.push(allowedScopes);
-      idx += 1;
+    // Tag filter: must have ALL specified tags
+    if (inputTags && inputTags.length > 0) {
+      conditions.push(`o.tags @> $${idx}::text[]`);
+      params.push(inputTags);
+      idx++;
+    }
+
+    // Scope filter: explicit param overrides context-based scoping
+    if (inputScope) {
+      // Use materialized scope column if available, fall back to JSONB
+      conditions.push(`(o.scope = $${idx} OR o.scope IS NULL)`);
+      params.push(inputScope);
+      idx++;
+    } else {
+      const allowedScopes = resolveAllowedScopes({
+        scope: ctx.scope,
+        allowedScopes: ctx.allowedScopes,
+        allowGlobalDataAccess: ctx.allowGlobalDataAccess,
+      });
+      if (allowedScopes) {
+        conditions.push(buildScopeFilterSql("o.data->>'scope'", idx));
+        params.push(allowedScopes);
+        idx += 1;
+      }
     }
 
     let sql: string;
@@ -747,7 +764,8 @@ export function getStoreToolDefinitions(): Anthropic.Tool[] {
       name: "store_search",
       description:
         "Semantic + full-text search across knowledge store objects. " +
-        "Uses pgvector embeddings (nomic-embed-text) combined with PostgreSQL FTS.",
+        "Uses pgvector embeddings (nomic-embed-text) combined with PostgreSQL FTS. " +
+        "Supports filtering by scope (company/project), tags, and collection.",
       input_schema: {
         type: "object" as const,
         properties: {
@@ -758,6 +776,15 @@ export function getStoreToolDefinitions(): Anthropic.Tool[] {
           collection: {
             type: "string",
             description: "Optionally limit search to a specific collection",
+          },
+          scope: {
+            type: "string",
+            description: "Filter by scope/company (e.g. 'creditreform', 'personal'). Unscoped objects are always included.",
+          },
+          tags: {
+            type: "array",
+            items: { type: "string" },
+            description: "Filter by tags — results must have ALL specified tags",
           },
           limit: {
             type: "number",
