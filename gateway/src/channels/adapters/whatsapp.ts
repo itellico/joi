@@ -135,7 +135,8 @@ export function createWhatsAppAdapter(channelId: string): ChannelAdapter {
           // Skip messages with no text and no media
           if (!text && attachments.length === 0) continue;
 
-          const senderId = msg.key.remoteJid || "";
+          // For status broadcasts and groups, participant has the actual sender's JID
+          const senderId = msg.key.participant || msg.key.remoteJid || "";
           const senderName = msg.pushName || senderId.split("@")[0];
           const externalId = msg.key.id ? `wa:${msg.key.id}` : undefined;
 
