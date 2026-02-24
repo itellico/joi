@@ -34,6 +34,15 @@ Gateway runs at `http://localhost:3000`, web app at `http://localhost:5173`.
 
 # Remove launchd watchdog agent
 ./scripts/uninstall-watchdog-launchd.sh
+
+# Keep skills synced (local only)
+./scripts/skills-sync.sh
+
+# Keep skills synced across Air/Studio/Mini every 10 minutes
+./scripts/install-skills-sync-launchd.sh --hosts local,studio,air,mini --interval 600
+
+# Remove skills sync launchd agent
+./scripts/uninstall-skills-sync-launchd.sh
 ```
 
 ## Project Structure
