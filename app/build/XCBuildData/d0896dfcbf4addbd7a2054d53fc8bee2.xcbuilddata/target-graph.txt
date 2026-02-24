@@ -1,2 +1,0 @@
-Target dependency graph (1 target)
-Target 'JOI_watchOS Extension' in project 'JOI' (no dependencies)

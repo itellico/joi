@@ -1,25 +1,70 @@
+# Dependencies
 node_modules/
+.pnpm-store/
+
+# Build output
 dist/
-.env
-.env.local
-*.log
-.DS_Store
-.turbo
-coverage/
+build/
 *.tsbuildinfo
+.turbo/
+coverage/
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+secrets/
+*-credentials.json
+client_secret_*.json
+*.p8
+
+# WhatsApp auth / session data
+wa-auth-*/
+gateway/wa-auth-*/
+
+# Xcode
+app/build/
+*.xcuserstate
+xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+
+# Flutter / Dart
+mobile/build/
+mobile/.dart_tool/
+mobile/.packages
+mobile/.flutter-plugins
+mobile/.flutter-plugins-dependencies
+mobile/ios/Pods/
+mobile/ios/.symlinks/
+mobile/macos/Pods/
+mobile/macos/.symlinks/
+mobile/macos/Flutter/ephemeral/
+*.g.dart
 
 # Docker volumes
 pgdata/
 ollama_data/
 
-# Credentials / secrets
-*-credentials.json
-client_secret_*.json
-secrets/
-*.p8
+# Artwork & large binaries
+Artwork/
+
+# OS files
+.DS_Store
+Thumbs.db
 
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
+*~
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Misc
+tmp/
+.cache/
