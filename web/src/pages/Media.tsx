@@ -24,6 +24,7 @@ interface MediaItem {
   channel_type: string | null;
   channel_id: string | null;
   sender_id: string | null;
+  sender_name: string | null;
   contact_id: string | null;
   contact_first_name: string | null;
   contact_last_name: string | null;
@@ -225,8 +226,7 @@ export default function Media() {
       header: "From",
       render: (item) => {
         const name = getContactName(item);
-        if (!name) return <MetaText size="xs">{getSenderLabel(item.sender_id) || "—"}</MetaText>;
-        return (
+        if (name) return (
           <span
             className="media-contact-link"
             onClick={(e) => { e.stopPropagation(); navigate(`/contacts/${item.contact_id}`); }}
@@ -235,8 +235,9 @@ export default function Media() {
             {name}
           </span>
         );
+        return <MetaText size="xs">{item.sender_name || getSenderLabel(item.sender_id) || "—"}</MetaText>;
       },
-      sortValue: (item) => getContactName(item) || item.sender_id || "",
+      sortValue: (item) => getContactName(item) || item.sender_name || item.sender_id || "",
       width: 150,
     },
     {
@@ -414,8 +415,8 @@ function MediaCard({ item, onClick }: { item: MediaItem; onClick: () => void }) 
           {item.filename || item.media_type}
         </div>
         <div className="media-card-meta">
-          {contactName && (
-            <span className="media-card-contact">{contactName}</span>
+          {(contactName || item.sender_name) && (
+            <span className="media-card-contact">{contactName || item.sender_name}</span>
           )}
           {item.channel_type && (
             <span className="media-card-channel" style={{ color: CHANNEL_COLORS[item.channel_type] }}>
@@ -465,7 +466,7 @@ function MediaLightbox({ item, onClose }: { item: MediaItem; onClose: () => void
         <div className="media-lightbox-meta">
           {item.filename && <div className="media-lightbox-filename">{item.filename}</div>}
           <Stack gap={1}>
-            {contactName && (
+            {contactName ? (
               <div className="media-lightbox-contact">
                 <MetaText size="sm">From: </MetaText>
                 <span
@@ -475,7 +476,9 @@ function MediaLightbox({ item, onClose }: { item: MediaItem; onClose: () => void
                   {contactName}
                 </span>
               </div>
-            )}
+            ) : (item.sender_name || item.sender_id) ? (
+              <MetaText size="sm">From: {item.sender_name || getSenderLabel(item.sender_id)}</MetaText>
+            ) : null}
             <MetaText size="sm">Type: {item.media_type}</MetaText>
             {item.mime_type && <MetaText size="sm">MIME: {item.mime_type}</MetaText>}
             <MetaText size="sm">Size: {formatBytes(item.size_bytes)}</MetaText>

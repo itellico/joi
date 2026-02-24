@@ -18,7 +18,7 @@ import {
 } from "./pty/manager.js";
 import { runAgent, saveMessage, ensureConversation } from "./agent/runtime.js";
 import { runClaudeCode } from "./agent/claude-code.js";
-import { query, recordSuccess, recordFailure } from "./db/client.js";
+import { query, recordSuccess, recordFailure, reloadFromEnv } from "./db/client.js";
 import { checkOllama, pullModel, embed } from "./knowledge/embeddings.js";
 import { AVAILABLE_MODELS, resetClients, getOllamaUrl, utilityCall, resolveModel } from "./agent/model-router.js";
 // Cost calculation is now handled inside runtime.ts (totalCostUsd)
@@ -2292,6 +2292,22 @@ app.get("/api/health", async (_req, res) => {
   }
 
   res.json({ services, uptime: process.uptime() });
+});
+
+// Admin — hot-reload DATABASE_URL from .env and reset the connection pool
+app.post("/api/admin/reload-db", async (_req, res) => {
+  try {
+    const result = await reloadFromEnv();
+    const changed = result.old !== result.new;
+    console.log(`[Admin] DB reload: ${result.old} -> ${result.new} (changed=${changed})`);
+    // Verify connectivity with the new pool
+    await query("SELECT 1 as ok");
+    recordSuccess();
+    res.json({ ok: true, changed, old: result.old, new: result.new, connected: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ ok: false, error: msg });
+  }
 });
 
 // Dev service controls — start background services on demand
@@ -6864,7 +6880,7 @@ app.get("/api/media", async (req, res) => {
     const [dataResult, countResult] = await Promise.all([
       query(
         `SELECT m.id, m.message_id, m.conversation_id, m.channel_type, m.channel_id, m.sender_id,
-                m.contact_id, m.media_type, m.filename, m.mime_type, m.size_bytes, m.storage_path,
+                m.sender_name, m.contact_id, m.media_type, m.filename, m.mime_type, m.size_bytes, m.storage_path,
                 m.thumbnail_path, m.width, m.height, m.duration_seconds, m.status, m.caption, m.created_at,
                 c.first_name AS contact_first_name, c.last_name AS contact_last_name,
                 c.avatar_url AS contact_avatar_url

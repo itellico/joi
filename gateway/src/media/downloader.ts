@@ -91,6 +91,7 @@ export async function downloadMessageMedia(
         channelType: msg.channelType,
         channelId: msg.channelId,
         senderId: msg.senderId,
+        senderName: msg.senderName || null,
         attachment: att,
         caption: msg.content || null,
         mediaConfig,
@@ -107,23 +108,24 @@ async function downloadSingleAttachment(opts: {
   channelType: string;
   channelId: string;
   senderId: string;
+  senderName: string | null;
   attachment: ChannelAttachment;
   caption: string | null;
   mediaConfig: MediaConfig;
 }): Promise<void> {
-  const { messageId, conversationId, channelType, channelId, senderId, attachment, caption, mediaConfig } = opts;
+  const { messageId, conversationId, channelType, channelId, senderId, senderName, attachment, caption, mediaConfig } = opts;
 
   // 0. Resolve contact from sender
   const contactId = await resolveContactId(channelType, senderId);
 
   // 1. Insert pending media record
   const insertResult = await query<{ id: string }>(
-    `INSERT INTO media (message_id, conversation_id, channel_type, channel_id, sender_id, contact_id,
+    `INSERT INTO media (message_id, conversation_id, channel_type, channel_id, sender_id, sender_name, contact_id,
        media_type, filename, mime_type, size_bytes, storage_path, status, caption)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending-' || gen_random_uuid(), 'pending', $11)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending-' || gen_random_uuid(), 'pending', $12)
      RETURNING id`,
     [
-      messageId, conversationId, channelType, channelId, senderId, contactId,
+      messageId, conversationId, channelType, channelId, senderId, senderName, contactId,
       attachment.type, attachment.filename || null, attachment.mimeType || null,
       attachment.size || null, caption,
     ],
