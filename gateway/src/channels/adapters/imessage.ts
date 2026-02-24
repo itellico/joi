@@ -20,6 +20,33 @@ const POLL_INTERVAL = 3000;
 // Seconds between Unix epoch (1970-01-01) and Apple Cocoa epoch (2001-01-01)
 const COCOA_EPOCH_OFFSET = 978307200;
 
+function formatMessagesDbReadError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const msg = raw.trim();
+  const lower = msg.toLowerCase();
+
+  const likelyTccDenied =
+    lower.includes("authorization denied") ||
+    lower.includes("operation not permitted") ||
+    lower.includes("not authorized") ||
+    lower.includes("permission denied");
+
+  const base = `Cannot read Messages database (${CHAT_DB}): ${msg}`;
+  if (!likelyTccDenied) return base;
+
+  const launcher =
+    process.env.TERM_PROGRAM ||
+    process.env.ORIGINAL_XDG_CURRENT_DESKTOP ||
+    "Terminal/iTerm/VS Code/Cursor";
+
+  return [
+    base,
+    `Grant Full Disk Access to the app that launches JOI Gateway (${launcher}) in System Settings > Privacy & Security > Full Disk Access.`,
+    "If the gateway runs under launchd/watchdog, run gateway from an FDA-enabled terminal session instead.",
+    `Verify in that same session: sqlite3 -readonly ${CHAT_DB} "SELECT COUNT(*) FROM message LIMIT 1;"`,
+  ].join(" ");
+}
+
 function runAppleScript(script: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const proc = spawn("osascript", ["-"], { stdio: ["pipe", "pipe", "pipe"] });
@@ -183,7 +210,7 @@ export function createIMessageAdapter(channelId: string): ChannelAdapter {
         ]);
       } catch (err) {
         status = "error";
-        errorMsg = `Cannot read Messages database: ${err instanceof Error ? err.message : String(err)}. Grant Full Disk Access to the terminal in System Settings > Privacy & Security.`;
+        errorMsg = formatMessagesDbReadError(err);
         adapter.onStatusChange?.(adapter.getStatus());
         throw new Error(errorMsg);
       }
