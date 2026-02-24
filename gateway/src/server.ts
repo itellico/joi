@@ -6173,6 +6173,43 @@ app.put("/api/contacts/:id/obsidian", async (req, res) => {
   }
 });
 
+// ─── Contact Media API ───
+
+app.get("/api/contacts/:id/media", async (req, res) => {
+  try {
+    const { limit = "50", offset = "0", type } = req.query as Record<string, string>;
+    const lim = Math.min(Math.max(1, parseInt(limit) || 50), 200);
+    const off = Math.max(0, parseInt(offset) || 0);
+
+    const conditions = ["m.contact_id = $1", "m.status = 'ready'"];
+    const params: unknown[] = [req.params.id];
+    let idx = 2;
+
+    if (type && type !== "all") {
+      conditions.push(`m.media_type = $${idx++}`);
+      params.push(type);
+    }
+
+    const where = `WHERE ${conditions.join(" AND ")}`;
+    const [dataResult, countResult] = await Promise.all([
+      query(
+        `SELECT m.id, m.media_type, m.filename, m.mime_type, m.size_bytes,
+                m.thumbnail_path, m.width, m.height, m.channel_type, m.caption, m.created_at
+         FROM media m ${where}
+         ORDER BY m.created_at DESC
+         LIMIT $${idx++} OFFSET $${idx++}`,
+        [...params, lim, off],
+      ),
+      query(`SELECT COUNT(*)::int AS total FROM media m ${where}`, params),
+    ]);
+
+    res.json({ media: dataResult.rows, total: countResult.rows[0]?.total || 0 });
+  } catch (err) {
+    console.error("[Media] Contact media failed:", err);
+    res.status(500).json({ error: "Failed to get contact media" });
+  }
+});
+
 // ─── Knowledge Store API ───
 
 app.get("/api/store/collections", async (_req, res) => {
@@ -6797,28 +6834,28 @@ app.post("/api/agent-social/avatar-generate-all", async (req, res) => {
 app.get("/api/media", async (req, res) => {
   try {
     const { type, channel, q, sort = "created_at", dir = "DESC", limit = "50", offset = "0" } = req.query as Record<string, string>;
-    const conditions: string[] = ["status != 'deleted'"];
+    const conditions: string[] = ["m.status != 'deleted'"];
     const params: unknown[] = [];
     let idx = 1;
 
     if (type && type !== "all") {
-      conditions.push(`media_type = $${idx++}`);
+      conditions.push(`m.media_type = $${idx++}`);
       params.push(type);
     }
     if (channel && channel !== "all") {
-      conditions.push(`channel_type = $${idx++}`);
+      conditions.push(`m.channel_type = $${idx++}`);
       params.push(channel);
     }
     if (q) {
-      conditions.push(`fts @@ plainto_tsquery('english', $${idx++})`);
+      conditions.push(`m.fts @@ plainto_tsquery('english', $${idx++})`);
       params.push(q);
     }
 
     const allowedSorts: Record<string, string> = {
-      created_at: "created_at", date: "created_at", filename: "filename",
-      size: "size_bytes", type: "media_type",
+      created_at: "m.created_at", date: "m.created_at", filename: "m.filename",
+      size: "m.size_bytes", type: "m.media_type",
     };
-    const sortCol = allowedSorts[sort] || "created_at";
+    const sortCol = allowedSorts[sort] || "m.created_at";
     const sortDir = dir.toUpperCase() === "ASC" ? "ASC" : "DESC";
     const lim = Math.min(Math.max(1, parseInt(limit) || 50), 200);
     const off = Math.max(0, parseInt(offset) || 0);
@@ -6826,15 +6863,19 @@ app.get("/api/media", async (req, res) => {
     const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
     const [dataResult, countResult] = await Promise.all([
       query(
-        `SELECT id, message_id, conversation_id, channel_type, channel_id, sender_id,
-                media_type, filename, mime_type, size_bytes, storage_path, thumbnail_path,
-                width, height, duration_seconds, status, caption, created_at
-         FROM media ${where}
+        `SELECT m.id, m.message_id, m.conversation_id, m.channel_type, m.channel_id, m.sender_id,
+                m.contact_id, m.media_type, m.filename, m.mime_type, m.size_bytes, m.storage_path,
+                m.thumbnail_path, m.width, m.height, m.duration_seconds, m.status, m.caption, m.created_at,
+                c.first_name AS contact_first_name, c.last_name AS contact_last_name,
+                c.avatar_url AS contact_avatar_url
+         FROM media m
+         LEFT JOIN contacts c ON m.contact_id = c.id
+         ${where}
          ORDER BY ${sortCol} ${sortDir}
          LIMIT $${idx++} OFFSET $${idx++}`,
         [...params, lim, off],
       ),
-      query(`SELECT COUNT(*)::int AS total FROM media ${where}`, params),
+      query(`SELECT COUNT(*)::int AS total FROM media m ${where}`, params),
     ]);
 
     res.json({ media: dataResult.rows, total: countResult.rows[0]?.total || 0 });

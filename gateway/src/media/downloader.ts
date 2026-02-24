@@ -6,6 +6,70 @@ import type { MediaConfig } from "../config/schema.js";
 import { storeMedia } from "./storage.js";
 import { downloadFromChannel } from "./channel-downloads.js";
 
+/** Resolve a sender_id + channel_type to a contact_id (best-effort, returns null if no match) */
+async function resolveContactId(channelType: string, senderId: string): Promise<string | null> {
+  if (!senderId) return null;
+
+  try {
+    let result;
+    switch (channelType) {
+      case "telegram":
+        result = await query<{ id: string }>(
+          `SELECT id FROM contacts WHERE telegram_id = $1 OR LOWER(telegram_username) = LOWER($1) LIMIT 1`,
+          [senderId],
+        );
+        break;
+      case "slack":
+        result = await query<{ id: string }>(
+          `SELECT id FROM contacts WHERE slack_handle = $1 LIMIT 1`,
+          [senderId],
+        );
+        break;
+      case "email":
+        result = await query<{ id: string }>(
+          `SELECT id FROM contacts WHERE LOWER($1) = ANY(SELECT LOWER(unnest(emails))) LIMIT 1`,
+          [senderId],
+        );
+        break;
+      case "imessage": {
+        // iMessage sender_id can be a phone or email
+        const digits = senderId.replace(/\D/g, "");
+        result = await query<{ id: string }>(
+          `SELECT id FROM contacts
+           WHERE LOWER($1) = ANY(SELECT LOWER(unnest(emails)))
+              OR EXISTS (
+                SELECT 1 FROM unnest(phones) AS p
+                WHERE regexp_replace(p, '[^0-9]', '', 'g') = $2
+              )
+           LIMIT 1`,
+          [senderId, digits],
+        );
+        break;
+      }
+      case "whatsapp": {
+        // WhatsApp sender_id is typically phone@s.whatsapp.net — normalize to digits only
+        const phone = senderId.split("@")[0].replace(/\D/g, "");
+        result = await query<{ id: string }>(
+          `SELECT id FROM contacts
+           WHERE EXISTS (
+             SELECT 1 FROM unnest(phones) AS p
+             WHERE regexp_replace(p, '[^0-9]', '', 'g') = $1
+           )
+           LIMIT 1`,
+          [phone],
+        );
+        break;
+      }
+      default:
+        return null;
+    }
+    return result?.rows[0]?.id || null;
+  } catch (err) {
+    console.error("[Media] Contact resolution failed:", err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
 /** Process all attachments in a message — fire-and-forget from router */
 export async function downloadMessageMedia(
   messageId: string,
@@ -46,14 +110,17 @@ async function downloadSingleAttachment(opts: {
 }): Promise<void> {
   const { messageId, conversationId, channelType, channelId, senderId, attachment, caption, mediaConfig } = opts;
 
+  // 0. Resolve contact from sender
+  const contactId = await resolveContactId(channelType, senderId);
+
   // 1. Insert pending media record
   const insertResult = await query<{ id: string }>(
-    `INSERT INTO media (message_id, conversation_id, channel_type, channel_id, sender_id,
+    `INSERT INTO media (message_id, conversation_id, channel_type, channel_id, sender_id, contact_id,
        media_type, filename, mime_type, size_bytes, storage_path, status, caption)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending-' || gen_random_uuid(), 'pending', $10)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending-' || gen_random_uuid(), 'pending', $11)
      RETURNING id`,
     [
-      messageId, conversationId, channelType, channelId, senderId,
+      messageId, conversationId, channelType, channelId, senderId, contactId,
       attachment.type, attachment.filename || null, attachment.mimeType || null,
       attachment.size || null, caption,
     ],

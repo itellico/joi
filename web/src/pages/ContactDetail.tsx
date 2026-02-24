@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, Link } from "react-router-dom";
 import MarkdownField from "../components/MarkdownField";
 import { Badge, Button, Card, EmptyState, MetaText, Modal, PageBody, PageHeader } from "../components/ui";
 
@@ -90,6 +90,30 @@ const PLATFORM_COLORS: Record<string, string> = {
   slack: "#e91e63",
 };
 
+interface ContactMediaItem {
+  id: string;
+  media_type: string;
+  filename: string | null;
+  mime_type: string | null;
+  size_bytes: number | null;
+  thumbnail_path: string | null;
+  width: number | null;
+  height: number | null;
+  channel_type: string | null;
+  caption: string | null;
+  created_at: string;
+}
+
+const MEDIA_TYPE_ICONS: Record<string, string> = {
+  photo: "\uD83D\uDDBC\uFE0F",
+  video: "\uD83C\uDFA5",
+  audio: "\uD83C\uDFB5",
+  voice: "\uD83C\uDF99\uFE0F",
+  document: "\uD83D\uDCC4",
+  sticker: "\uD83E\uDEAA",
+  unknown: "\uD83D\uDCCE",
+};
+
 const ATTACHMENT_ICONS: Record<string, string> = {
   photo: "\uD83D\uDCF7",
   video: "\uD83C\uDFA5",
@@ -132,6 +156,11 @@ export default function ContactDetail() {
   const [obsLoading, setObsLoading] = useState(false);
   const [obsContent, setObsContent] = useState("");
   const [obsSaving, setObsSaving] = useState(false);
+
+  // Media gallery
+  const [contactMedia, setContactMedia] = useState<ContactMediaItem[]>([]);
+  const [contactMediaTotal, setContactMediaTotal] = useState(0);
+  const [mediaLoading, setMediaLoading] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -181,11 +210,25 @@ export default function ContactDetail() {
       .finally(() => setObsLoading(false));
   }, [id]);
 
+  const loadContactMedia = useCallback(() => {
+    if (!id) return;
+    setMediaLoading(true);
+    fetch(`/api/contacts/${id}/media?limit=20`)
+      .then((r) => r.json())
+      .then((data) => {
+        setContactMedia(data.media || []);
+        setContactMediaTotal(data.total || 0);
+      })
+      .catch(() => {})
+      .finally(() => setMediaLoading(false));
+  }, [id]);
+
   useEffect(() => {
     loadTasks();
     loadInteractions();
     loadObsidianNote();
-  }, [loadTasks, loadInteractions, loadObsidianNote]);
+    loadContactMedia();
+  }, [loadTasks, loadInteractions, loadObsidianNote, loadContactMedia]);
 
   const updateStatus = async (newStatus: string) => {
     if (!id) return;
@@ -491,6 +534,58 @@ export default function ContactDetail() {
                       </div>
                     </div>
                   </div>
+                );
+              })}
+            </div>
+          )}
+        </Card>
+
+        {/* Media Gallery */}
+        <Card className="mt-4">
+          <div className="flex-row justify-between mb-3">
+            <h4>Media</h4>
+            {contactMediaTotal > 0 && (
+              <Link to={`/media?contact=${id}`} style={{ fontSize: 12, color: "var(--accent)" }}>
+                View all ({contactMediaTotal})
+              </Link>
+            )}
+          </div>
+
+          {mediaLoading ? (
+            <MetaText size="sm" className="block">Loading media...</MetaText>
+          ) : contactMedia.length === 0 ? (
+            <MetaText size="sm" className="block">
+              No media files from this contact yet.
+            </MetaText>
+          ) : (
+            <div className="contact-media-grid">
+              {contactMedia.map((m) => {
+                const isImage = m.media_type === "photo" || m.mime_type?.startsWith("image/");
+                return (
+                  <a
+                    key={m.id}
+                    href={`/api/media/${m.id}/file`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="contact-media-item"
+                    title={m.filename || m.media_type}
+                  >
+                    {isImage ? (
+                      <img
+                        src={`/api/media/${m.id}/thumbnail`}
+                        alt={m.filename || "media"}
+                        className="contact-media-thumb"
+                        loading="lazy"
+                      />
+                    ) : (
+                      <div className="contact-media-icon">
+                        {MEDIA_TYPE_ICONS[m.media_type] || MEDIA_TYPE_ICONS.unknown}
+                      </div>
+                    )}
+                    <div className="contact-media-label">
+                      {m.filename || m.media_type}
+                    </div>
+                  </a>
                 );
               })}
             </div>

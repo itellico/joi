@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams, useNavigate } from "react-router-dom";
 import {
   Badge,
   Card,
@@ -24,6 +24,10 @@ interface MediaItem {
   channel_type: string | null;
   channel_id: string | null;
   sender_id: string | null;
+  contact_id: string | null;
+  contact_first_name: string | null;
+  contact_last_name: string | null;
+  contact_avatar_url: string | null;
   media_type: string;
   filename: string | null;
   mime_type: string | null;
@@ -107,6 +111,11 @@ function timeAgo(iso: string): string {
 
 const PAGE_SIZE = 50;
 
+function getContactName(item: MediaItem): string | null {
+  if (!item.contact_id) return null;
+  return [item.contact_first_name, item.contact_last_name].filter(Boolean).join(" ") || null;
+}
+
 export default function Media() {
   const [params, setParams] = useSearchParams();
   const [items, setItems] = useState<MediaItem[]>([]);
@@ -183,6 +192,8 @@ export default function Media() {
     }));
   }, [stats]);
 
+  const navigate = useNavigate();
+
   const columns: UnifiedListColumn<MediaItem>[] = useMemo(() => [
     {
       key: "thumb",
@@ -200,6 +211,25 @@ export default function Media() {
         </div>
       ),
       sortValue: (item) => item.filename || item.media_type,
+    },
+    {
+      key: "contact",
+      header: "From",
+      render: (item) => {
+        const name = getContactName(item);
+        if (!name) return <MetaText size="xs">{item.sender_id || "—"}</MetaText>;
+        return (
+          <span
+            className="media-contact-link"
+            onClick={(e) => { e.stopPropagation(); navigate(`/contacts/${item.contact_id}`); }}
+            title={`View ${name}`}
+          >
+            {name}
+          </span>
+        );
+      },
+      sortValue: (item) => getContactName(item) || item.sender_id || "",
+      width: 150,
     },
     {
       key: "media_type",
@@ -236,7 +266,7 @@ export default function Media() {
       sortValue: (item) => new Date(item.created_at),
       width: 120,
     },
-  ], []);
+  ], [navigate]);
 
   return (
     <>
@@ -367,6 +397,7 @@ function MediaThumb({ item, size = 120 }: { item: MediaItem; size?: number }) {
 }
 
 function MediaCard({ item, onClick }: { item: MediaItem; onClick: () => void }) {
+  const contactName = getContactName(item);
   return (
     <div className="media-card" onClick={onClick}>
       <MediaThumb item={item} size={160} />
@@ -375,6 +406,9 @@ function MediaCard({ item, onClick }: { item: MediaItem; onClick: () => void }) 
           {item.filename || item.media_type}
         </div>
         <div className="media-card-meta">
+          {contactName && (
+            <span className="media-card-contact">{contactName}</span>
+          )}
           {item.channel_type && (
             <span className="media-card-channel" style={{ color: CHANNEL_COLORS[item.channel_type] }}>
               {item.channel_type}
@@ -389,9 +423,11 @@ function MediaCard({ item, onClick }: { item: MediaItem; onClick: () => void }) 
 }
 
 function MediaLightbox({ item, onClose }: { item: MediaItem; onClose: () => void }) {
+  const navigate = useNavigate();
   const isImage = item.media_type === "photo" || item.mime_type?.startsWith("image/");
   const isVideo = item.media_type === "video" || item.mime_type?.startsWith("video/");
   const isAudio = item.media_type === "audio" || item.media_type === "voice" || item.mime_type?.startsWith("audio/");
+  const contactName = getContactName(item);
 
   return (
     <Modal open onClose={onClose} width="90vw">
@@ -421,6 +457,17 @@ function MediaLightbox({ item, onClose }: { item: MediaItem; onClose: () => void
         <div className="media-lightbox-meta">
           {item.filename && <div className="media-lightbox-filename">{item.filename}</div>}
           <Stack gap={1}>
+            {contactName && (
+              <div className="media-lightbox-contact">
+                <MetaText size="sm">From: </MetaText>
+                <span
+                  className="media-contact-link"
+                  onClick={() => { onClose(); navigate(`/contacts/${item.contact_id}`); }}
+                >
+                  {contactName}
+                </span>
+              </div>
+            )}
             <MetaText size="sm">Type: {item.media_type}</MetaText>
             {item.mime_type && <MetaText size="sm">MIME: {item.mime_type}</MetaText>}
             <MetaText size="sm">Size: {formatBytes(item.size_bytes)}</MetaText>

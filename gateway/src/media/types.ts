@@ -10,6 +10,7 @@ export interface MediaRecord {
   channel_type: string | null;
   channel_id: string | null;
   sender_id: string | null;
+  contact_id: string | null;
   media_type: MediaType;
   filename: string | null;
   mime_type: string | null;
