@@ -111,6 +111,14 @@ function timeAgo(iso: string): string {
 
 const PAGE_SIZE = 50;
 
+function getSenderLabel(senderId: string | null): string | null {
+  if (!senderId) return null;
+  if (senderId === "status@broadcast") return "Status";
+  if (senderId.endsWith("@s.whatsapp.net")) return "+" + senderId.split("@")[0];
+  if (senderId.endsWith("@lid")) return senderId.split("@")[0];
+  return senderId;
+}
+
 function getContactName(item: MediaItem): string | null {
   if (!item.contact_id) return null;
   return [item.contact_first_name, item.contact_last_name].filter(Boolean).join(" ") || null;
@@ -217,7 +225,7 @@ export default function Media() {
       header: "From",
       render: (item) => {
         const name = getContactName(item);
-        if (!name) return <MetaText size="xs">{item.sender_id || "—"}</MetaText>;
+        if (!name) return <MetaText size="xs">{getSenderLabel(item.sender_id) || "—"}</MetaText>;
         return (
           <span
             className="media-contact-link"

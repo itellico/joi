@@ -48,7 +48,10 @@ async function resolveContactId(channelType: string, senderId: string): Promise<
       }
       case "whatsapp": {
         // WhatsApp sender_id is typically phone@s.whatsapp.net — normalize to digits only
+        // Skip non-phone sender_ids like status@broadcast
+        if (!senderId.includes("@s.whatsapp.net") && !senderId.includes("@lid")) return null;
         const phone = senderId.split("@")[0].replace(/\D/g, "");
+        if (!phone) return null;
         result = await query<{ id: string }>(
           `SELECT id FROM contacts
            WHERE EXISTS (
