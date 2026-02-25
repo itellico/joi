@@ -153,12 +153,16 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
   }, [isStreaming, messages.length, mode, historyOpen, fetchConversations]);
 
   // Auto-start voice globally (including closed bubble mode).
+  // Skip auto-connect if LiveKit URL is not configured or server is unreachable.
+  const [voiceAutoConnectAttempted, setVoiceAutoConnectAttempted] = useState(false);
   useEffect(() => {
     if (ws.status !== "connected") return;
     if (voice.state !== "idle") return;
     if (voice.error) return;
+    if (voiceAutoConnectAttempted) return;
+    setVoiceAutoConnectAttempted(true);
     void voice.connect();
-  }, [ws.status, voice.state, voice.error, voice.connect]);
+  }, [ws.status, voice.state, voice.error, voice.connect, voiceAutoConnectAttempted]);
 
   // Auto-scroll
   useEffect(() => {
@@ -314,11 +318,9 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
                 ? "Waiting..."
                 : "Listening...";
 
-  const voiceSubtitle = voice.error
-    ? voice.error
-    : voice.state !== "idle"
-        ? voiceStatus
-        : "Personal Assistant";
+  const voiceSubtitle = voice.state !== "idle"
+    ? (voice.error ? "Voice error" : voiceStatus)
+    : "Personal Assistant";
 
   const voiceOrbActive = voice.state !== "idle" && !voice.error && !voice.isMuted;
   const voiceOrbIntensity = (() => {
