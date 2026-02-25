@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Badge,
@@ -118,18 +118,27 @@ export default function Contacts() {
       });
   };
 
-  useEffect(() => {
-    fetchContacts(search, statusFilter, offset);
-  }, [statusFilter, offset]);
+  // Single consolidated fetch effect — debounces search, immediate for filter/offset
+  const searchRef = useRef(search);
+  const prevSearchRef = useRef(search);
+  searchRef.current = search;
 
-  // Debounced search — SearchInput handles debounce internally, so we fetch directly
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setOffset(0);
-      fetchContacts(search, statusFilter, 0);
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [search]);
+    const searchChanged = search !== prevSearchRef.current;
+    prevSearchRef.current = search;
+
+    if (searchChanged && search !== "") {
+      // Debounce search input
+      const timer = setTimeout(() => {
+        setOffset(0);
+        fetchContacts(searchRef.current, statusFilter, 0);
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+    // Immediate fetch for filter/offset changes or empty search
+    fetchContacts(search, statusFilter, offset);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, statusFilter, offset]);
 
   const totalAll = useMemo(
     () => statusCounts.reduce((sum, s) => sum + s.count, 0),
