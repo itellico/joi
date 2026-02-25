@@ -23,6 +23,7 @@ export interface Attachment {
 }
 
 export interface Delegation {
+  delegationId?: string;
   agentId: string;
   agentName?: string;
   task: string;
@@ -334,6 +335,7 @@ export function useChat({ send, on }: UseChatOptions) {
       on("chat.agent_spawn", (frame) => {
         const data = frame.data as {
           conversationId?: string;
+          delegationId?: string;
           parentAgentId: string;
           childAgentId: string;
           task: string;
@@ -348,6 +350,7 @@ export function useChat({ send, on }: UseChatOptions) {
           if (last?.isStreaming) {
             const existing = last.delegations || [];
             const newDelegation: Delegation = {
+              delegationId: data.delegationId,
               agentId: data.childAgentId,
               task: data.task,
               status: "pending",
@@ -361,6 +364,7 @@ export function useChat({ send, on }: UseChatOptions) {
       on("chat.agent_result", (frame) => {
         const data = frame.data as {
           conversationId?: string;
+          delegationId?: string;
           childAgentId: string;
           status: "success" | "error";
           durationMs: number;
@@ -373,8 +377,18 @@ export function useChat({ send, on }: UseChatOptions) {
         setMessages((prev) => {
           const last = prev[prev.length - 1];
           if (last?.delegations) {
+            let matched = false;
             const delegations = last.delegations.map((d) => {
-              if (d.agentId === data.childAgentId && d.status === "pending") {
+              if (matched || d.status !== "pending") return d;
+              if (data.delegationId) {
+                if (d.delegationId === data.delegationId) {
+                  matched = true;
+                  return { ...d, status: data.status, durationMs: data.durationMs };
+                }
+                return d;
+              }
+              if (d.agentId === data.childAgentId) {
+                matched = true;
                 return { ...d, status: data.status, durationMs: data.durationMs };
               }
               return d;

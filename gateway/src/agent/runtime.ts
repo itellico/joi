@@ -318,6 +318,7 @@ export interface AgentRunResult {
   routeReason?: string;
   routeConfidence?: number;
   delegations?: Array<{
+    delegationId?: string;
     agentId: string;
     task: string;
     durationMs: number;
@@ -688,7 +689,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   let totalCacheWriteTokens = 0;
   let totalCostUsd = 0;
   const toolInteractions: ToolInteraction[] = [];
-  const delegations: Array<{ agentId: string; task: string; durationMs: number; status: "success" | "error" }> = [];
+  const delegations: Array<{ delegationId: string; agentId: string; task: string; durationMs: number; status: "success" | "error" }> = [];
   let toolsWereCalled = false;
   let assistantMessageId: string | null = null;
 
@@ -840,10 +841,12 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       broadcast,
       spawnAgent: async (opts) => {
         const spawnStartMs = Date.now();
+        const delegationId = crypto.randomUUID();
         const delegationVisible = process.env.JOI_AGENT_VISIBILITY === "1";
         if (delegationVisible) {
           broadcast?.("chat.agent_spawn", {
             conversationId,
+            delegationId,
             parentAgentId: agentId,
             childAgentId: opts.agentId,
             task: opts.message.slice(0, 200),
@@ -859,10 +862,17 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
             broadcast,
           });
           const spawnDurationMs = Date.now() - spawnStartMs;
-          delegations.push({ agentId: opts.agentId, task: opts.message.slice(0, 200), durationMs: spawnDurationMs, status: "success" });
+          delegations.push({
+            delegationId,
+            agentId: opts.agentId,
+            task: opts.message.slice(0, 200),
+            durationMs: spawnDurationMs,
+            status: "success",
+          });
           if (delegationVisible) {
             broadcast?.("chat.agent_result", {
               conversationId,
+              delegationId,
               childAgentId: opts.agentId,
               status: "success",
               durationMs: spawnDurationMs,
@@ -875,10 +885,17 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           };
         } catch (err) {
           const spawnDurationMs = Date.now() - spawnStartMs;
-          delegations.push({ agentId: opts.agentId, task: opts.message.slice(0, 200), durationMs: spawnDurationMs, status: "error" });
+          delegations.push({
+            delegationId,
+            agentId: opts.agentId,
+            task: opts.message.slice(0, 200),
+            durationMs: spawnDurationMs,
+            status: "error",
+          });
           if (delegationVisible) {
             broadcast?.("chat.agent_result", {
               conversationId,
+              delegationId,
               childAgentId: opts.agentId,
               status: "error",
               durationMs: spawnDurationMs,

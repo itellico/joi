@@ -99,6 +99,7 @@ export interface ChatDoneData {
   routeReason?: string;
   routeConfidence?: number;
   delegations?: Array<{
+    delegationId?: string;
     agentId: string;
     task: string;
     durationMs: number;
@@ -122,6 +123,7 @@ export interface ChatRoutedData {
 
 export interface ChatAgentSpawnData {
   conversationId: string;
+  delegationId?: string;
   parentAgentId: string;
   childAgentId: string;
   task: string;
@@ -129,6 +131,7 @@ export interface ChatAgentSpawnData {
 
 export interface ChatAgentResultData {
   conversationId: string;
+  delegationId?: string;
   childAgentId: string;
   status: "success" | "error";
   durationMs: number;
