@@ -83,6 +83,13 @@ interface BrowseEntry {
   mod_time: string;
 }
 
+interface QuickLocation {
+  label: string;
+  path: string;
+  icon: string;
+  group: string;
+}
+
 // ─── Helpers ───
 
 function timeAgo(dateStr: string | null): string {
@@ -209,6 +216,9 @@ export default function CloudSync() {
   const [browseLoading, setBrowseLoading] = useState(false);
   const [browseTarget, setBrowseTarget] = useState<"source" | "target">("source");
 
+  // Quick locations
+  const [quickLocations, setQuickLocations] = useState<QuickLocation[]>([]);
+
   // Search
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -333,6 +343,10 @@ export default function CloudSync() {
     setBrowseTarget(target);
     setShowBrowseModal(true);
     loadBrowse(providerId, currentPath || (providerId === "local" ? "/" : ""));
+    // Fetch quick locations for local provider
+    if (providerId === "local") {
+      fetch("/api/cloud-sync/quick-locations").then(r => r.json()).then(d => setQuickLocations(d.locations || [])).catch(() => {});
+    }
   }, []);
 
   const loadBrowse = useCallback(async (providerId: string, path: string) => {
@@ -917,57 +931,108 @@ export default function CloudSync() {
           </Modal>
         )}
 
-        {/* ─── Browse Modal ─── */}
+        {/* ─── Browse Modal (Finder-style) ─── */}
         {showBrowseModal && (
           <Modal
             open
             onClose={() => setShowBrowseModal(false)}
             title="Browse Files"
-            width={600}
+            width={780}
           >
             <Stack gap={3}>
+              {/* Path bar */}
               <Row gap={2} align="center">
-                <code className="text-sm" style={{ flex: 1, padding: "6px 10px", background: "var(--bg-primary)", borderRadius: 4 }}>
-                  {browsePath || "/"}
-                </code>
                 <Button size="sm" onClick={() => {
                   const parent = browsePath.replace(/\/[^/]+\/?$/, "") || "/";
                   loadBrowse(browseProvider, parent);
                 }}>
-                  Up
+                  &larr;
                 </Button>
+                <code className="text-sm" style={{ flex: 1, padding: "6px 10px", background: "var(--bg-primary)", borderRadius: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {browsePath || "/"}
+                </code>
               </Row>
 
-              <div style={{ maxHeight: 400, overflowY: "auto" }}>
-                {browseLoading ? (
-                  <MetaText size="sm">Loading...</MetaText>
-                ) : browseEntries.length === 0 ? (
-                  <MetaText size="sm">Empty folder</MetaText>
-                ) : (
-                  <table className="data-table" style={{ width: "100%" }}>
-                    <tbody>
-                      {browseEntries.map((entry) => (
-                        <tr
-                          key={entry.path}
-                          style={{ cursor: entry.is_dir ? "pointer" : "default" }}
-                          onClick={() => entry.is_dir && loadBrowse(browseProvider, entry.path)}
-                        >
-                          <td style={{ width: 24 }}>{entry.is_dir ? "📁" : "📄"}</td>
-                          <td className="text-sm">{entry.name}</td>
-                          <td className="text-xs text-muted" style={{ textAlign: "right" }}>
-                            {entry.is_dir ? "" : formatBytes(entry.size)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+              {/* Sidebar + File list layout */}
+              <div style={{ display: "flex", gap: 0, height: 420, border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
+                {/* Sidebar */}
+                {browseProvider === "local" && quickLocations.length > 0 && (
+                  <div className="browse-sidebar" style={{
+                    width: 200, minWidth: 200, borderRight: "1px solid var(--border)", overflowY: "auto",
+                    background: "var(--bg-secondary)", padding: "8px 0",
+                  }}>
+                    {(() => {
+                      const groups = [...new Set(quickLocations.map(l => l.group))];
+                      return groups.map(group => (
+                        <div key={group}>
+                          <div style={{ padding: "6px 12px 4px", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--text-muted)" }}>
+                            {group}
+                          </div>
+                          {quickLocations.filter(l => l.group === group).map(loc => (
+                            <div
+                              key={loc.path}
+                              onClick={() => loadBrowse(browseProvider, loc.path)}
+                              style={{
+                                padding: "5px 12px", cursor: "pointer", fontSize: 13, display: "flex", alignItems: "center", gap: 8,
+                                background: browsePath === loc.path ? "var(--accent-subtle)" : "transparent",
+                                color: browsePath === loc.path ? "var(--accent)" : "var(--text-primary)",
+                                borderRadius: 4, margin: "1px 4px",
+                              }}
+                            >
+                              <span style={{ fontSize: 14, width: 18, textAlign: "center", flexShrink: 0 }}>
+                                {loc.icon === "desktop" ? "\uD83D\uDDA5" :
+                                 loc.icon === "documents" ? "\uD83D\uDCC1" :
+                                 loc.icon === "downloads" ? "\u2B07\uFE0F" :
+                                 loc.icon === "home" ? "\uD83C\uDFE0" :
+                                 loc.icon === "code" ? "\uD83D\uDCBB" :
+                                 loc.icon === "icloud" ? "\u2601\uFE0F" :
+                                 loc.icon === "obsidian" ? "\uD83D\uDC8E" :
+                                 loc.icon === "gdrive" ? "\uD83D\uDFE2" :
+                                 loc.icon === "dropbox" ? "\uD83D\uDCE6" :
+                                 loc.icon === "onedrive" ? "\uD83D\uDD35" :
+                                 loc.icon === "disk" ? "\uD83D\uDCBF" : "\uD83D\uDCC2"}
+                              </span>
+                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{loc.label}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ));
+                    })()}
+                  </div>
                 )}
+
+                {/* File list */}
+                <div style={{ flex: 1, overflowY: "auto", padding: 0 }}>
+                  {browseLoading ? (
+                    <div style={{ padding: 20 }}><MetaText size="sm">Loading...</MetaText></div>
+                  ) : browseEntries.length === 0 ? (
+                    <div style={{ padding: 20 }}><MetaText size="sm">Empty folder</MetaText></div>
+                  ) : (
+                    <table className="data-table" style={{ width: "100%" }}>
+                      <tbody>
+                        {browseEntries.map((entry) => (
+                          <tr
+                            key={entry.path}
+                            style={{ cursor: entry.is_dir ? "pointer" : "default" }}
+                            onClick={() => entry.is_dir && loadBrowse(browseProvider, entry.path)}
+                          >
+                            <td style={{ width: 28, paddingLeft: 12 }}>{entry.is_dir ? "\uD83D\uDCC1" : "\uD83D\uDCC4"}</td>
+                            <td className="text-sm">{entry.name}</td>
+                            <td className="text-xs text-muted" style={{ textAlign: "right", paddingRight: 12 }}>
+                              {entry.is_dir ? "" : formatBytes(entry.size)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
               </div>
 
               <Row justify="end" gap={2}>
                 <Button onClick={() => setShowBrowseModal(false)}>Cancel</Button>
                 <Button variant="primary" onClick={selectBrowsePath}>
-                  Select: {browsePath || "/"}
+                  Select: {browsePath.split("/").pop() || "/"}
                 </Button>
               </Row>
             </Stack>

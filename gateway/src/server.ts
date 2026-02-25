@@ -7799,12 +7799,11 @@ app.post("/api/bookmarks/deduplicate", async (_req, res) => {
   }
 });
 
-app.delete("/api/bookmarks/folders/:path(*)", async (req, res) => {
+app.post("/api/bookmarks/delete-folder", async (req, res) => {
   try {
-    const rawPath = typeof req.params["path(*)"] === "string"
-      ? req.params["path(*)"]
-      : "";
-    const count = await deleteBookmarkFolder(rawPath);
+    const { folder_path } = req.body;
+    if (!folder_path) return res.status(400).json({ error: "folder_path required" });
+    const count = await deleteBookmarkFolder(folder_path);
     res.json({ deleted: count });
   } catch (err) {
     res.status(500).json({ error: String(err) });
@@ -7959,6 +7958,69 @@ app.get("/api/cloud-sync/browse", async (req, res) => {
     if (!providerId) { res.status(400).json({ error: "provider query param required" }); return; }
     const entries = await browse(providerId, path);
     res.json({ entries, path });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get("/api/cloud-sync/quick-locations", async (_req, res) => {
+  try {
+    const { access } = await import("node:fs/promises");
+    const { homedir } = await import("node:os");
+    const home = homedir();
+
+    const locations: Array<{ label: string; path: string; icon: string; group: string }> = [];
+
+    const candidates = [
+      // Favorites
+      { label: "Desktop", path: `${home}/Desktop`, icon: "desktop", group: "Favorites" },
+      { label: "Documents", path: `${home}/Documents`, icon: "documents", group: "Favorites" },
+      { label: "Downloads", path: `${home}/Downloads`, icon: "downloads", group: "Favorites" },
+      { label: "Home", path: home, icon: "home", group: "Favorites" },
+      { label: "Dev Projects", path: `${home}/dev_mm`, icon: "code", group: "Favorites" },
+      // iCloud
+      { label: "iCloud Drive", path: `${home}/Library/Mobile Documents/com~apple~CloudDocs`, icon: "icloud", group: "iCloud" },
+      { label: "Obsidian Vault", path: `${home}/Library/Mobile Documents/iCloud~md~obsidian/Documents`, icon: "obsidian", group: "iCloud" },
+    ];
+
+    // Detect Google Drive sync folders
+    try {
+      const { readdir } = await import("node:fs/promises");
+      const cloudStorage = `${home}/Library/CloudStorage`;
+      const entries = await readdir(cloudStorage).catch(() => []);
+      for (const entry of entries) {
+        if (entry.startsWith("GoogleDrive-")) {
+          const account = entry.replace("GoogleDrive-", "");
+          candidates.push({ label: `Google Drive (${account})`, path: `${cloudStorage}/${entry}`, icon: "gdrive", group: "Cloud Storage" });
+        } else if (entry.startsWith("Dropbox-") || entry === "Dropbox") {
+          candidates.push({ label: "Dropbox", path: `${cloudStorage}/${entry}`, icon: "dropbox", group: "Cloud Storage" });
+        } else if (entry.startsWith("OneDrive-")) {
+          const account = entry.replace("OneDrive-", "");
+          candidates.push({ label: `OneDrive (${account})`, path: `${cloudStorage}/${entry}`, icon: "onedrive", group: "Cloud Storage" });
+        }
+      }
+    } catch {}
+
+    // Volumes
+    candidates.push({ label: "Macintosh HD", path: "/", icon: "disk", group: "Locations" });
+    try {
+      const { readdir } = await import("node:fs/promises");
+      const volumes = await readdir("/Volumes").catch(() => []);
+      for (const vol of volumes) {
+        if (vol === "Macintosh HD") continue;
+        candidates.push({ label: vol, path: `/Volumes/${vol}`, icon: "disk", group: "Locations" });
+      }
+    } catch {}
+
+    // Check which ones actually exist
+    for (const c of candidates) {
+      try {
+        await access(c.path);
+        locations.push(c);
+      } catch {}
+    }
+
+    res.json({ locations });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
