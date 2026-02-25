@@ -24,9 +24,10 @@ export interface Attachment {
 
 export interface Delegation {
   agentId: string;
+  agentName?: string;
   task: string;
-  durationMs: number;
-  status: "success" | "error";
+  durationMs?: number;
+  status: "pending" | "success" | "error";
 }
 
 export interface CacheStats {
@@ -325,6 +326,60 @@ export function useChat({ send, on }: UseChatOptions) {
               routeReason: data.reason,
               routeConfidence: data.confidence,
             }];
+          }
+          return prev;
+        });
+      }),
+
+      on("chat.agent_spawn", (frame) => {
+        const data = frame.data as {
+          conversationId?: string;
+          parentAgentId: string;
+          childAgentId: string;
+          task: string;
+        };
+        const incomingConversationId = data.conversationId;
+        if (conversationId && incomingConversationId && incomingConversationId !== conversationId) {
+          return;
+        }
+        // Add a pending delegation to the current streaming message
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last?.isStreaming) {
+            const existing = last.delegations || [];
+            const newDelegation: Delegation = {
+              agentId: data.childAgentId,
+              task: data.task,
+              status: "pending",
+            };
+            return [...prev.slice(0, -1), { ...last, delegations: [...existing, newDelegation] }];
+          }
+          return prev;
+        });
+      }),
+
+      on("chat.agent_result", (frame) => {
+        const data = frame.data as {
+          conversationId?: string;
+          childAgentId: string;
+          status: "success" | "error";
+          durationMs: number;
+        };
+        const incomingConversationId = data.conversationId;
+        if (conversationId && incomingConversationId && incomingConversationId !== conversationId) {
+          return;
+        }
+        // Update the pending delegation to completed
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last?.delegations) {
+            const delegations = last.delegations.map((d) => {
+              if (d.agentId === data.childAgentId && d.status === "pending") {
+                return { ...d, status: data.status, durationMs: data.durationMs };
+              }
+              return d;
+            });
+            return [...prev.slice(0, -1), { ...last, delegations }];
           }
           return prev;
         });

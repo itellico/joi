@@ -806,12 +806,15 @@ function AgentBadge({ agentId, agentName }: { agentId: string; agentName?: strin
   );
 }
 
-function DelegationAccordion({ delegations }: { delegations: Array<{ agentId: string; task: string; durationMs: number; status: "success" | "error" }> }) {
+function DelegationAccordion({ delegations }: { delegations: Array<{ agentId: string; task: string; durationMs?: number; status: "pending" | "success" | "error" }> }) {
   const [open, setOpen] = useState(false);
   if (delegations.length === 0) return null;
 
-  const allSuccess = delegations.every((d) => d.status === "success");
-  const title = `${delegations.length} delegation${delegations.length > 1 ? "s" : ""} ${allSuccess ? "completed" : "finished"}`;
+  const hasPending = delegations.some((d) => d.status === "pending");
+  const allSuccess = !hasPending && delegations.every((d) => d.status === "success");
+  const title = hasPending
+    ? `${delegations.length} delegation${delegations.length > 1 ? "s" : ""} in progress...`
+    : `${delegations.length} delegation${delegations.length > 1 ? "s" : ""} ${allSuccess ? "completed" : "finished"}`;
 
   return (
     <div className="assistant-delegation-accordion">
@@ -832,9 +835,11 @@ function DelegationAccordion({ delegations }: { delegations: Array<{ agentId: st
                   {meta.icon} {formatAgentName(d.agentId)}
                 </span>
                 <span className="assistant-delegation-task">{d.task}</span>
-                <span className="assistant-delegation-duration">{formatDuration(d.durationMs)}</span>
+                {d.durationMs != null && (
+                  <span className="assistant-delegation-duration">{formatDuration(d.durationMs)}</span>
+                )}
                 <span className={`assistant-delegation-status ${d.status}`}>
-                  {d.status === "success" ? "done" : "failed"}
+                  {d.status === "pending" ? "running..." : d.status === "success" ? "done" : "failed"}
                 </span>
               </li>
             );

@@ -65,11 +65,11 @@ function summarizeEmbyEnvelope(parsed: Record<string, unknown>): Record<string, 
     }
     return slim;
   });
+  // Emby envelopes nest pagination under `page: { returned, hasMore, startIndex, limit }`
+  const page = (parsed.page && typeof parsed.page === "object") ? parsed.page as Record<string, unknown> : null;
   return {
     count: parsed.count,
-    returned: parsed.returned,
-    page: parsed.page,
-    hasMore: parsed.hasMore,
+    page: page ? { returned: page.returned, hasMore: page.hasMore } : undefined,
     items: summarizedItems,
   };
 }
@@ -193,6 +193,7 @@ async function openaiStream(
   toolCalls: Array<{ id: string; name: string; input: unknown }>;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
   stopReason: string;
 }> {
   const openaiMessages = messagesToOpenAI(systemPrompt, messages);
@@ -213,6 +214,7 @@ async function openaiStream(
   const toolCallMap = new Map<number, { id: string; name: string; args: string }>();
   let inputTokens = 0;
   let outputTokens = 0;
+  let cacheReadTokens = 0;
   let finishReason = "stop";
 
   for await (const chunk of stream) {
@@ -240,6 +242,11 @@ async function openaiStream(
     if (chunk.usage) {
       inputTokens = chunk.usage.prompt_tokens ?? 0;
       outputTokens = chunk.usage.completion_tokens ?? 0;
+      // OpenAI/OpenRouter: capture cached tokens from prompt_tokens_details
+      const details = (chunk.usage as unknown as Record<string, unknown>).prompt_tokens_details as Record<string, unknown> | undefined;
+      if (details && typeof details.cached_tokens === "number") {
+        cacheReadTokens = details.cached_tokens as number;
+      }
     }
   }
 
@@ -257,7 +264,7 @@ async function openaiStream(
     console.warn(`[openaiStream] Model ${model} produced code-block tool calls instead of structured tool_calls. Text contains API call patterns. Consider using a model with reliable function calling.`);
   }
 
-  return { text, toolCalls, inputTokens, outputTokens, stopReason };
+  return { text, toolCalls, inputTokens, outputTokens, cacheReadTokens, stopReason };
 }
 
 export interface AgentRunOptions {
@@ -726,6 +733,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       toolCalls = result.toolCalls;
       iterInputTokens = result.inputTokens;
       iterOutputTokens = result.outputTokens;
+      if (result.cacheReadTokens) totalCacheReadTokens += result.cacheReadTokens;
       stopReason = result.stopReason;
     } else {
       // Use Anthropic SDK (direct or OpenRouter with anthropic/* models)
@@ -832,12 +840,15 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       broadcast,
       spawnAgent: async (opts) => {
         const spawnStartMs = Date.now();
-        broadcast?.("chat.agent_spawn", {
-          conversationId,
-          parentAgentId: agentId,
-          childAgentId: opts.agentId,
-          task: opts.message.slice(0, 200),
-        });
+        const delegationVisible = process.env.JOI_AGENT_VISIBILITY === "1";
+        if (delegationVisible) {
+          broadcast?.("chat.agent_spawn", {
+            conversationId,
+            parentAgentId: agentId,
+            childAgentId: opts.agentId,
+            task: opts.message.slice(0, 200),
+          });
+        }
         try {
           const childResult = await runAgent({
             conversationId: opts.parentConversationId || "",
@@ -849,12 +860,14 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
           });
           const spawnDurationMs = Date.now() - spawnStartMs;
           delegations.push({ agentId: opts.agentId, task: opts.message.slice(0, 200), durationMs: spawnDurationMs, status: "success" });
-          broadcast?.("chat.agent_result", {
-            conversationId,
-            childAgentId: opts.agentId,
-            status: "success",
-            durationMs: spawnDurationMs,
-          });
+          if (delegationVisible) {
+            broadcast?.("chat.agent_result", {
+              conversationId,
+              childAgentId: opts.agentId,
+              status: "success",
+              durationMs: spawnDurationMs,
+            });
+          }
           return {
             content: childResult.content,
             model: childResult.model,
@@ -863,12 +876,14 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         } catch (err) {
           const spawnDurationMs = Date.now() - spawnStartMs;
           delegations.push({ agentId: opts.agentId, task: opts.message.slice(0, 200), durationMs: spawnDurationMs, status: "error" });
-          broadcast?.("chat.agent_result", {
-            conversationId,
-            childAgentId: opts.agentId,
-            status: "error",
-            durationMs: spawnDurationMs,
-          });
+          if (delegationVisible) {
+            broadcast?.("chat.agent_result", {
+              conversationId,
+              childAgentId: opts.agentId,
+              status: "error",
+              durationMs: spawnDurationMs,
+            });
+          }
           throw err;
         }
       },
@@ -965,6 +980,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       finalText = result.text;
       finalInputTokens = result.inputTokens;
       finalOutputTokens = result.outputTokens;
+      if (result.cacheReadTokens) totalCacheReadTokens += result.cacheReadTokens;
     } else {
       const useFinalBlocks = cachedSystemBlocks && isAnthropicModel(chatModel);
       const stream = chatClient!.messages.stream({
