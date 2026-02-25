@@ -6197,6 +6197,239 @@ app.put("/api/companies/:id", async (req, res) => {
   }
 });
 
+// ─── Organizations API ───
+
+// GET /api/organizations — list all
+app.get("/api/organizations", async (_req, res) => {
+  try {
+    const result = await query(
+      "SELECT * FROM organizations ORDER BY is_default DESC, name",
+    );
+    res.json({ organizations: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to list organizations" });
+  }
+});
+
+// GET /api/organizations/:id
+app.get("/api/organizations/:id", async (req, res) => {
+  try {
+    const result = await query("SELECT * FROM organizations WHERE id = $1", [req.params.id]);
+    if (result.rows.length === 0) { res.status(404).json({ error: "Organization not found" }); return; }
+    res.json({ organization: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to get organization" });
+  }
+});
+
+// POST /api/organizations — create
+app.post("/api/organizations", async (req, res) => {
+  try {
+    const {
+      name, short_name, phone, email, website, uid_number, firmenbuch, legal_form,
+      bank_name, iban, bic, account_holder, logo_url, primary_color, accent_color,
+      default_intro_text, default_closing_text, default_signature_name, default_signature_role,
+      legal_urls, notes, address,
+    } = req.body;
+    if (!name) { res.status(400).json({ error: "name is required" }); return; }
+
+    const result = await query<{ id: string }>(
+      `INSERT INTO organizations (
+        name, short_name, address, phone, email, website, uid_number, firmenbuch, legal_form,
+        bank_name, iban, bic, account_holder, logo_url, primary_color, accent_color,
+        default_intro_text, default_closing_text, default_signature_name, default_signature_role,
+        legal_urls, notes
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+      RETURNING id`,
+      [
+        name, short_name || null, address ? JSON.stringify(address) : "{}",
+        phone || null, email || null, website || null,
+        uid_number || null, firmenbuch || null, legal_form || null,
+        bank_name || null, iban || null, bic || null, account_holder || null,
+        logo_url || null, primary_color || null, accent_color || null,
+        default_intro_text || null, default_closing_text || null,
+        default_signature_name || null, default_signature_role || null,
+        legal_urls ? JSON.stringify(legal_urls) : "{}",
+        notes || null,
+      ],
+    );
+    res.json({ id: result.rows[0].id, created: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
+  }
+});
+
+// PUT /api/organizations/:id
+app.put("/api/organizations/:id", async (req, res) => {
+  try {
+    const updates: string[] = ["updated_at = NOW()"];
+    const params: unknown[] = [];
+    let idx = 1;
+
+    const fields = [
+      "name", "short_name", "is_default", "phone", "email", "website",
+      "uid_number", "firmenbuch", "legal_form",
+      "bank_name", "iban", "bic", "account_holder",
+      "logo_url", "primary_color", "accent_color",
+      "default_intro_text", "default_closing_text",
+      "default_signature_name", "default_signature_role", "notes",
+    ];
+    for (const field of fields) {
+      if (req.body[field] !== undefined) {
+        updates.push(`${field} = $${idx++}`);
+        params.push(req.body[field]);
+      }
+    }
+    for (const field of ["address", "legal_urls"]) {
+      if (req.body[field] !== undefined) {
+        updates.push(`${field} = $${idx++}`);
+        params.push(JSON.stringify(req.body[field]));
+      }
+    }
+
+    params.push(req.params.id);
+    await query(`UPDATE organizations SET ${updates.join(", ")} WHERE id = $${idx}`, params);
+    res.json({ updated: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
+  }
+});
+
+// DELETE /api/organizations/:id
+app.delete("/api/organizations/:id", async (req, res) => {
+  try {
+    await query("DELETE FROM organizations WHERE id = $1", [req.params.id]);
+    res.json({ deleted: true });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to delete organization" });
+  }
+});
+
+// ─── Quote Templates API ───
+
+// GET /api/quote-templates
+app.get("/api/quote-templates", async (req, res) => {
+  try {
+    const orgId = req.query.organization_id as string | undefined;
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    let idx = 1;
+    if (orgId) { conditions.push(`t.organization_id = $${idx++}`); params.push(orgId); }
+    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+
+    const result = await query(
+      `SELECT t.*, o.name AS org_name
+       FROM quote_templates t
+       JOIN organizations o ON o.id = t.organization_id
+       ${where}
+       ORDER BY t.sort_order, t.name`,
+      params,
+    );
+    res.json({ templates: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to list templates" });
+  }
+});
+
+// GET /api/quote-templates/:id
+app.get("/api/quote-templates/:id", async (req, res) => {
+  try {
+    const result = await query(
+      `SELECT t.*, o.name AS org_name
+       FROM quote_templates t
+       JOIN organizations o ON o.id = t.organization_id
+       WHERE t.id = $1`,
+      [req.params.id],
+    );
+    if (result.rows.length === 0) { res.status(404).json({ error: "Template not found" }); return; }
+    res.json({ template: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to get template" });
+  }
+});
+
+// POST /api/quote-templates
+app.post("/api/quote-templates", async (req, res) => {
+  try {
+    const {
+      organization_id, name, description, intro_text, closing_text, terms,
+      default_items, show_acceptance, show_customer_form, show_sepa,
+      default_vat_percent, default_currency, default_valid_days,
+    } = req.body;
+    if (!organization_id || !name) {
+      res.status(400).json({ error: "organization_id and name are required" });
+      return;
+    }
+    const result = await query<{ id: string }>(
+      `INSERT INTO quote_templates (
+        organization_id, name, description, intro_text, closing_text, terms,
+        default_items, show_acceptance, show_customer_form, show_sepa,
+        default_vat_percent, default_currency, default_valid_days
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+      RETURNING id`,
+      [
+        organization_id, name, description || null,
+        intro_text || null, closing_text || null,
+        terms ? JSON.stringify(terms) : "{}",
+        default_items ? JSON.stringify(default_items) : "[]",
+        show_acceptance ?? true, show_customer_form ?? false, show_sepa ?? false,
+        default_vat_percent ?? 20, default_currency || "EUR", default_valid_days ?? 14,
+      ],
+    );
+    res.json({ id: result.rows[0].id, created: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
+  }
+});
+
+// PUT /api/quote-templates/:id
+app.put("/api/quote-templates/:id", async (req, res) => {
+  try {
+    const updates: string[] = ["updated_at = NOW()"];
+    const params: unknown[] = [];
+    let idx = 1;
+
+    const fields = [
+      "name", "description", "intro_text", "closing_text",
+      "show_acceptance", "show_customer_form", "show_sepa",
+      "default_vat_percent", "default_currency", "default_valid_days",
+      "is_active", "sort_order",
+    ];
+    for (const field of fields) {
+      if (req.body[field] !== undefined) {
+        updates.push(`${field} = $${idx++}`);
+        params.push(req.body[field]);
+      }
+    }
+    for (const field of ["terms", "default_items"]) {
+      if (req.body[field] !== undefined) {
+        updates.push(`${field} = $${idx++}`);
+        params.push(JSON.stringify(req.body[field]));
+      }
+    }
+
+    params.push(req.params.id);
+    await query(`UPDATE quote_templates SET ${updates.join(", ")} WHERE id = $${idx}`, params);
+    res.json({ updated: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
+  }
+});
+
+// DELETE /api/quote-templates/:id
+app.delete("/api/quote-templates/:id", async (req, res) => {
+  try {
+    await query("DELETE FROM quote_templates WHERE id = $1", [req.params.id]);
+    res.json({ deleted: true });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to delete template" });
+  }
+});
+
 // ─── Quotes / Angebote API ───
 
 import { renderQuoteHtml } from "./quotes/html-template.js";
@@ -6275,10 +6508,16 @@ app.get("/api/quotes/:id", async (req, res) => {
       `SELECT q.*,
               c.first_name AS contact_first_name, c.last_name AS contact_last_name,
               c.emails AS contact_emails, c.job_title AS contact_job_title,
-              comp.name AS company_name, comp.domain AS company_domain
+              comp.name AS company_name, comp.domain AS company_domain,
+              o.name AS org_name, o.short_name AS org_short_name, o.logo_url AS org_logo_url,
+              o.address AS org_address, o.phone AS org_phone, o.email AS org_email,
+              o.uid_number AS org_uid, o.bank_name AS org_bank, o.iban AS org_iban, o.bic AS org_bic,
+              o.legal_urls AS org_legal_urls, o.default_signature_name AS org_signature_name,
+              o.default_signature_role AS org_signature_role
        FROM quotes q
        LEFT JOIN contacts c ON c.id = q.contact_id
        LEFT JOIN companies comp ON comp.id = q.company_id
+       LEFT JOIN organizations o ON o.id = q.organization_id
        WHERE q.id = $1`,
       [req.params.id],
     );
@@ -6539,10 +6778,16 @@ app.get("/api/quotes/:id/html", async (req, res) => {
       `SELECT q.*,
               c.first_name AS contact_first_name, c.last_name AS contact_last_name,
               c.emails AS contact_emails, c.job_title AS contact_job_title,
-              comp.name AS company_name, comp.domain AS company_domain
+              comp.name AS company_name, comp.domain AS company_domain,
+              o.name AS org_name, o.logo_url AS org_logo_url,
+              o.address AS org_address, o.phone AS org_phone, o.email AS org_email,
+              o.uid_number AS org_uid, o.bank_name AS org_bank, o.iban AS org_iban, o.bic AS org_bic,
+              o.legal_urls AS org_legal_urls, o.default_signature_name AS org_signature_name,
+              o.default_signature_role AS org_signature_role
        FROM quotes q
        LEFT JOIN contacts c ON c.id = q.contact_id
        LEFT JOIN companies comp ON comp.id = q.company_id
+       LEFT JOIN organizations o ON o.id = q.organization_id
        WHERE q.id = $1`,
       [req.params.id],
     );

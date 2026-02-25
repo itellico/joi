@@ -160,72 +160,38 @@ function App() {
         </div>
 
         <nav className="sidebar-nav">
-          <NavLink to="/" end>
-            Dashboard
-          </NavLink>
-          <NavLink to="/chat">
-            Chats
-          </NavLink>
-          <NavLink to="/contacts">
-            Contacts
-          </NavLink>
-          <NavLink to="/quotes">
-            Quotes
-          </NavLink>
-          <NavLink to="/agents">
-            Agents
-          </NavLink>
-          <NavLink to="/agent-social">
-            Agent Social
-          </NavLink>
-          <NavLink to="/knowledge">
-            Knowledge
-          </NavLink>
-          <NavLink to="/media">
-            Media
-          </NavLink>
-          <NavLink to="/store">
-            Store
-          </NavLink>
-          <NavLink to="/okrs">
-            OKRs
-          </NavLink>
-          <NavLink to="/cron">
-            Cron
-          </NavLink>
-          <NavLink to="/tasks">
-            Tasks
-          </NavLink>
-          <NavLink to="/reviews">
-            Reviews
-          </NavLink>
-          <NavLink to="/autodev">
-            AutoDev
-          </NavLink>
-          <NavLink to="/quality">
-            Quality
-          </NavLink>
-          <NavLink to="/terminal">
-            Terminal
-          </NavLink>
-          <NavLink to="/logs">
-            Logs
-          </NavLink>
-          <NavLink to="/reports">
-            Reports
-          </NavLink>
-          <NavLink to="/bookmarks">
-            Bookmarks
-          </NavLink>
-          <NavLink to="/cloud-sync">
-            Cloud Sync
-          </NavLink>
-          <NavLink to="/integrations">
-            Integrations
-          </NavLink>
-          <NavLink to="/settings">
-            Settings
-          </NavLink>
+          <NavLink to="/" end>Dashboard</NavLink>
+          <NavLink to="/chat">Chats</NavLink>
+
+          <div className="sidebar-section">CRM</div>
+          <NavLink to="/contacts">Contacts</NavLink>
+          <NavLink to="/quotes">Quotes</NavLink>
+
+          <div className="sidebar-section">AI</div>
+          <NavLink to="/agents">Agents</NavLink>
+          <NavLink to="/agent-social">Agent Social</NavLink>
+          <NavLink to="/knowledge">Knowledge</NavLink>
+          <NavLink to="/store">Store</NavLink>
+
+          <div className="sidebar-section">Workspace</div>
+          <NavLink to="/okrs">OKRs</NavLink>
+          <NavLink to="/tasks">Tasks</NavLink>
+          <NavLink to="/bookmarks">Bookmarks</NavLink>
+          <NavLink to="/media">Media</NavLink>
+          <NavLink to="/reports">Reports</NavLink>
+
+          <div className="sidebar-section">DevOps</div>
+          <NavLink to="/autodev">AutoDev</NavLink>
+          <NavLink to="/quality">Quality</NavLink>
+          <NavLink to="/cron">Cron</NavLink>
+          <NavLink to="/reviews">Reviews</NavLink>
+          <NavLink to="/terminal">Terminal</NavLink>
+          <NavLink to="/logs">Logs</NavLink>
+
+          <div className="sidebar-section">System</div>
+          <NavLink to="/integrations">Integrations</NavLink>
+          <NavLink to="/cloud-sync">Cloud Sync</NavLink>
+          <NavLink to="/settings">Settings</NavLink>
         </nav>
 
         <button

@@ -714,6 +714,16 @@ textarea:focus {
   overflow-y: auto;
 }
 
+.sidebar-section {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  padding: 10px 10px 3px 18px;
+  user-select: none;
+}
+
 .sidebar-nav a {
   display: flex;
   align-items: center;
