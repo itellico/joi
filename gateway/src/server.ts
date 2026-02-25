@@ -7801,7 +7801,10 @@ app.post("/api/bookmarks/deduplicate", async (_req, res) => {
 
 app.delete("/api/bookmarks/folders/:path(*)", async (req, res) => {
   try {
-    const count = await deleteBookmarkFolder(req.params.path);
+    const rawPath = typeof req.params["path(*)"] === "string"
+      ? req.params["path(*)"]
+      : "";
+    const count = await deleteBookmarkFolder(rawPath);
     res.json({ deleted: count });
   } catch (err) {
     res.status(500).json({ error: String(err) });

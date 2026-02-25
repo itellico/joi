@@ -220,6 +220,11 @@ export default function Bookmarks() {
   const [moveTarget, setMoveTarget] = useState("");
   const [addForm, setAddForm] = useState({ title: "", url: "", folder_path: "/", tags: "" });
 
+  // Smart duplicates
+  const [smartDupes, setSmartDupes] = useState<Array<{ group: Array<{ id: string; title: string; url: string; domain: string | null; folder_path: string }>; reason: string }>>([]);
+  const [smartLoading, setSmartLoading] = useState(false);
+  const [showSmartDupes, setShowSmartDupes] = useState(false);
+
   // Build tree
   const folderTree = useMemo(() => buildFolderTree(folders), [folders]);
 
@@ -383,7 +388,18 @@ export default function Bookmarks() {
     });
   };
 
-  const selectFolder = (path: string) => {
+  const selectFolder = async (path: string) => {
+    // If items are selected, clicking a folder moves them there
+    if (selectedIds.size > 0) {
+      await fetch("/api/bookmarks/move", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: [...selectedIds], folder_path: path }),
+      });
+      setSelectedIds(new Set());
+      await Promise.all([fetchBookmarks(), fetchMeta()]);
+      return;
+    }
     setFolderFilter(path);
     setOffset(0);
     // Auto-expand parent paths
@@ -395,6 +411,39 @@ export default function Bookmarks() {
       }
       return next;
     });
+  };
+
+  const handleDeleteFolder = async (path: string) => {
+    const name = path.split("/").pop() || path;
+    if (!confirm(`Delete folder "${name}" and all bookmarks inside it?`)) return;
+    await fetch(`/api/bookmarks/folders/${encodeURIComponent(path)}`, { method: "DELETE" });
+    if (folderFilter === path || folderFilter.startsWith(path + "/")) {
+      setFolderFilter("");
+    }
+    await Promise.all([fetchBookmarks(), fetchMeta()]);
+  };
+
+  const runSmartDuplicates = async () => {
+    setSmartLoading(true);
+    try {
+      const res = await fetch("/api/bookmarks/smart-duplicates", { method: "POST" });
+      const data = await res.json();
+      setSmartDupes(data.groups || []);
+      setShowSmartDupes(true);
+    } catch (err) {
+      console.error("Smart duplicates failed:", err);
+    } finally {
+      setSmartLoading(false);
+    }
+  };
+
+  const removeSmartDupe = async (id: string) => {
+    await fetch(`/api/bookmarks/${id}`, { method: "DELETE" });
+    setSmartDupes((prev) =>
+      prev.map((g) => ({ ...g, group: g.group.filter((b) => b.id !== id) }))
+        .filter((g) => g.group.length >= 2),
+    );
+    await Promise.all([fetchBookmarks(), fetchMeta()]);
   };
 
   // ─── Stat chips ───
@@ -430,6 +479,9 @@ export default function Bookmarks() {
                 Dedupe ({stats.duplicates})
               </Button>
             )}
+            <Button size="sm" variant="ghost" onClick={runSmartDuplicates} disabled={smartLoading}>
+              {smartLoading ? "Analyzing..." : "Smart Dedup"}
+            </Button>
             <Button variant="primary" size="sm" onClick={() => setShowAddModal(true)}>
               + Add
             </Button>
@@ -483,8 +535,10 @@ export default function Bookmarks() {
                   depth={0}
                   selected={folderFilter}
                   expandedPaths={expandedPaths}
+                  hasSelection={selectedIds.size > 0}
                   onSelect={selectFolder}
                   onToggle={toggleExpand}
+                  onDelete={handleDeleteFolder}
                 />
               ))}
             </div>
@@ -708,6 +762,45 @@ export default function Bookmarks() {
               <Row justify="end" gap={2}>
                 <Button onClick={() => setShowMoveModal(false)}>Cancel</Button>
                 <Button variant="primary" onClick={moveSelected} disabled={!moveTarget}>Move</Button>
+              </Row>
+            </Stack>
+          </Modal>
+        )}
+
+        {/* ─── Smart Duplicates Modal ─── */}
+        {showSmartDupes && (
+          <Modal open onClose={() => setShowSmartDupes(false)} title="Smart Duplicates (AI)" width={700}>
+            <Stack gap={3}>
+              {smartDupes.length === 0 ? (
+                <EmptyState icon="✓" message="No semantic duplicates found" />
+              ) : (
+                <div className="bm-smart-dupes">
+                  <MetaText size="sm">{smartDupes.length} group(s) found — click X to remove a duplicate</MetaText>
+                  {smartDupes.map((group, gi) => (
+                    <Card key={gi}>
+                      <div className="bm-dupe-reason">{group.reason}</div>
+                      {group.group.map((bm) => (
+                        <div key={bm.id} className="bm-dupe-item">
+                          {bm.domain && <img src={faviconUrl(bm.domain)} alt="" width={16} height={16} />}
+                          <a href={bm.url} target="_blank" rel="noopener noreferrer" className="bm-dupe-title truncate" title={bm.url}>
+                            {bm.title}
+                          </a>
+                          <span className="bm-dupe-folder">{bm.folder_path}</span>
+                          <button
+                            className="bm-action-btn bm-action-danger"
+                            onClick={() => removeSmartDupe(bm.id)}
+                            title="Delete this bookmark"
+                          >
+                            {"\u2715"}
+                          </button>
+                        </div>
+                      ))}
+                    </Card>
+                  ))}
+                </div>
+              )}
+              <Row justify="end">
+                <Button onClick={() => setShowSmartDupes(false)}>Close</Button>
               </Row>
             </Stack>
           </Modal>
@@ -938,6 +1031,83 @@ export default function Bookmarks() {
           font-weight: 600;
           color: var(--accent);
           white-space: nowrap;
+        }
+
+        /* ── Folder actions ── */
+        .bm-tree-delete {
+          display: none;
+          background: none;
+          border: none;
+          color: var(--text-muted);
+          cursor: pointer;
+          font-size: 9px;
+          padding: 2px 4px;
+          border-radius: 3px;
+          flex-shrink: 0;
+        }
+        .bm-tree-item:hover .bm-tree-delete {
+          display: block;
+        }
+        .bm-tree-delete:hover {
+          color: var(--error);
+          background: var(--bg-tertiary);
+        }
+        .bm-tree-drop-target {
+          border: 1px dashed var(--accent);
+          border-radius: 4px;
+          margin: 1px 4px;
+        }
+        .bm-tree-drop-target:hover {
+          background: var(--accent-subtle) !important;
+        }
+        .bm-tree-move-hint {
+          font-size: 9px;
+          color: var(--accent);
+          opacity: 0;
+          flex-shrink: 0;
+        }
+        .bm-tree-drop-target:hover .bm-tree-move-hint {
+          opacity: 1;
+        }
+
+        /* ── Smart duplicates ── */
+        .bm-smart-dupes {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          max-height: 60vh;
+          overflow-y: auto;
+        }
+        .bm-dupe-reason {
+          font-size: 11px;
+          font-weight: 600;
+          color: var(--text-secondary);
+          margin-bottom: 4px;
+        }
+        .bm-dupe-item {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 4px 0;
+          font-size: 12px;
+        }
+        .bm-dupe-title {
+          flex: 1;
+          min-width: 0;
+          color: var(--text-primary);
+          text-decoration: none;
+        }
+        .bm-dupe-title:hover {
+          color: var(--accent);
+        }
+        .bm-dupe-folder {
+          font-size: 10px;
+          color: var(--text-muted);
+          max-width: 150px;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          flex-shrink: 0;
         }
       `}</style>
     </>
