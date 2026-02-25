@@ -232,6 +232,9 @@ async function executeJob(job: CronJob): Promise<void> {
         case "sync_contacts":
           await importAppleContacts();
           break;
+        case "sync_bookmarks":
+          await (await import("../sync/bookmarks-sync.js")).syncFromChrome();
+          break;
         case "audit_store":
           await runStoreAudit({
             config: schedulerConfig!,

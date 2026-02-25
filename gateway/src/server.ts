@@ -7583,6 +7583,240 @@ app.post("/api/quality/prompt-versions/:id/activate", async (req, res) => {
   }
 });
 
+// ─── Bookmarks API ───
+
+import {
+  listBookmarks, getBookmark, createBookmark, updateBookmark, deleteBookmark,
+  listFolders as listBookmarkFolders, moveBookmarks, bulkDelete, bulkSetStatus,
+  deleteFolder as deleteBookmarkFolder, findSemanticDuplicates, getBookmarkStats,
+  syncFromChrome, exportToChrome, findDuplicates, removeDuplicates,
+  listSuggestions, approveSuggestion, rejectSuggestion, suggestBookmark,
+  markReadLater, markRead, getReadLaterQueue, getSyncState as getBookmarkSyncState,
+} from "./sync/bookmarks-sync.js";
+
+app.get("/api/bookmarks", async (req, res) => {
+  try {
+    const opts = {
+      folder: req.query.folder as string | undefined,
+      status: req.query.status as string | undefined,
+      search: req.query.search as string | undefined,
+      domain: req.query.domain as string | undefined,
+      source: req.query.source as string | undefined,
+      tag: req.query.tag as string | undefined,
+      limit: Number(req.query.limit) || 100,
+      offset: Number(req.query.offset) || 0,
+    };
+    const result = await listBookmarks(opts);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get("/api/bookmarks/stats", async (_req, res) => {
+  try {
+    const stats = await getBookmarkStats();
+    res.json(stats);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get("/api/bookmarks/folders", async (_req, res) => {
+  try {
+    const folders = await listBookmarkFolders();
+    res.json({ folders });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get("/api/bookmarks/suggestions", async (_req, res) => {
+  try {
+    const suggestions = await listSuggestions();
+    res.json({ suggestions });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get("/api/bookmarks/read-later", async (_req, res) => {
+  try {
+    const queue = await getReadLaterQueue();
+    res.json({ bookmarks: queue });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get("/api/bookmarks/duplicates", async (_req, res) => {
+  try {
+    const dupes = await findDuplicates();
+    res.json({ duplicates: dupes });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get("/api/bookmarks/sync-state", async (_req, res) => {
+  try {
+    const state = await getBookmarkSyncState();
+    res.json(state);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get("/api/bookmarks/:id", async (req, res) => {
+  try {
+    const bm = await getBookmark(req.params.id);
+    if (!bm) { res.status(404).json({ error: "Bookmark not found" }); return; }
+    res.json(bm);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/api/bookmarks", async (req, res) => {
+  try {
+    const bm = await createBookmark(req.body);
+    res.json({ bookmark: bm });
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
+  }
+});
+
+app.put("/api/bookmarks/:id", async (req, res) => {
+  try {
+    const bm = await updateBookmark(req.params.id, req.body);
+    res.json({ bookmark: bm });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.delete("/api/bookmarks/:id", async (req, res) => {
+  try {
+    await deleteBookmark(req.params.id);
+    res.json({ deleted: true });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/api/bookmarks/bulk-delete", async (req, res) => {
+  try {
+    const { ids } = req.body;
+    const count = await bulkDelete(ids);
+    res.json({ deleted: count });
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
+  }
+});
+
+app.post("/api/bookmarks/bulk-status", async (req, res) => {
+  try {
+    const { ids, status } = req.body;
+    const count = await bulkSetStatus(ids, status);
+    res.json({ updated: count });
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
+  }
+});
+
+app.post("/api/bookmarks/move", async (req, res) => {
+  try {
+    const { ids, folder_path } = req.body;
+    const count = await moveBookmarks(ids, folder_path);
+    res.json({ moved: count });
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
+  }
+});
+
+app.post("/api/bookmarks/:id/read-later", async (req, res) => {
+  try {
+    const bm = await markReadLater(req.params.id);
+    res.json({ bookmark: bm });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/api/bookmarks/:id/mark-read", async (req, res) => {
+  try {
+    const bm = await markRead(req.params.id);
+    res.json({ bookmark: bm });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/api/bookmarks/suggestions/:id/approve", async (req, res) => {
+  try {
+    const bm = await approveSuggestion(req.params.id);
+    res.json({ bookmark: bm });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/api/bookmarks/suggestions/:id/reject", async (req, res) => {
+  try {
+    await rejectSuggestion(req.params.id);
+    res.json({ rejected: true });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/api/bookmarks/sync/pull", async (_req, res) => {
+  try {
+    const result = await syncFromChrome();
+    broadcast("bookmarks.synced", result);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/api/bookmarks/sync/push", async (_req, res) => {
+  try {
+    const result = await exportToChrome();
+    broadcast("bookmarks.exported", result);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/api/bookmarks/deduplicate", async (_req, res) => {
+  try {
+    const removed = await removeDuplicates();
+    res.json({ removed });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.delete("/api/bookmarks/folders/:path(*)", async (req, res) => {
+  try {
+    const count = await deleteBookmarkFolder(req.params.path);
+    res.json({ deleted: count });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/api/bookmarks/smart-duplicates", async (_req, res) => {
+  try {
+    const groups = await findSemanticDuplicates();
+    res.json({ groups });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 // ─── Cloud Sync API ───
 
 import {
@@ -8638,6 +8872,15 @@ If everything looks normal, do NOT create a review item.`],
        schedule_cron_tz, session_target, payload_kind, payload_text, enabled)
      VALUES ('system', 'soul_governance_monthly_review', 'Monthly governance summary and review item for soul lifecycle quality',
        'cron', '0 9 1 * *', 'Europe/Vienna', 'isolated', 'system_event', 'soul_governance_review', true)
+     ON CONFLICT (name) DO NOTHING`,
+  );
+
+  // ─── Bookmark sync — every 30 minutes ───
+  await query(
+    `INSERT INTO cron_jobs (agent_id, name, description, schedule_kind, schedule_cron_expr,
+       schedule_cron_tz, session_target, payload_kind, payload_text, enabled)
+     VALUES ('system', 'sync_bookmarks', 'Sync bookmarks from Chrome browser',
+       'cron', '*/30 * * * *', 'Europe/Vienna', 'isolated', 'system_event', 'sync_bookmarks', true)
      ON CONFLICT (name) DO NOTHING`,
   );
 

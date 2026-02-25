@@ -26,6 +26,7 @@ import Media from "./pages/Media";
 import QualityCenter from "./pages/QualityCenter";
 import AgentSocial from "./pages/AgentSocial";
 import CloudSync from "./pages/CloudSync";
+import Bookmarks from "./pages/Bookmarks";
 import AssistantChat from "./components/AssistantChat";
 import JoiOrb from "./components/JoiOrb";
 
@@ -208,6 +209,9 @@ function App() {
           <NavLink to="/reports">
             Reports
           </NavLink>
+          <NavLink to="/bookmarks">
+            Bookmarks
+          </NavLink>
           <NavLink to="/cloud-sync">
             Cloud Sync
           </NavLink>
@@ -377,6 +381,7 @@ function App() {
           <Route path="/settings" element={<Settings />} />
           <Route path="/tasks" element={<Tasks ws={ws} chatMode={chatMode} />} />
           <Route path="/reviews" element={<Reviews ws={ws} />} />
+          <Route path="/bookmarks" element={<Bookmarks />} />
           <Route path="/cloud-sync" element={<CloudSync />} />
           <Route path="/integrations" element={<Channels ws={ws} />} />
           <Route path="/autodev" element={<AutoDev ws={ws} />} />

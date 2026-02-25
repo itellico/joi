@@ -806,7 +806,7 @@ function AgentBadge({ agentId, agentName }: { agentId: string; agentName?: strin
   );
 }
 
-function DelegationAccordion({ delegations }: { delegations: Array<{ agentId: string; task: string; durationMs?: number; status: "pending" | "success" | "error" }> }) {
+function DelegationAccordion({ delegations }: { delegations: Array<{ agentId: string; agentName?: string; task: string; durationMs?: number; status: "pending" | "success" | "error" }> }) {
   const [open, setOpen] = useState(false);
   if (delegations.length === 0) return null;
 
@@ -832,7 +832,7 @@ function DelegationAccordion({ delegations }: { delegations: Array<{ agentId: st
             return (
               <li key={i} className={`assistant-delegation-item ${d.status}`}>
                 <span className="assistant-delegation-agent" style={{ color: meta.color }}>
-                  {meta.icon} {formatAgentName(d.agentId)}
+                  {meta.icon} {d.agentName || formatAgentName(d.agentId)}
                 </span>
                 <span className="assistant-delegation-task">{d.task}</span>
                 {d.durationMs != null && (
