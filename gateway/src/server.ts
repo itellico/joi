@@ -6544,7 +6544,7 @@ app.post("/api/quotes", async (req, res) => {
     const {
       title, contact_id, company_id, organization_id, template_id, valid_until,
       intro_text, closing_text, terms, notes, tags,
-      sender_name, sender_email, vat_percent,
+      sender_name, sender_email, vat_percent, content,
     } = req.body;
 
     // Resolve organization — use provided, or default
@@ -6577,6 +6577,7 @@ app.post("/api/quotes", async (req, res) => {
     let finalVat = vat_percent ?? 20;
     let finalValidDays = 14;
     let defaultItems: Array<Record<string, unknown>> = [];
+    let finalContent: Record<string, unknown> = content || {};
 
     if (template_id) {
       const tpl = await query<Record<string, unknown>>(
@@ -6597,6 +6598,10 @@ app.post("/api/quotes", async (req, res) => {
           defaultItems = t.default_items as Array<Record<string, unknown>>;
         }
         if (!orgId) orgId = t.organization_id as string;
+        // Copy template content JSONB if not provided by caller
+        if (!content && t.content && typeof t.content === "object") {
+          finalContent = t.content as Record<string, unknown>;
+        }
       }
     }
 
@@ -6606,8 +6611,8 @@ app.post("/api/quotes", async (req, res) => {
       `INSERT INTO quotes (
         quote_number, title, contact_id, company_id, organization_id, template_id,
         valid_until, intro_text, closing_text, terms, notes, tags,
-        sender_name, sender_email, vat_percent
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+        sender_name, sender_email, vat_percent, content
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
       RETURNING id`,
       [
         quoteNumber, title || "Neues Angebot",
@@ -6615,6 +6620,7 @@ app.post("/api/quotes", async (req, res) => {
         validUntilDate, finalIntro, finalClosing, finalTerms,
         notes || null, tags || [],
         sender_name || null, sender_email || null, finalVat,
+        JSON.stringify(finalContent),
       ],
     );
 
@@ -6681,7 +6687,7 @@ app.put("/api/quotes/:id", async (req, res) => {
         params.push(req.body[field]);
       }
     }
-    for (const field of ["terms", "sender_address"]) {
+    for (const field of ["terms", "sender_address", "content"]) {
       if (req.body[field] !== undefined) {
         updates.push(`${field} = $${idx++}`);
         params.push(JSON.stringify(req.body[field]));
@@ -6737,8 +6743,8 @@ app.post("/api/quotes/:id/clone", async (req, res) => {
       `INSERT INTO quotes (
         quote_number, title, contact_id, company_id, organization_id, template_id,
         valid_until, intro_text, closing_text, terms, notes, tags,
-        sender_name, sender_email, vat_percent, discount_percent
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+        sender_name, sender_email, vat_percent, discount_percent, content
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
       RETURNING id`,
       [
         quoteNumber, `${q.title} (Copy)`, q.contact_id, q.company_id, q.organization_id, q.template_id,
@@ -6746,6 +6752,7 @@ app.post("/api/quotes/:id/clone", async (req, res) => {
         q.intro_text, q.closing_text, JSON.stringify(q.terms || {}),
         q.notes, q.tags || [],
         q.sender_name, q.sender_email, q.vat_percent, q.discount_percent,
+        JSON.stringify(q.content || {}),
       ],
     );
     const newId = result.rows[0].id;
