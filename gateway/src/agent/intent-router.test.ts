@@ -15,7 +15,7 @@ describe("intent-router", () => {
     vi.resetAllMocks();
     _clearAgentStatusCache();
     // Default: agent exists and is enabled
-    mockQuery.mockResolvedValue({ rows: [{ id: "media-integrations", enabled: true }], rowCount: 1 } as any);
+    mockQuery.mockResolvedValue({ rows: [{ id: "media-integrations", enabled: true, name: "Media Integrations" }], rowCount: 1 } as any);
   });
 
   describe("feature gate", () => {
@@ -85,7 +85,7 @@ describe("intent-router", () => {
   describe("email routing", () => {
     beforeEach(() => {
       process.env.JOI_INTENT_ROUTER = "1";
-      mockQuery.mockResolvedValue({ rows: [{ id: "email", enabled: true }], rowCount: 1 } as any);
+      mockQuery.mockResolvedValue({ rows: [{ id: "email", enabled: true, name: "Email" }], rowCount: 1 } as any);
     });
 
     it("routes email keywords to email agent", async () => {
@@ -139,7 +139,7 @@ describe("intent-router", () => {
     });
 
     it("returns target_disabled when agent is disabled", async () => {
-      mockQuery.mockResolvedValue({ rows: [{ id: "media-integrations", enabled: false }], rowCount: 1 } as any);
+      mockQuery.mockResolvedValue({ rows: [{ id: "media-integrations", enabled: false, name: "Media Integrations" }], rowCount: 1 } as any);
       const result = await routeIntent("find my movies");
       expect(result.routed).toBe(false);
       expect((result as any).reason).toBe("target_disabled");

@@ -17,7 +17,7 @@ import {
   listSessions, addListener, addExitListener, getScrollback, killAllSessions,
 } from "./pty/manager.js";
 import { runAgent, saveMessage, ensureConversation, type AgentRunResult } from "./agent/runtime.js";
-import { routeIntent, type RouteDecision } from "./agent/intent-router.js";
+import { routeIntent, MEDIA_INTENT_KEYWORDS, type RouteDecision } from "./agent/intent-router.js";
 import { runClaudeCode } from "./agent/claude-code.js";
 import { query, recordSuccess, recordFailure, reloadFromEnv } from "./db/client.js";
 import { checkOllama, pullModel, embed } from "./knowledge/embeddings.js";
@@ -384,11 +384,12 @@ function getDelayedVoiceToolFiller(toolName: string, toolInput: unknown, toolUse
 }
 
 // Voice-specific tool intent gate. Keep narrow so small-talk stays fast.
-const VOICE_TOOL_INTENT_REGEX = /\b(task|todo|things|okr|email|inbox|calendar|event|schedule|contact|weather|forecast|search|find|lookup|check|show|list|open|send|message|whatsapp|telegram|imessage|sms|notion|emby|jellyseerr|movie|series|watchlist|memory|knowledge)\b/i;
+// Media keywords are shared with intent-router to avoid duplication.
+const VOICE_TOOL_INTENT_REGEX = /\b(task|todo|things|okr|email|inbox|calendar|event|schedule|contact|weather|forecast|search|find|lookup|check|show|list|open|send|message|whatsapp|telegram|imessage|sms|notion|memory|knowledge)\b/i;
 function shouldEnableVoiceTools(message: string): boolean {
   const trimmed = message.trim();
   if (!trimmed) return false;
-  return VOICE_TOOL_INTENT_REGEX.test(trimmed);
+  return VOICE_TOOL_INTENT_REGEX.test(trimmed) || MEDIA_INTENT_KEYWORDS.test(trimmed);
 }
 
 function firstStringField(input: unknown, key: string): string | null {
@@ -1434,10 +1435,12 @@ app.post("/api/voice/chat", async (req, res) => {
     );
 
     // Emit chat.routed event over WS if intent router selected a different agent
-    if (voiceRouteDecision) {
+    const voiceAgentVisibility = process.env.JOI_AGENT_VISIBILITY === "1";
+    if (voiceRouteDecision && voiceAgentVisibility) {
       wsBroadcast("chat.routed", {
         conversationId: convId,
         agentId: voiceRouteDecision.agentId,
+        agentName: voiceRouteDecision.agentName,
         reason: voiceRouteDecision.reason,
         confidence: voiceRouteDecision.confidence,
         matchedPattern: voiceRouteDecision.matchedPattern,
@@ -1529,10 +1532,13 @@ app.post("/api/voice/chat", async (req, res) => {
       costUsd: result.costUsd,
       latencyMs,
       timings: result.timings,
-      agentId: result.agentId,
-      routeReason: voiceRouteDecision?.reason,
-      routeConfidence: voiceRouteDecision?.confidence,
-      delegations: result.delegations,
+      ...(voiceAgentVisibility ? {
+        agentId: result.agentId,
+        agentName: result.agentName || voiceRouteDecision?.agentName,
+        routeReason: voiceRouteDecision?.reason,
+        routeConfidence: voiceRouteDecision?.confidence,
+        delegations: result.delegations,
+      } : {}),
     });
     if (!voiceClosed) {
       res.write(`data: ${JSON.stringify({ type: "done", messageId: result.messageId, content: cleanContent, model: result.model, usage: result.usage, costUsd: result.costUsd, latencyMs })}\n\n`);
@@ -7929,10 +7935,12 @@ wss.on("connection", (ws) => {
             const convId = await ensureConversation(conversationId || undefined, effectiveAgentId, !conversationId ? data.metadata : undefined);
 
             // Emit chat.routed event if intent router selected a different agent
-            if (routeDecision) {
+            const agentVisibility = process.env.JOI_AGENT_VISIBILITY === "1";
+            if (routeDecision && agentVisibility) {
               ws.send(frame("chat.routed", {
                 conversationId: convId,
                 agentId: routeDecision.agentId,
+                agentName: routeDecision.agentName,
                 reason: routeDecision.reason,
                 confidence: routeDecision.confidence,
                 matchedPattern: routeDecision.matchedPattern,
@@ -8010,17 +8018,20 @@ wss.on("connection", (ws) => {
               costUsd: result.costUsd,
               latencyMs: Date.now() - apiStartMs,
               timings: result.timings,
-              agentId: result.agentId,
-              routeReason: routeDecision?.reason,
-              routeConfidence: routeDecision?.confidence,
-              delegations: result.delegations,
-              cacheStats: result.usage.cacheReadTokens || result.usage.cacheWriteTokens ? {
-                cacheReadTokens: result.usage.cacheReadTokens || 0,
-                cacheWriteTokens: result.usage.cacheWriteTokens || 0,
-                cacheHitPercent: result.usage.inputTokens > 0
-                  ? Math.round(((result.usage.cacheReadTokens || 0) / result.usage.inputTokens) * 100)
-                  : 0,
-              } : undefined,
+              ...(agentVisibility ? {
+                agentId: result.agentId,
+                agentName: result.agentName || routeDecision?.agentName,
+                routeReason: routeDecision?.reason,
+                routeConfidence: routeDecision?.confidence,
+                delegations: result.delegations,
+                cacheStats: result.usage.cacheReadTokens || result.usage.cacheWriteTokens ? {
+                  cacheReadTokens: result.usage.cacheReadTokens || 0,
+                  cacheWriteTokens: result.usage.cacheWriteTokens || 0,
+                  cacheHitPercent: result.usage.inputTokens > 0
+                    ? Math.round(((result.usage.cacheReadTokens || 0) / result.usage.inputTokens) * 100)
+                    : 0,
+                } : undefined,
+              } : {}),
             }, msg.id));
           }
 

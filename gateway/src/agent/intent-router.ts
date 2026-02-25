@@ -19,6 +19,7 @@ export interface ExecutionProfile {
 export interface RouteDecision {
   routed: true;
   agentId: string;
+  agentName: string | null;
   confidence: number;
   reason: string;
   matchedPattern: string;
@@ -76,27 +77,27 @@ const ROUTE_RULES: RouteRule[] = [
 ];
 
 // Cache for agent existence/enabled checks (5 minute TTL)
-const agentStatusCache = new Map<string, { exists: boolean; enabled: boolean; checkedAt: number }>();
+const agentStatusCache = new Map<string, { exists: boolean; enabled: boolean; name: string | null; checkedAt: number }>();
 const AGENT_STATUS_CACHE_TTL_MS = 5 * 60 * 1000;
 
-async function checkAgentStatus(agentId: string): Promise<{ exists: boolean; enabled: boolean }> {
+async function checkAgentStatus(agentId: string): Promise<{ exists: boolean; enabled: boolean; name: string | null }> {
   const cached = agentStatusCache.get(agentId);
   if (cached && Date.now() - cached.checkedAt < AGENT_STATUS_CACHE_TTL_MS) {
     return cached;
   }
 
   try {
-    const result = await query<{ id: string; enabled: boolean }>(
-      "SELECT id, enabled FROM agents WHERE id = $1",
+    const result = await query<{ id: string; enabled: boolean; name: string | null }>(
+      "SELECT id, enabled, name FROM agents WHERE id = $1",
       [agentId],
     );
     const status = result.rows.length > 0
-      ? { exists: true, enabled: result.rows[0].enabled }
-      : { exists: false, enabled: false };
+      ? { exists: true, enabled: result.rows[0].enabled, name: result.rows[0].name }
+      : { exists: false, enabled: false, name: null };
     agentStatusCache.set(agentId, { ...status, checkedAt: Date.now() });
     return status;
   } catch {
-    return { exists: false, enabled: false };
+    return { exists: false, enabled: false, name: null };
   }
 }
 
@@ -147,12 +148,13 @@ export async function routeIntent(
         const decision: RouteDecision = {
           routed: true,
           agentId: rule.agentId,
+          agentName: status.name,
           confidence: rule.confidence,
           reason: `keyword_match:${rule.agentId}`,
           matchedPattern: match[0],
           executionProfile: rule.executionProfile,
         };
-        console.log(`[intent-router] Routed to ${rule.agentId} (confidence=${rule.confidence}, pattern="${match[0]}")`);
+        console.log(`[intent-router] Routed to ${rule.agentId} (name=${status.name}, confidence=${rule.confidence}, pattern="${match[0]}")`);
         return decision;
       }
     }

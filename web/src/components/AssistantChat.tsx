@@ -583,7 +583,7 @@ function AssistantMessageBubble({ message }: { message: ChatMessage }) {
           ariaLabel="JOI"
         />
         {showAgentBadge && (
-          <AgentBadge agentId={message.agentId!} />
+          <AgentBadge agentId={message.agentId!} agentName={message.agentName} />
         )}
         {message.isStreaming && message.streamStartedAt && (
           <ElapsedTimer startedAt={message.streamStartedAt} />
@@ -744,7 +744,7 @@ function AssistantMsgMeta({ message }: { message: ChatMessage }) {
     parts.push(short);
   }
   if (message.agentId && message.agentId !== "personal") {
-    parts.push(`via ${formatAgentName(message.agentId)}`);
+    parts.push(`via ${message.agentName || formatAgentName(message.agentId)}`);
   }
 
   if (parts.length === 0) return null;
@@ -791,16 +791,17 @@ function AssistantToolBadge({ tc }: { tc: ToolCall }) {
   );
 }
 
-function AgentBadge({ agentId }: { agentId: string }) {
+function AgentBadge({ agentId, agentName }: { agentId: string; agentName?: string }) {
   const meta = getAgentMeta(agentId);
+  const displayName = agentName || formatAgentName(agentId);
   return (
     <span
       className="assistant-agent-badge"
       style={{ borderColor: meta.color, color: meta.color }}
-      title={`Handled by ${formatAgentName(agentId)}`}
+      title={`Handled by ${displayName}`}
     >
       <span className="assistant-agent-badge-icon">{meta.icon}</span>
-      <span className="assistant-agent-badge-name">{formatAgentName(agentId)}</span>
+      <span className="assistant-agent-badge-name">{displayName}</span>
     </span>
   );
 }

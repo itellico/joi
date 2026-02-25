@@ -78,6 +78,7 @@ export interface ChatMessage {
   costUsd?: number;
   // Agent routing/delegation metadata
   agentId?: string;
+  agentName?: string;
   routeReason?: string;
   routeConfidence?: number;
   delegations?: Delegation[];
@@ -174,6 +175,7 @@ export function useChat({ send, on }: UseChatOptions) {
           costUsd?: number;
           timings?: ChatMessage["timings"];
           agentId?: string;
+          agentName?: string;
           routeReason?: string;
           routeConfidence?: number;
           delegations?: Delegation[];
@@ -213,6 +215,7 @@ export function useChat({ send, on }: UseChatOptions) {
                 timings: data.timings,
                 isStreaming: false,
                 agentId: data.agentId,
+                agentName: data.agentName,
                 routeReason: data.routeReason,
                 routeConfidence: data.routeConfidence,
                 delegations: data.delegations,
@@ -237,6 +240,7 @@ export function useChat({ send, on }: UseChatOptions) {
               timings: data.timings,
               isStreaming: false,
               agentId: data.agentId,
+              agentName: data.agentName,
               routeReason: data.routeReason,
               routeConfidence: data.routeConfidence,
               delegations: data.delegations,
@@ -299,6 +303,7 @@ export function useChat({ send, on }: UseChatOptions) {
         const data = frame.data as {
           conversationId?: string;
           agentId: string;
+          agentName?: string;
           reason?: string;
           confidence?: number;
         };
@@ -316,6 +321,7 @@ export function useChat({ send, on }: UseChatOptions) {
             return [...prev.slice(0, -1), {
               ...last,
               agentId: data.agentId,
+              agentName: data.agentName,
               routeReason: data.reason,
               routeConfidence: data.confidence,
             }];

@@ -482,22 +482,24 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   // Load agent config from DB
   const agentResult = await query<{
     id: string;
+    name: string | null;
     system_prompt: string | null;
     model: string;
     skills: string[] | null;
     config: Record<string, unknown> | null;
   }>(
-    "SELECT id, system_prompt, model, skills, config FROM agents WHERE id = $1",
+    "SELECT id, name, system_prompt, model, skills, config FROM agents WHERE id = $1",
     [agentId],
   );
 
   let agentRow = agentResult.rows[0];
   if (!agentRow) {
     console.error(`[runAgent] Agent "${agentId}" not found in database, falling back to "personal"`);
-    const fallback = await query<{ id: string; system_prompt: string | null; model: string; skills: string[] | null; config: Record<string, unknown> | null }>(
-      "SELECT id, system_prompt, model, skills, config FROM agents WHERE id = $1", ["personal"]);
+    const fallback = await query<{ id: string; name: string | null; system_prompt: string | null; model: string; skills: string[] | null; config: Record<string, unknown> | null }>(
+      "SELECT id, name, system_prompt, model, skills, config FROM agents WHERE id = $1", ["personal"]);
     agentRow = fallback.rows[0];
   }
+  const agentName = agentRow?.name || null;
   const promptAgentId = agentRow?.id || agentId;
   // Client-requested model takes highest priority, then agent DB model
   const agentModelOverride = clientModel || agentRow?.model;
@@ -644,6 +646,15 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     }
     cachedSystemBlocks = blocks;
   }
+
+  // Structured prompt size logging
+  const promptStaticChars = cachedSystemBlocks
+    ? cachedSystemBlocks[0].text.length
+    : systemPrompt.length;
+  const promptDynamicChars = cachedSystemBlocks
+    ? cachedSystemBlocks.slice(1).reduce((sum, b) => sum + b.text.length, 0)
+    : 0;
+  console.log(`[runAgent] PROMPT agent=${agentId} totalChars=${systemPrompt.length} staticChars=${promptStaticChars} dynamicChars=${promptDynamicChars} memoryChars=${memoryContext.length} suffixChars=${(systemPromptSuffix || "").length} cache=${usePromptCache}`);
 
   timings.promptMs = Date.now() - tMark;
   tMark = Date.now();
@@ -877,6 +888,14 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       onToolResult?.(tc.id, result);
     }
 
+    // Log tool result sizes for telemetry
+    for (let ti = 0; ti < toolResults.length; ti++) {
+      const fullChars = toolResults[ti].content.length;
+      const llmChars = llmToolResults[ti].content.length;
+      const reduction = fullChars > 0 ? Math.round((1 - llmChars / fullChars) * 100) : 0;
+      console.log(`[runAgent] TOOL_RESULT tool=${toolCalls[ti].name} fullChars=${fullChars} llmChars=${llmChars} reduction=${reduction}%`);
+    }
+
     // Save full results to DB
     await saveMessage(conversationId, "tool", null, null, null, toolResults, null);
 
@@ -1048,6 +1067,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   timings.llmMs = Date.now() - tMark;
   timings.totalMs = Date.now() - runStartedAt;
   console.log(`[runAgent] TIMINGS setup=${timings.setupMs}ms mem=${timings.memoryMs}ms prompt=${timings.promptMs}ms hist=${timings.historyMs}ms llm=${timings.llmMs}ms total=${timings.totalMs}ms`);
+  console.log(`[runAgent] TOKENS agent=${agentId} input=${totalInputTokens} output=${totalOutputTokens} cacheRead=${totalCacheReadTokens} cacheWrite=${totalCacheWriteTokens} cost=$${totalCostUsd.toFixed(4)}`);
 
   return {
     messageId: assistantMessageId || crypto.randomUUID(),
@@ -1065,6 +1085,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     costUsd: totalCostUsd,
     timings,
     agentId,
+    agentName: agentName || undefined,
     delegations: delegations.length > 0 ? delegations : undefined,
   };
 }
