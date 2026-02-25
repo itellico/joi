@@ -210,11 +210,58 @@ async function embedAndStoreChunks(
   return chunks.length;
 }
 
-// Delete a document and its chunks
+// Delete a document and its chunks (by source + path)
 export async function deleteDocument(source: string, path: string): Promise<boolean> {
   const result = await query<{ id: number }>(
     "DELETE FROM documents WHERE source = $1 AND path = $2 RETURNING id",
     [source, path],
+  );
+  return result.rows.length > 0;
+}
+
+// Update a document's title/content and re-embed its chunks
+export async function updateDocument(
+  docId: number,
+  title: string,
+  content: string,
+  config: JoiConfig,
+): Promise<{ chunksCreated: number }> {
+  const contentHash = crypto.createHash("sha256").update(content).digest("hex");
+
+  const existing = await query<{
+    source: string;
+    path: string | null;
+    metadata: Record<string, unknown>;
+  }>("SELECT source, path, metadata FROM documents WHERE id = $1", [docId]);
+
+  if (existing.rows.length === 0) throw new Error("Document not found");
+  const doc = existing.rows[0];
+
+  // Delete old chunks
+  await query("DELETE FROM chunks WHERE document_id = $1", [docId]);
+
+  // Update document record
+  await query(
+    "UPDATE documents SET title = $1, content = $2, content_hash = $3, updated_at = NOW(), embedded_at = NULL WHERE id = $4",
+    [title, content, contentHash, docId],
+  );
+
+  // Re-embed chunks
+  const chunksCreated = await embedAndStoreChunks(docId, content, config, {
+    source: doc.source as IngestOptions["source"],
+    path: doc.path ?? undefined,
+    title,
+    metadata: doc.metadata,
+  });
+
+  return { chunksCreated };
+}
+
+// Delete a document by ID
+export async function deleteDocumentById(docId: number): Promise<boolean> {
+  const result = await query<{ id: number }>(
+    "DELETE FROM documents WHERE id = $1 RETURNING id",
+    [docId],
   );
   return result.rows.length > 0;
 }

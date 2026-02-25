@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkFrontmatter from "remark-frontmatter";
 import MarkdownField from "../components/MarkdownField";
+import DocumentEditor from "../components/DocumentEditor";
 import {
   PageHeader,
   PageBody,
@@ -127,6 +128,15 @@ export default function Knowledge() {
   const [memoryOffset, setMemoryOffset] = useState(0);
   const [docOffset, setDocOffset] = useState(0);
   const [flushOffset, setFlushOffset] = useState(0);
+  const [editingDocId, setEditingDocId] = useState<number | "new" | null>(() => {
+    const docParam = searchParams.get("doc");
+    if (docParam === "new") return "new";
+    if (docParam) {
+      const id = Number(docParam);
+      return Number.isFinite(id) ? id : null;
+    }
+    return null;
+  });
 
   const fetchMemories = useCallback(async () => {
     setLoading(true);
@@ -215,10 +225,13 @@ export default function Knowledge() {
     if (!query) next.delete("q");
     else next.set("q", query);
 
+    if (editingDocId != null) next.set("doc", String(editingDocId));
+    else next.delete("doc");
+
     if (next.toString() !== searchParams.toString()) {
       setSearchParams(next, { replace: true });
     }
-  }, [searchParams, searchQuery, selectedArea, setSearchParams, tab, viewMode]);
+  }, [searchParams, searchQuery, selectedArea, setSearchParams, tab, viewMode, editingDocId]);
 
   const handleSync = async () => {
     setSyncing(true);
@@ -551,7 +564,14 @@ export default function Knowledge() {
     </Stack>
   );
 
-  const documentsContent = (
+  const documentsContent = editingDocId != null ? (
+    <DocumentEditor
+      docId={editingDocId}
+      onClose={() => setEditingDocId(null)}
+      onSaved={() => fetchDocuments()}
+      onDeleted={() => fetchDocuments()}
+    />
+  ) : (
     <Stack gap={5}>
       <div className="list-page-toolbar">
         <SearchInput
@@ -561,6 +581,9 @@ export default function Knowledge() {
           resultCount={docSearch ? filteredDocuments.length : undefined}
         />
         <div className="list-page-toolbar-right">
+          <Button size="sm" variant="primary" onClick={() => setEditingDocId("new")}>
+            + New Document
+          </Button>
           <ViewToggle
             value={viewMode}
             onChange={(v) => setViewMode(v as "list" | "cards")}
@@ -589,11 +612,12 @@ export default function Knowledge() {
           rowKey={(doc) => String(doc.id)}
           defaultSort={{ key: "embedded_at", direction: "desc" }}
           tableAriaLabel="Knowledge documents list"
+          onRowClick={(doc) => setEditingDocId(doc.id)}
         />
       ) : (
         <Stack gap={2}>
           {displayDocuments.map((doc) => (
-            <DocumentRow key={doc.id} doc={doc} />
+            <DocumentRow key={doc.id} doc={doc} onOpen={() => setEditingDocId(doc.id)} />
           ))}
         </Stack>
       )}
@@ -664,7 +688,7 @@ export default function Knowledge() {
       ) : (
         <Stack gap={2}>
           {obsidianDocuments.map((doc) => (
-            <DocumentRow key={doc.id} doc={doc} />
+            <DocumentRow key={doc.id} doc={doc} onOpen={() => { setTab("documents"); setEditingDocId(doc.id); }} />
           ))}
         </Stack>
       )}
@@ -837,7 +861,7 @@ interface DocChunk {
   has_embedding: boolean;
 }
 
-function DocumentRow({ doc }: { doc: Document }) {
+function DocumentRow({ doc, onOpen }: { doc: Document; onOpen?: () => void }) {
   const [expanded, setExpanded] = useState(false);
   const [content, setContent] = useState<string | null>(null);
   const [chunks, setChunks] = useState<DocChunk[]>([]);
@@ -898,6 +922,13 @@ function DocumentRow({ doc }: { doc: Document }) {
 
       {expanded && (
         <div className="doc-detail">
+          {onOpen && (
+            <div className="doc-detail-open-bar">
+              <Button size="sm" variant="accent" onClick={onOpen}>
+                Open in Editor
+              </Button>
+            </div>
+          )}
           {detailLoading ? (
             <MetaText size="sm" className="block p-4">Loading content…</MetaText>
           ) : (

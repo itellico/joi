@@ -27,7 +27,7 @@ import { checkOllamaModel, pullOllamaLLMModel } from "./agent/ollama-llm.js";
 import { listMemories } from "./knowledge/writer.js";
 import { runConsolidation, type ConsolidationReport } from "./knowledge/consolidator.js";
 import { fullSync, startWatching, stopWatching, isSyncActive } from "./knowledge/obsidian-sync.js";
-import { ingestDocument } from "./knowledge/ingest.js";
+import { ingestDocument, updateDocument, deleteDocumentById } from "./knowledge/ingest.js";
 import { startScheduler, stopScheduler, listJobs, createJob, updateJob, toggleJob, deleteJob, executeJobNow, listJobRuns } from "./cron/scheduler.js";
 import { runSelfRepair } from "./cron/self-repair.js";
 import { searchMemories } from "./knowledge/searcher.js";
@@ -3928,6 +3928,43 @@ app.post("/api/documents/ingest", async (req, res) => {
   }
 });
 
+// PUT /api/documents/:id — update document content and re-embed
+app.put("/api/documents/:id", async (req, res) => {
+  try {
+    const docId = Number(req.params.id);
+    const { title, content } = req.body;
+    if (!title || content == null) {
+      res.status(400).json({ error: "title and content required" });
+      return;
+    }
+    const result = await updateDocument(docId, title, content, config);
+    res.json({ updated: true, ...result });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message === "Document not found") {
+      res.status(404).json({ error: message });
+      return;
+    }
+    res.status(500).json({ error: message });
+  }
+});
+
+// DELETE /api/documents/:id — delete a document and its chunks
+app.delete("/api/documents/:id", async (req, res) => {
+  try {
+    const docId = Number(req.params.id);
+    const deleted = await deleteDocumentById(docId);
+    if (!deleted) {
+      res.status(404).json({ error: "Document not found" });
+      return;
+    }
+    res.json({ deleted: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
+  }
+});
+
 // ─── Google OAuth API (multi-account) ───
 
 import {
@@ -7588,7 +7625,8 @@ app.post("/api/quality/prompt-versions/:id/activate", async (req, res) => {
 import {
   listBookmarks, getBookmark, createBookmark, updateBookmark, deleteBookmark,
   listFolders as listBookmarkFolders, moveBookmarks, bulkDelete, bulkSetStatus,
-  deleteFolder as deleteBookmarkFolder, findSemanticDuplicates, getBookmarkStats,
+  deleteFolder as deleteBookmarkFolder, moveFolder as moveBookmarkFolder,
+  findSemanticDuplicates, getBookmarkStats,
   syncFromChrome, exportToChrome, findDuplicates, removeDuplicates,
   listSuggestions, approveSuggestion, rejectSuggestion, suggestBookmark,
   markReadLater, markRead, getReadLaterQueue, getSyncState as getBookmarkSyncState,
@@ -7805,6 +7843,17 @@ app.post("/api/bookmarks/delete-folder", async (req, res) => {
     if (!folder_path) return res.status(400).json({ error: "folder_path required" });
     const count = await deleteBookmarkFolder(folder_path);
     res.json({ deleted: count });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/api/bookmarks/move-folder", async (req, res) => {
+  try {
+    const { source, target } = req.body;
+    if (!source || !target) return res.status(400).json({ error: "source and target required" });
+    const count = await moveBookmarkFolder(source, target);
+    res.json({ moved: count });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
