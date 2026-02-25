@@ -6449,7 +6449,7 @@ app.get("/api/quotes", async (req, res) => {
 
     if (search) {
       conditions.push(
-        `(q.quote_number ILIKE $${idx} OR q.title ILIKE $${idx} OR comp.name ILIKE $${idx})`,
+        `(q.quote_number ILIKE $${idx} OR q.title ILIKE $${idx} OR comp.name ILIKE $${idx} OR c.first_name ILIKE $${idx} OR c.last_name ILIKE $${idx})`,
       );
       params.push(`%${search}%`);
       idx++;
@@ -6467,6 +6467,7 @@ app.get("/api/quotes", async (req, res) => {
 
     const countResult = await query<{ count: number }>(
       `SELECT count(*)::int AS count FROM quotes q
+       LEFT JOIN contacts c ON c.id = q.contact_id
        LEFT JOIN companies comp ON comp.id = q.company_id ${where}`,
       params,
     );
@@ -6707,6 +6708,73 @@ app.delete("/api/quotes/:id", async (req, res) => {
     res.json({ deleted: true });
   } catch (err) {
     res.status(500).json({ error: "Failed to delete quote" });
+  }
+});
+
+// POST /api/quotes/:id/clone — duplicate a quote
+app.post("/api/quotes/:id/clone", async (req, res) => {
+  try {
+    const src = await query<Record<string, unknown>>(
+      "SELECT * FROM quotes WHERE id = $1", [req.params.id],
+    );
+    if (src.rows.length === 0) return res.status(404).json({ error: "Not found" });
+    const q = src.rows[0];
+
+    // New quote number
+    let prefix = "ANG";
+    if (q.organization_id) {
+      const orgResult = await query<{ short_name: string }>(
+        "SELECT short_name FROM organizations WHERE id = $1", [q.organization_id],
+      );
+      if (orgResult.rows.length > 0 && orgResult.rows[0].short_name) {
+        prefix = orgResult.rows[0].short_name.toUpperCase();
+      }
+    }
+    const seqResult = await query<{ nextval: string }>("SELECT nextval('quote_number_seq')");
+    const quoteNumber = `${prefix}-${seqResult.rows[0].nextval}`;
+
+    const result = await query<{ id: string }>(
+      `INSERT INTO quotes (
+        quote_number, title, contact_id, company_id, organization_id, template_id,
+        valid_until, intro_text, closing_text, terms, notes, tags,
+        sender_name, sender_email, vat_percent, discount_percent
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+      RETURNING id`,
+      [
+        quoteNumber, `${q.title} (Copy)`, q.contact_id, q.company_id, q.organization_id, q.template_id,
+        new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10),
+        q.intro_text, q.closing_text, JSON.stringify(q.terms || {}),
+        q.notes, q.tags || [],
+        q.sender_name, q.sender_email, q.vat_percent, q.discount_percent,
+      ],
+    );
+    const newId = result.rows[0].id;
+
+    // Copy items
+    const items = await query<Record<string, unknown>>(
+      "SELECT * FROM quote_items WHERE quote_id = $1 ORDER BY sort_order", [req.params.id],
+    );
+    for (const item of items.rows) {
+      await query(
+        `INSERT INTO quote_items (
+          quote_id, sort_order, section, article, description, detail, cycle,
+          quantity, unit, unit_price, discount_percent, line_total
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+        [newId, item.sort_order, item.section, item.article, item.description, item.detail, item.cycle,
+         item.quantity, item.unit, item.unit_price, item.discount_percent, item.line_total],
+      );
+    }
+
+    // Copy totals
+    await query(
+      `UPDATE quotes SET subtotal=$2, net_total=$3, vat_amount=$4, gross_total=$5, discount_amount=$6 WHERE id=$1`,
+      [newId, q.subtotal, q.net_total, q.vat_amount, q.gross_total, q.discount_amount],
+    );
+
+    res.json({ id: newId, quote_number: quoteNumber, cloned: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
   }
 });
 

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { Badge, Button, Card, EmptyState, MetaText, Modal, PageBody, PageHeader } from "../components/ui";
 
@@ -8,6 +8,7 @@ interface Quote {
   title: string;
   contact_id: string | null;
   company_id: string | null;
+  organization_id: string | null;
   issued_date: string;
   valid_until: string | null;
   status: string;
@@ -37,6 +38,7 @@ interface Quote {
   contact_emails: string[] | null;
   contact_job_title: string | null;
   company_name: string | null;
+  org_name: string | null;
 }
 
 interface QuoteItem {
@@ -53,6 +55,16 @@ interface QuoteItem {
   unit_price: number;
   discount_percent: number;
   line_total: number;
+}
+
+interface Contact {
+  id: string;
+  first_name: string;
+  last_name: string;
+  emails: string[];
+  company_name: string | null;
+  company_id: string | null;
+  job_title: string | null;
 }
 
 const STATUS_OPTIONS = ["draft", "sent", "accepted", "declined", "expired"] as const;
@@ -88,6 +100,12 @@ export default function QuoteDetail() {
     section: "", article: "", description: "", detail: "", cycle: "p.m.",
     quantity: 1, unit: "Stück", unit_price: 0, discount_percent: 0,
   });
+
+  // Contact picker state
+  const [showContactPicker, setShowContactPicker] = useState(false);
+  const [contactSearch, setContactSearch] = useState("");
+  const [contactResults, setContactResults] = useState<Contact[]>([]);
+  const contactSearchTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const fetchQuote = useCallback(() => {
     if (!id) return;
@@ -152,8 +170,48 @@ export default function QuoteDetail() {
     navigate("/quotes");
   };
 
+  const handleClone = async () => {
+    if (!id) return;
+    try {
+      const res = await fetch(`/api/quotes/${id}/clone`, { method: "POST" });
+      const data = await res.json();
+      if (data.id) navigate(`/quotes/${data.id}`);
+    } catch {
+      // ignore
+    }
+  };
+
   const handlePrint = () => {
     window.open(`/api/quotes/${id}/html`, "_blank");
+  };
+
+  // Contact picker
+  const searchContacts = (q: string) => {
+    setContactSearch(q);
+    if (contactSearchTimer.current) clearTimeout(contactSearchTimer.current);
+    if (!q.trim()) { setContactResults([]); return; }
+    contactSearchTimer.current = setTimeout(() => {
+      fetch(`/api/contacts?search=${encodeURIComponent(q)}&limit=8`)
+        .then((r) => r.json())
+        .then((data) => setContactResults(data.contacts || []))
+        .catch(() => {});
+    }, 200);
+  };
+
+  const assignContact = async (contact: Contact | null) => {
+    if (!id) return;
+    await fetch(`/api/quotes/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contact_id: contact?.id || null,
+        company_id: contact?.company_id || null,
+      }),
+    });
+    setShowContactPicker(false);
+    setContactSearch("");
+    setContactResults([]);
+    fetchQuote();
   };
 
   if (loading) return <PageBody><EmptyState message="Loading..." /></PageBody>;
@@ -188,12 +246,16 @@ export default function QuoteDetail() {
             )}
             {quote.company_name && !contactFullName && `${quote.company_name} — `}
             Created {formatDate(quote.created_at)}
+            {quote.org_name && (
+              <span style={{ color: "var(--text-muted)" }}> · {quote.org_name}</span>
+            )}
           </span>
         }
         actions={
           <div style={{ display: "flex", gap: 8 }}>
             <Button variant="ghost" onClick={() => navigate("/quotes")}>Back</Button>
             <Button variant="ghost" onClick={handlePrint}>Print / PDF</Button>
+            <Button variant="ghost" onClick={handleClone}>Clone</Button>
             <Button variant="ghost" onClick={() => { setEditForm(quote); setEditing(true); }}>Edit</Button>
             <Button variant="ghost" onClick={handleDelete} style={{ color: "var(--error)" }}>Delete</Button>
           </div>
@@ -234,6 +296,42 @@ export default function QuoteDetail() {
           )}
         </div>
 
+        {/* Contact card */}
+        <Card style={{ marginBottom: 16, padding: "12px 16px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <span style={{ fontSize: "0.8rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.3px", color: "var(--text-muted)", minWidth: 60 }}>
+              To
+            </span>
+            {contactFullName ? (
+              <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 8 }}>
+                <div>
+                  <Link to={`/contacts/${quote.contact_id}`} className="text-accent" style={{ textDecoration: "none", fontWeight: 500 }}>
+                    {contactFullName}
+                  </Link>
+                  {quote.contact_job_title && (
+                    <span style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}> — {quote.contact_job_title}</span>
+                  )}
+                  {quote.company_name && (
+                    <div style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>{quote.company_name}</div>
+                  )}
+                  {quote.contact_emails?.[0] && (
+                    <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>{quote.contact_emails[0]}</div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <span style={{ flex: 1, color: "var(--text-muted)", fontStyle: "italic" }}>No contact assigned</span>
+            )}
+            <Button
+              variant="ghost"
+              onClick={() => { setShowContactPicker(true); setContactSearch(""); setContactResults([]); }}
+              style={{ fontSize: "0.8rem" }}
+            >
+              {contactFullName ? "Change" : "Assign Contact"}
+            </Button>
+          </div>
+        </Card>
+
         {/* Intro text */}
         {quote.intro_text && (
           <Card style={{ marginBottom: 16, padding: 16 }}>
@@ -265,7 +363,7 @@ export default function QuoteDetail() {
             </thead>
             <tbody>
               {Array.from(sections).map(([section, sectionItems]) => (
-                <>
+                <>{/* Fragment with key handled by section row */}
                   {section && (
                     <tr key={`section-${section}`}>
                       <td colSpan={9} style={{ padding: "10px 12px", fontWeight: 600, borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
@@ -292,7 +390,7 @@ export default function QuoteDetail() {
                           style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "0.8rem" }}
                           title="Remove item"
                         >
-                          x
+                          ×
                         </button>
                       </td>
                     </tr>
@@ -381,46 +479,163 @@ export default function QuoteDetail() {
       </PageBody>
 
       {/* Edit Modal */}
-      {editing && (
-        <Modal open={editing} title="Edit Quote" onClose={() => setEditing(false)}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <Modal open={editing} title="Edit Quote" onClose={() => setEditing(false)}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <label>
+            <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Title</span>
+            <input
+              type="text"
+              value={editForm.title || ""}
+              onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
+              className="form-input"
+              style={{ width: "100%", marginTop: 4 }}
+            />
+          </label>
+          <label>
+            <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Valid Until</span>
+            <input
+              type="date"
+              value={editForm.valid_until?.slice(0, 10) || ""}
+              onChange={(e) => setEditForm({ ...editForm, valid_until: e.target.value })}
+              className="form-input"
+              style={{ width: "100%", marginTop: 4 }}
+            />
+          </label>
+          <label>
+            <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Intro Text</span>
+            <textarea
+              value={editForm.intro_text || ""}
+              onChange={(e) => setEditForm({ ...editForm, intro_text: e.target.value })}
+              className="form-input"
+              rows={3}
+              style={{ width: "100%", marginTop: 4 }}
+            />
+          </label>
+          <label>
+            <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Closing Text</span>
+            <textarea
+              value={editForm.closing_text || ""}
+              onChange={(e) => setEditForm({ ...editForm, closing_text: e.target.value })}
+              className="form-input"
+              rows={3}
+              style={{ width: "100%", marginTop: 4 }}
+            />
+          </label>
+          <label>
+            <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Discount %</span>
+            <input
+              type="number"
+              value={editForm.discount_percent ?? 0}
+              onChange={(e) => setEditForm({ ...editForm, discount_percent: parseFloat(e.target.value) || 0 })}
+              className="form-input"
+              style={{ width: "100%", marginTop: 4 }}
+            />
+          </label>
+          <label>
+            <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>VAT %</span>
+            <input
+              type="number"
+              value={editForm.vat_percent ?? 20}
+              onChange={(e) => setEditForm({ ...editForm, vat_percent: parseFloat(e.target.value) || 20 })}
+              className="form-input"
+              style={{ width: "100%", marginTop: 4 }}
+            />
+          </label>
+          <label>
+            <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Notes (internal)</span>
+            <textarea
+              value={editForm.notes || ""}
+              onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
+              className="form-input"
+              rows={2}
+              style={{ width: "100%", marginTop: 4 }}
+            />
+          </label>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
+            <Button variant="ghost" onClick={() => setEditing(false)}>Cancel</Button>
+            <Button variant="primary" onClick={handleSaveEdit}>Save</Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Add Item Modal */}
+      <Modal open={showAddItem} title="Add Line Item" onClose={() => setShowAddItem(false)}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <label>
-              <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Title</span>
+              <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Section</span>
               <input
                 type="text"
-                value={editForm.title || ""}
-                onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
+                value={newItem.section}
+                onChange={(e) => setNewItem({ ...newItem, section: e.target.value })}
                 className="form-input"
+                placeholder="e.g. Betrieb (laufend)"
                 style={{ width: "100%", marginTop: 4 }}
               />
             </label>
             <label>
-              <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Valid Until</span>
+              <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Article Code</span>
               <input
-                type="date"
-                value={editForm.valid_until?.slice(0, 10) || ""}
-                onChange={(e) => setEditForm({ ...editForm, valid_until: e.target.value })}
+                type="text"
+                value={newItem.article}
+                onChange={(e) => setNewItem({ ...newItem, article: e.target.value })}
+                className="form-input"
+                placeholder="e.g. KI-CLOUD"
+                style={{ width: "100%", marginTop: 4 }}
+              />
+            </label>
+          </div>
+          <label>
+            <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Description *</span>
+            <input
+              type="text"
+              value={newItem.description}
+              onChange={(e) => setNewItem({ ...newItem, description: e.target.value })}
+              className="form-input"
+              placeholder="Product / service name"
+              style={{ width: "100%", marginTop: 4 }}
+            />
+          </label>
+          <label>
+            <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Detail</span>
+            <textarea
+              value={newItem.detail}
+              onChange={(e) => setNewItem({ ...newItem, detail: e.target.value })}
+              className="form-input"
+              rows={2}
+              placeholder="Longer description..."
+              style={{ width: "100%", marginTop: 4 }}
+            />
+          </label>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 12 }}>
+            <label>
+              <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Cycle</span>
+              <input
+                type="text"
+                value={newItem.cycle}
+                onChange={(e) => setNewItem({ ...newItem, cycle: e.target.value })}
+                className="form-input"
+                placeholder="p.m."
+                style={{ width: "100%", marginTop: 4 }}
+              />
+            </label>
+            <label>
+              <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Quantity</span>
+              <input
+                type="number"
+                value={newItem.quantity}
+                onChange={(e) => setNewItem({ ...newItem, quantity: parseFloat(e.target.value) || 1 })}
                 className="form-input"
                 style={{ width: "100%", marginTop: 4 }}
               />
             </label>
             <label>
-              <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Intro Text</span>
-              <textarea
-                value={editForm.intro_text || ""}
-                onChange={(e) => setEditForm({ ...editForm, intro_text: e.target.value })}
+              <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Unit</span>
+              <input
+                type="text"
+                value={newItem.unit}
+                onChange={(e) => setNewItem({ ...newItem, unit: e.target.value })}
                 className="form-input"
-                rows={3}
-                style={{ width: "100%", marginTop: 4 }}
-              />
-            </label>
-            <label>
-              <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Closing Text</span>
-              <textarea
-                value={editForm.closing_text || ""}
-                onChange={(e) => setEditForm({ ...editForm, closing_text: e.target.value })}
-                className="form-input"
-                rows={3}
                 style={{ width: "100%", marginTop: 4 }}
               />
             </label>
@@ -428,150 +643,93 @@ export default function QuoteDetail() {
               <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Discount %</span>
               <input
                 type="number"
-                value={editForm.discount_percent ?? 0}
-                onChange={(e) => setEditForm({ ...editForm, discount_percent: parseFloat(e.target.value) || 0 })}
+                value={newItem.discount_percent}
+                onChange={(e) => setNewItem({ ...newItem, discount_percent: parseFloat(e.target.value) || 0 })}
                 className="form-input"
                 style={{ width: "100%", marginTop: 4 }}
               />
             </label>
-            <label>
-              <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>VAT %</span>
-              <input
-                type="number"
-                value={editForm.vat_percent ?? 20}
-                onChange={(e) => setEditForm({ ...editForm, vat_percent: parseFloat(e.target.value) || 20 })}
-                className="form-input"
-                style={{ width: "100%", marginTop: 4 }}
-              />
-            </label>
-            <label>
-              <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Notes (internal)</span>
-              <textarea
-                value={editForm.notes || ""}
-                onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
-                className="form-input"
-                rows={2}
-                style={{ width: "100%", marginTop: 4 }}
-              />
-            </label>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
-              <Button variant="ghost" onClick={() => setEditing(false)}>Cancel</Button>
-              <Button variant="primary" onClick={handleSaveEdit}>Save</Button>
-            </div>
           </div>
-        </Modal>
-      )}
+          <label>
+            <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Unit Price (Netto EUR) *</span>
+            <input
+              type="number"
+              value={newItem.unit_price}
+              onChange={(e) => setNewItem({ ...newItem, unit_price: parseFloat(e.target.value) || 0 })}
+              className="form-input"
+              style={{ width: "100%", marginTop: 4 }}
+            />
+          </label>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
+            <Button variant="ghost" onClick={() => setShowAddItem(false)}>Cancel</Button>
+            <Button variant="primary" onClick={handleAddItem} disabled={!newItem.description || !newItem.unit_price}>Add</Button>
+          </div>
+        </div>
+      </Modal>
 
-      {/* Add Item Modal */}
-      {showAddItem && (
-        <Modal open={showAddItem} title="Add Line Item" onClose={() => setShowAddItem(false)}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              <label>
-                <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Section</span>
-                <input
-                  type="text"
-                  value={newItem.section}
-                  onChange={(e) => setNewItem({ ...newItem, section: e.target.value })}
-                  className="form-input"
-                  placeholder="e.g. Betrieb (laufend)"
-                  style={{ width: "100%", marginTop: 4 }}
-                />
-              </label>
-              <label>
-                <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Article Code</span>
-                <input
-                  type="text"
-                  value={newItem.article}
-                  onChange={(e) => setNewItem({ ...newItem, article: e.target.value })}
-                  className="form-input"
-                  placeholder="e.g. KI-CLOUD"
-                  style={{ width: "100%", marginTop: 4 }}
-                />
-              </label>
-            </div>
-            <label>
-              <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Description *</span>
-              <input
-                type="text"
-                value={newItem.description}
-                onChange={(e) => setNewItem({ ...newItem, description: e.target.value })}
-                className="form-input"
-                placeholder="Product / service name"
-                style={{ width: "100%", marginTop: 4 }}
-              />
-            </label>
-            <label>
-              <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Detail</span>
-              <textarea
-                value={newItem.detail}
-                onChange={(e) => setNewItem({ ...newItem, detail: e.target.value })}
-                className="form-input"
-                rows={2}
-                placeholder="Longer description..."
-                style={{ width: "100%", marginTop: 4 }}
-              />
-            </label>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 12 }}>
-              <label>
-                <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Cycle</span>
-                <input
-                  type="text"
-                  value={newItem.cycle}
-                  onChange={(e) => setNewItem({ ...newItem, cycle: e.target.value })}
-                  className="form-input"
-                  placeholder="p.m."
-                  style={{ width: "100%", marginTop: 4 }}
-                />
-              </label>
-              <label>
-                <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Quantity</span>
-                <input
-                  type="number"
-                  value={newItem.quantity}
-                  onChange={(e) => setNewItem({ ...newItem, quantity: parseFloat(e.target.value) || 1 })}
-                  className="form-input"
-                  style={{ width: "100%", marginTop: 4 }}
-                />
-              </label>
-              <label>
-                <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Unit</span>
-                <input
-                  type="text"
-                  value={newItem.unit}
-                  onChange={(e) => setNewItem({ ...newItem, unit: e.target.value })}
-                  className="form-input"
-                  style={{ width: "100%", marginTop: 4 }}
-                />
-              </label>
-              <label>
-                <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Discount %</span>
-                <input
-                  type="number"
-                  value={newItem.discount_percent}
-                  onChange={(e) => setNewItem({ ...newItem, discount_percent: parseFloat(e.target.value) || 0 })}
-                  className="form-input"
-                  style={{ width: "100%", marginTop: 4 }}
-                />
-              </label>
-            </div>
-            <label>
-              <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Unit Price (Netto EUR) *</span>
-              <input
-                type="number"
-                value={newItem.unit_price}
-                onChange={(e) => setNewItem({ ...newItem, unit_price: parseFloat(e.target.value) || 0 })}
-                className="form-input"
-                style={{ width: "100%", marginTop: 4 }}
-              />
-            </label>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
-              <Button variant="ghost" onClick={() => setShowAddItem(false)}>Cancel</Button>
-              <Button variant="primary" onClick={handleAddItem} disabled={!newItem.description || !newItem.unit_price}>Add</Button>
-            </div>
+      {/* Contact Picker Modal */}
+      <Modal open={showContactPicker} title="Assign Contact" onClose={() => setShowContactPicker(false)}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <input
+            type="text"
+            value={contactSearch}
+            onChange={(e) => searchContacts(e.target.value)}
+            className="form-input"
+            placeholder="Search contacts by name, email, company..."
+            style={{ width: "100%" }}
+            autoFocus
+          />
+          <div style={{ maxHeight: 300, overflowY: "auto" }}>
+            {/* Remove contact option */}
+            {quote.contact_id && (
+              <div
+                onClick={() => assignContact(null)}
+                style={{
+                  padding: "10px 12px", cursor: "pointer", borderBottom: "1px solid var(--border)",
+                  color: "var(--error)", fontStyle: "italic",
+                }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-secondary)"; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+              >
+                Remove contact assignment
+              </div>
+            )}
+            {contactResults.map((c) => (
+              <div
+                key={c.id}
+                onClick={() => assignContact(c)}
+                style={{
+                  padding: "10px 12px", cursor: "pointer",
+                  borderBottom: "1px solid var(--border)",
+                  background: c.id === quote.contact_id ? "var(--bg-secondary)" : "transparent",
+                }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-secondary)"; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = c.id === quote.contact_id ? "var(--bg-secondary)" : "transparent"; }}
+              >
+                <div style={{ fontWeight: 500 }}>
+                  {c.first_name} {c.last_name}
+                  {c.id === quote.contact_id && (
+                    <span style={{ color: "var(--accent)", fontSize: "0.8rem", marginLeft: 8 }}>current</span>
+                  )}
+                </div>
+                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                  {[c.company_name, c.job_title, c.emails?.[0]].filter(Boolean).join(" · ")}
+                </div>
+              </div>
+            ))}
+            {contactSearch.trim() && contactResults.length === 0 && (
+              <div style={{ padding: 16, textAlign: "center", color: "var(--text-muted)" }}>
+                No contacts found
+              </div>
+            )}
+            {!contactSearch.trim() && (
+              <div style={{ padding: 16, textAlign: "center", color: "var(--text-muted)" }}>
+                Type to search for contacts
+              </div>
+            )}
           </div>
-        </Modal>
-      )}
+        </div>
+      </Modal>
     </>
   );
 }

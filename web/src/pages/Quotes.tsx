@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Badge,
@@ -6,6 +6,7 @@ import {
   ChipGroup,
   EmptyState,
   MetaText,
+  Modal,
   Pagination,
   PageHeader,
   PageBody,
@@ -34,6 +35,23 @@ interface Quote {
 interface StatusCount {
   status: string;
   count: number;
+}
+
+interface Contact {
+  id: string;
+  first_name: string;
+  last_name: string;
+  emails: string[];
+  company_name: string | null;
+  company_id: string | null;
+  job_title: string | null;
+}
+
+interface Template {
+  id: string;
+  name: string;
+  description: string | null;
+  org_name: string | null;
 }
 
 const STATUS_OPTIONS = ["all", "draft", "sent", "accepted", "declined", "expired"] as const;
@@ -72,6 +90,17 @@ export default function Quotes() {
   const [lastQueryMs, setLastQueryMs] = useState<number | null>(null);
   const limit = 50;
 
+  // New Quote modal
+  const [showNew, setShowNew] = useState(false);
+  const [newTitle, setNewTitle] = useState("Neues Angebot");
+  const [contactSearch, setContactSearch] = useState("");
+  const [contactResults, setContactResults] = useState<Contact[]>([]);
+  const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [selectedTemplate, setSelectedTemplate] = useState<string>("");
+  const [creating, setCreating] = useState(false);
+  const contactSearchTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+
   const fetchQuotes = (s: string, status: string, off: number) => {
     const params = new URLSearchParams();
     if (s) params.set("search", s);
@@ -95,17 +124,25 @@ export default function Quotes() {
       });
   };
 
-  useEffect(() => {
-    fetchQuotes(search, statusFilter, offset);
-  }, [statusFilter, offset]);
+  // Consolidated fetch effect
+  const searchRef = useRef(search);
+  const prevSearchRef = useRef(search);
+  searchRef.current = search;
 
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setOffset(0);
-      fetchQuotes(search, statusFilter, 0);
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [search]);
+    const searchChanged = search !== prevSearchRef.current;
+    prevSearchRef.current = search;
+
+    if (searchChanged && search !== "") {
+      const timer = setTimeout(() => {
+        setOffset(0);
+        fetchQuotes(searchRef.current, statusFilter, 0);
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+    fetchQuotes(search, statusFilter, offset);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, statusFilter, offset]);
 
   const totalAll = useMemo(
     () => statusCounts.reduce((sum, s) => sum + s.count, 0),
@@ -117,17 +154,54 @@ export default function Quotes() {
     return statusCounts.find((sc) => sc.status === s)?.count || 0;
   };
 
+  // Contact search for new-quote modal
+  const searchContacts = (q: string) => {
+    setContactSearch(q);
+    if (contactSearchTimer.current) clearTimeout(contactSearchTimer.current);
+    if (!q.trim()) { setContactResults([]); return; }
+    contactSearchTimer.current = setTimeout(() => {
+      fetch(`/api/contacts?search=${encodeURIComponent(q)}&limit=8`)
+        .then((r) => r.json())
+        .then((data) => setContactResults(data.contacts || []))
+        .catch(() => {});
+    }, 200);
+  };
+
+  // Load templates when modal opens
+  const openNewQuoteModal = () => {
+    setShowNew(true);
+    setNewTitle("Neues Angebot");
+    setContactSearch("");
+    setContactResults([]);
+    setSelectedContact(null);
+    setSelectedTemplate("");
+    fetch("/api/quote-templates")
+      .then((r) => r.json())
+      .then((data) => setTemplates(data.templates || data || []))
+      .catch(() => {});
+  };
+
   const handleCreate = async () => {
+    setCreating(true);
     try {
+      const body: Record<string, unknown> = { title: newTitle };
+      if (selectedContact) {
+        body.contact_id = selectedContact.id;
+        if (selectedContact.company_id) body.company_id = selectedContact.company_id;
+      }
+      if (selectedTemplate) body.template_id = selectedTemplate;
+
       const res = await fetch("/api/quotes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: "Neues Angebot" }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (data.id) navigate(`/quotes/${data.id}`);
     } catch {
       // ignore
+    } finally {
+      setCreating(false);
     }
   };
 
@@ -212,7 +286,7 @@ export default function Quotes() {
         title="Quotes"
         subtitle={`${totalAll} quotes`}
         actions={
-          <Button variant="primary" onClick={handleCreate}>
+          <Button variant="primary" onClick={openNewQuoteModal}>
             New Quote
           </Button>
         }
@@ -223,7 +297,7 @@ export default function Quotes() {
           <SearchInput
             value={search}
             onChange={setSearch}
-            placeholder="Search quotes..."
+            placeholder="Search quotes, contacts..."
             resultCount={search.trim() ? total : undefined}
             queryTimeMs={lastQueryMs ?? undefined}
             debounceMs={0}
@@ -269,6 +343,127 @@ export default function Quotes() {
           </>
         )}
       </PageBody>
+
+      {/* New Quote Modal */}
+      <Modal open={showNew} title="New Quote" onClose={() => setShowNew(false)}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {/* Title */}
+          <label>
+            <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Title</span>
+            <input
+              type="text"
+              value={newTitle}
+              onChange={(e) => setNewTitle(e.target.value)}
+              className="form-input"
+              style={{ width: "100%", marginTop: 4 }}
+            />
+          </label>
+
+          {/* Contact search */}
+          <div>
+            <span style={{ fontSize: "0.8rem", fontWeight: 500, display: "block", marginBottom: 4 }}>Contact</span>
+            {selectedContact ? (
+              <div style={{
+                display: "flex", alignItems: "center", gap: 8,
+                padding: "8px 12px", borderRadius: 8, background: "var(--bg-secondary)",
+                border: "1px solid var(--border)",
+              }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 500 }}>
+                    {selectedContact.first_name} {selectedContact.last_name}
+                  </div>
+                  {selectedContact.company_name && (
+                    <div style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
+                      {selectedContact.company_name}
+                      {selectedContact.job_title && ` — ${selectedContact.job_title}`}
+                    </div>
+                  )}
+                  {selectedContact.emails?.[0] && (
+                    <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                      {selectedContact.emails[0]}
+                    </div>
+                  )}
+                </div>
+                <button
+                  onClick={() => { setSelectedContact(null); setContactSearch(""); }}
+                  style={{
+                    background: "none", border: "none", cursor: "pointer",
+                    color: "var(--text-muted)", fontSize: "1.1rem", padding: "0 4px",
+                  }}
+                  title="Remove contact"
+                >
+                  ×
+                </button>
+              </div>
+            ) : (
+              <div style={{ position: "relative" }}>
+                <input
+                  type="text"
+                  value={contactSearch}
+                  onChange={(e) => searchContacts(e.target.value)}
+                  className="form-input"
+                  placeholder="Search contacts by name, email, company..."
+                  style={{ width: "100%"}}
+                  autoFocus
+                />
+                {contactResults.length > 0 && (
+                  <div style={{
+                    position: "absolute", top: "100%", left: 0, right: 0, zIndex: 10,
+                    background: "var(--bg-primary)", border: "1px solid var(--border)",
+                    borderRadius: 8, marginTop: 4, maxHeight: 240, overflowY: "auto",
+                    boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+                  }}>
+                    {contactResults.map((c) => (
+                      <div
+                        key={c.id}
+                        onClick={() => { setSelectedContact(c); setContactSearch(""); setContactResults([]); }}
+                        style={{
+                          padding: "8px 12px", cursor: "pointer",
+                          borderBottom: "1px solid var(--border)",
+                        }}
+                        onMouseEnter={(e) => { (e.target as HTMLElement).style.background = "var(--bg-secondary)"; }}
+                        onMouseLeave={(e) => { (e.target as HTMLElement).style.background = "transparent"; }}
+                      >
+                        <div style={{ fontWeight: 500 }}>
+                          {c.first_name} {c.last_name}
+                        </div>
+                        <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                          {[c.company_name, c.job_title, c.emails?.[0]].filter(Boolean).join(" · ")}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Template picker */}
+          <label>
+            <span style={{ fontSize: "0.8rem", fontWeight: 500 }}>Template</span>
+            <select
+              value={selectedTemplate}
+              onChange={(e) => setSelectedTemplate(e.target.value)}
+              className="form-input"
+              style={{ width: "100%", marginTop: 4 }}
+            >
+              <option value="">No template (blank quote)</option>
+              {templates.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}{t.org_name ? ` (${t.org_name})` : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
+            <Button variant="ghost" onClick={() => setShowNew(false)}>Cancel</Button>
+            <Button variant="primary" onClick={handleCreate} disabled={creating}>
+              {creating ? "Creating..." : "Create Quote"}
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </>
   );
 }
