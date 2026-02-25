@@ -42,6 +42,7 @@ import {
   getMediaIntegrationToolHandlers,
   getMediaIntegrationToolDefinitions,
 } from "../media/integration-tools.js";
+import { getQuotesToolHandlers, getQuotesToolDefinitions } from "../quotes/tools.js";
 import { readFileSync } from "node:fs";
 import { resolveSkillPathByName } from "../skills/catalog.js";
 import { runClaudeCode } from "./claude-code.js";
@@ -1142,6 +1143,11 @@ for (const [name, handler] of getMediaIntegrationToolHandlers()) {
   toolRegistry.set(name, handler);
 }
 
+// Register Quotes/Sales tools into main registry
+for (const [name, handler] of getQuotesToolHandlers()) {
+  toolRegistry.set(name, handler);
+}
+
 // Core tools always available to every agent (memory, scheduling, system)
 const CORE_TOOLS = new Set([
   "memory_search", "memory_store", "memory_manage",
@@ -1710,6 +1716,7 @@ export function getToolDefinitions(allowedSkills?: string[] | null): Anthropic.T
     ...getSSHToolDefinitions(),
     ...getAvatarToolDefinitions(),
     ...getMediaIntegrationToolDefinitions(),
+    ...getQuotesToolDefinitions(),
   ];
 
   // No filter = return everything (personal JOI agent)

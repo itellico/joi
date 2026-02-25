@@ -6197,6 +6197,379 @@ app.put("/api/companies/:id", async (req, res) => {
   }
 });
 
+// ─── Quotes / Angebote API ───
+
+import { renderQuoteHtml } from "./quotes/html-template.js";
+
+// GET /api/quotes — list with search, filter, pagination
+app.get("/api/quotes", async (req, res) => {
+  try {
+    const search = req.query.search as string | undefined;
+    const status = req.query.status as string | undefined;
+    const contactId = req.query.contact_id as string | undefined;
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    const offset = Number(req.query.offset) || 0;
+
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    let idx = 1;
+
+    if (search) {
+      conditions.push(
+        `(q.quote_number ILIKE $${idx} OR q.title ILIKE $${idx} OR comp.name ILIKE $${idx})`,
+      );
+      params.push(`%${search}%`);
+      idx++;
+    }
+    if (status) {
+      conditions.push(`q.status = $${idx++}`);
+      params.push(status);
+    }
+    if (contactId) {
+      conditions.push(`q.contact_id = $${idx++}`);
+      params.push(contactId);
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+    const countResult = await query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM quotes q
+       LEFT JOIN companies comp ON comp.id = q.company_id ${where}`,
+      params,
+    );
+
+    const statusCounts = await query<{ status: string; count: number }>(
+      "SELECT status, count(*)::int AS count FROM quotes GROUP BY status ORDER BY status",
+    );
+
+    params.push(limit, offset);
+    const result = await query(
+      `SELECT q.id, q.quote_number, q.title, q.status, q.net_total, q.gross_total,
+              q.currency, q.issued_date, q.valid_until, q.tags, q.created_at,
+              c.first_name AS contact_first_name, c.last_name AS contact_last_name,
+              comp.name AS company_name
+       FROM quotes q
+       LEFT JOIN contacts c ON c.id = q.contact_id
+       LEFT JOIN companies comp ON comp.id = q.company_id
+       ${where}
+       ORDER BY q.created_at DESC
+       LIMIT $${idx++} OFFSET $${idx}`,
+      params,
+    );
+
+    res.json({
+      quotes: result.rows,
+      total: countResult.rows[0]?.count || 0,
+      statusCounts: statusCounts.rows,
+    });
+  } catch (err) {
+    console.error("Failed to list quotes:", err);
+    res.status(500).json({ error: "Failed to list quotes" });
+  }
+});
+
+// GET /api/quotes/:id — single quote with items
+app.get("/api/quotes/:id", async (req, res) => {
+  try {
+    const quoteResult = await query(
+      `SELECT q.*,
+              c.first_name AS contact_first_name, c.last_name AS contact_last_name,
+              c.emails AS contact_emails, c.job_title AS contact_job_title,
+              comp.name AS company_name, comp.domain AS company_domain
+       FROM quotes q
+       LEFT JOIN contacts c ON c.id = q.contact_id
+       LEFT JOIN companies comp ON comp.id = q.company_id
+       WHERE q.id = $1`,
+      [req.params.id],
+    );
+    if (quoteResult.rows.length === 0) {
+      res.status(404).json({ error: "Quote not found" });
+      return;
+    }
+
+    const itemsResult = await query(
+      "SELECT * FROM quote_items WHERE quote_id = $1 ORDER BY sort_order, created_at",
+      [req.params.id],
+    );
+
+    res.json({ quote: quoteResult.rows[0], items: itemsResult.rows });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to get quote" });
+  }
+});
+
+// POST /api/quotes — create quote
+app.post("/api/quotes", async (req, res) => {
+  try {
+    const {
+      title, contact_id, company_id, valid_until,
+      intro_text, closing_text, terms, notes, tags,
+      sender_name, sender_email, vat_percent,
+    } = req.body;
+
+    // Generate quote number
+    const seqResult = await query<{ nextval: string }>("SELECT nextval('quote_number_seq')");
+    const quoteNumber = `ANG-${seqResult.rows[0].nextval}`;
+
+    const result = await query<{ id: string }>(
+      `INSERT INTO quotes (
+        quote_number, title, contact_id, company_id, valid_until,
+        intro_text, closing_text, terms, notes, tags,
+        sender_name, sender_email, vat_percent
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+      RETURNING id`,
+      [
+        quoteNumber, title || "Neues Angebot",
+        contact_id || null, company_id || null,
+        valid_until || new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10),
+        intro_text || null, closing_text || null,
+        terms ? JSON.stringify(terms) : "{}",
+        notes || null, tags || [],
+        sender_name || null, sender_email || null, vat_percent ?? 20,
+      ],
+    );
+
+    res.json({ id: result.rows[0].id, quote_number: quoteNumber, created: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
+  }
+});
+
+// PUT /api/quotes/:id — update quote
+app.put("/api/quotes/:id", async (req, res) => {
+  try {
+    const updates: string[] = ["updated_at = NOW()"];
+    const params: unknown[] = [];
+    let idx = 1;
+
+    const fields = [
+      "title", "status", "contact_id", "company_id", "valid_until",
+      "intro_text", "closing_text", "notes",
+      "sender_name", "sender_email", "sender_phone",
+      "discount_percent", "vat_percent", "currency",
+    ];
+    for (const field of fields) {
+      if (req.body[field] !== undefined) {
+        updates.push(`${field} = $${idx++}`);
+        params.push(req.body[field]);
+      }
+    }
+    for (const field of ["terms", "sender_address"]) {
+      if (req.body[field] !== undefined) {
+        updates.push(`${field} = $${idx++}`);
+        params.push(JSON.stringify(req.body[field]));
+      }
+    }
+    if (req.body.tags !== undefined) {
+      updates.push(`tags = $${idx++}`);
+      params.push(req.body.tags);
+    }
+
+    params.push(req.params.id);
+    await query(`UPDATE quotes SET ${updates.join(", ")} WHERE id = $${idx}`, params);
+    res.json({ updated: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
+  }
+});
+
+// DELETE /api/quotes/:id
+app.delete("/api/quotes/:id", async (req, res) => {
+  try {
+    await query("DELETE FROM quotes WHERE id = $1", [req.params.id]);
+    res.json({ deleted: true });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to delete quote" });
+  }
+});
+
+// POST /api/quotes/:id/items — add line item
+app.post("/api/quotes/:id/items", async (req, res) => {
+  try {
+    const {
+      section, article, description, detail, cycle,
+      quantity, unit, unit_price, discount_percent,
+    } = req.body;
+
+    const qty = quantity ?? 1;
+    const disc = discount_percent ?? 0;
+    const lineTotal = qty * (unit_price || 0) * (1 - disc / 100);
+
+    const orderResult = await query<{ max: number }>(
+      "SELECT COALESCE(MAX(sort_order), -1) + 1 AS max FROM quote_items WHERE quote_id = $1",
+      [req.params.id],
+    );
+
+    const result = await query<{ id: string }>(
+      `INSERT INTO quote_items (
+        quote_id, sort_order, section, article, description, detail, cycle,
+        quantity, unit, unit_price, discount_percent, line_total
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+      RETURNING id`,
+      [
+        req.params.id, orderResult.rows[0].max,
+        section || null, article || null, description || "", detail || null, cycle || null,
+        qty, unit || "Stück", unit_price || 0, disc, lineTotal,
+      ],
+    );
+
+    // Recalculate quote totals
+    const itemsSum = await query<{ total: string }>(
+      "SELECT COALESCE(SUM(line_total), 0) AS total FROM quote_items WHERE quote_id = $1",
+      [req.params.id],
+    );
+    const subtotal = parseFloat(itemsSum.rows[0].total);
+    const quoteData = await query<{ discount_percent: string; vat_percent: string }>(
+      "SELECT discount_percent, vat_percent FROM quotes WHERE id = $1",
+      [req.params.id],
+    );
+    const dPct = parseFloat(quoteData.rows[0]?.discount_percent || "0");
+    const vPct = parseFloat(quoteData.rows[0]?.vat_percent || "20");
+    const discAmt = subtotal * dPct / 100;
+    const net = subtotal - discAmt;
+    const vat = net * vPct / 100;
+    await query(
+      `UPDATE quotes SET subtotal=$2, discount_amount=$3, net_total=$4, vat_amount=$5, gross_total=$6, updated_at=NOW()
+       WHERE id=$1`,
+      [req.params.id, subtotal, discAmt, net, vat, net + vat],
+    );
+
+    res.json({ id: result.rows[0].id, line_total: lineTotal, created: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
+  }
+});
+
+// PUT /api/quotes/:quoteId/items/:itemId — update line item
+app.put("/api/quotes/:quoteId/items/:itemId", async (req, res) => {
+  try {
+    const updates: string[] = [];
+    const params: unknown[] = [req.params.itemId];
+    let idx = 2;
+
+    for (const field of ["section", "article", "description", "detail", "cycle", "quantity", "unit", "unit_price", "discount_percent", "sort_order"]) {
+      if (req.body[field] !== undefined) {
+        updates.push(`${field} = $${idx++}`);
+        params.push(req.body[field]);
+      }
+    }
+
+    // Recalculate line total
+    const existing = await query<Record<string, unknown>>(
+      "SELECT * FROM quote_items WHERE id = $1", [req.params.itemId],
+    );
+    if (existing.rows.length === 0) { res.status(404).json({ error: "Item not found" }); return; }
+    const item = existing.rows[0];
+    const qty = req.body.quantity ?? Number(item.quantity);
+    const price = req.body.unit_price ?? Number(item.unit_price);
+    const disc = req.body.discount_percent ?? Number(item.discount_percent);
+    const lineTotal = qty * price * (1 - disc / 100);
+    updates.push(`line_total = $${idx++}`);
+    params.push(lineTotal);
+
+    await query(`UPDATE quote_items SET ${updates.join(", ")} WHERE id = $1`, params);
+
+    // Recalculate quote totals
+    const itemsSum = await query<{ total: string }>(
+      "SELECT COALESCE(SUM(line_total), 0) AS total FROM quote_items WHERE quote_id = $1",
+      [req.params.quoteId],
+    );
+    const subtotal = parseFloat(itemsSum.rows[0].total);
+    const quoteData = await query<{ discount_percent: string; vat_percent: string }>(
+      "SELECT discount_percent, vat_percent FROM quotes WHERE id = $1",
+      [req.params.quoteId],
+    );
+    const dPct = parseFloat(quoteData.rows[0]?.discount_percent || "0");
+    const vPct = parseFloat(quoteData.rows[0]?.vat_percent || "20");
+    const discAmt = subtotal * dPct / 100;
+    const net = subtotal - discAmt;
+    const vat = net * vPct / 100;
+    await query(
+      `UPDATE quotes SET subtotal=$2, discount_amount=$3, net_total=$4, vat_amount=$5, gross_total=$6, updated_at=NOW()
+       WHERE id=$1`,
+      [req.params.quoteId, subtotal, discAmt, net, vat, net + vat],
+    );
+
+    res.json({ updated: true, line_total: lineTotal });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
+  }
+});
+
+// DELETE /api/quotes/:quoteId/items/:itemId
+app.delete("/api/quotes/:quoteId/items/:itemId", async (req, res) => {
+  try {
+    await query("DELETE FROM quote_items WHERE id = $1", [req.params.itemId]);
+
+    // Recalculate
+    const itemsSum = await query<{ total: string }>(
+      "SELECT COALESCE(SUM(line_total), 0) AS total FROM quote_items WHERE quote_id = $1",
+      [req.params.quoteId],
+    );
+    const subtotal = parseFloat(itemsSum.rows[0].total);
+    const quoteData = await query<{ discount_percent: string; vat_percent: string }>(
+      "SELECT discount_percent, vat_percent FROM quotes WHERE id = $1",
+      [req.params.quoteId],
+    );
+    const dPct = parseFloat(quoteData.rows[0]?.discount_percent || "0");
+    const vPct = parseFloat(quoteData.rows[0]?.vat_percent || "20");
+    const discAmt = subtotal * dPct / 100;
+    const net = subtotal - discAmt;
+    const vat = net * vPct / 100;
+    await query(
+      `UPDATE quotes SET subtotal=$2, discount_amount=$3, net_total=$4, vat_amount=$5, gross_total=$6, updated_at=NOW()
+       WHERE id=$1`,
+      [req.params.quoteId, subtotal, discAmt, net, vat, net + vat],
+    );
+
+    res.json({ deleted: true });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to delete item" });
+  }
+});
+
+// GET /api/quotes/:id/html — render quote as HTML (for preview + print)
+app.get("/api/quotes/:id/html", async (req, res) => {
+  try {
+    const quoteResult = await query(
+      `SELECT q.*,
+              c.first_name AS contact_first_name, c.last_name AS contact_last_name,
+              c.emails AS contact_emails, c.job_title AS contact_job_title,
+              comp.name AS company_name, comp.domain AS company_domain
+       FROM quotes q
+       LEFT JOIN contacts c ON c.id = q.contact_id
+       LEFT JOIN companies comp ON comp.id = q.company_id
+       WHERE q.id = $1`,
+      [req.params.id],
+    );
+    if (quoteResult.rows.length === 0) {
+      res.status(404).json({ error: "Quote not found" });
+      return;
+    }
+
+    const itemsResult = await query(
+      "SELECT * FROM quote_items WHERE quote_id = $1 ORDER BY sort_order, created_at",
+      [req.params.id],
+    );
+
+    const html = renderQuoteHtml(quoteResult.rows[0] as never, itemsResult.rows as never);
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.send(html);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to render quote" });
+  }
+});
+
+// GET /api/quotes/:id/pdf — generate PDF (uses print-to-PDF via browser, or returns HTML for client-side print)
+app.get("/api/quotes/:id/pdf", async (req, res) => {
+  // For now redirect to HTML with print-friendly styling — client triggers window.print()
+  res.redirect(`/api/quotes/${req.params.id}/html`);
+});
+
 // ─── Contact Tasks (Things3) — explicit link table ───
 
 // GET linked tasks
@@ -8654,8 +9027,9 @@ wss.on("connection", (ws) => {
 
         case "autodev.worker_hello": {
           // Worker identifying itself — register this WS as the worker connection
-          autoDevProxy.setWorkerSocket(ws);
-          autoDevProxy.handleWorkerMessage(msg);
+          if (autoDevProxy.setWorkerSocket(ws)) {
+            autoDevProxy.handleWorkerMessage(msg);
+          }
           break;
         }
 

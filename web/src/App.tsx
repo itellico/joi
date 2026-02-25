@@ -27,6 +27,8 @@ import QualityCenter from "./pages/QualityCenter";
 import AgentSocial from "./pages/AgentSocial";
 import CloudSync from "./pages/CloudSync";
 import Bookmarks from "./pages/Bookmarks";
+import Quotes from "./pages/Quotes";
+import QuoteDetail from "./pages/QuoteDetail";
 import AssistantChat from "./components/AssistantChat";
 import JoiOrb from "./components/JoiOrb";
 
@@ -166,6 +168,9 @@ function App() {
           </NavLink>
           <NavLink to="/contacts">
             Contacts
+          </NavLink>
+          <NavLink to="/quotes">
+            Quotes
           </NavLink>
           <NavLink to="/agents">
             Agents
@@ -367,6 +372,8 @@ function App() {
           <Route path="/chat" element={<Chat ws={ws} chatMode={chatMode} />} />
           <Route path="/contacts" element={<Contacts />} />
           <Route path="/contacts/:id" element={<ContactDetail />} />
+          <Route path="/quotes" element={<Quotes />} />
+          <Route path="/quotes/:id" element={<QuoteDetail />} />
           <Route path="/agents" element={<Agents />} />
           <Route path="/agent-social" element={<AgentSocial />} />
           <Route path="/knowledge" element={<Knowledge />} />
