@@ -49,6 +49,11 @@ const SKILL_TO_CAPABILITY: Record<string, string> = {
   audio_transcribe: "Transcription",
   // Code
   run_claude_code: "Code",
+  // Gemini image/avatar tools
+  gemini_avatar_generate: "Gemini",
+  gemini_avatar_generate_all: "Gemini",
+  avatar_style_get: "Gemini",
+  avatar_style_set: "Gemini",
   // Drive
   drive_upload: "Drive",
   drive_list: "Drive",
@@ -92,6 +97,18 @@ const SKILL_TO_CAPABILITY: Record<string, string> = {
   skill_scan_claude_code: "Skills",
   skill_scan_official: "Skills",
   skill_scan_agents: "Skills",
+  // SSH / Infra
+  ssh_exec: "Infrastructure",
+  ssh_git_sync_status: "Infrastructure",
+  ssh_mac_status: "Infrastructure",
+  // Notion
+  notion_search: "Notion",
+  notion_read: "Notion",
+  notion_create: "Notion",
+  notion_update: "Notion",
+  notion_query_db: "Notion",
+  notion_comment: "Notion",
+  notion_workspaces: "Notion",
   // Codebase
   codebase_tree: "Codebase",
   codebase_read: "Codebase",

@@ -43,6 +43,7 @@ export const AuthConfigSchema = z.object({
   openrouterApiKey: z.string().optional(),
   openrouterMgmtKey: z.string().optional(), // Management key for OpenRouter admin API (credits, activity, keys)
   openaiApiKey: z.string().optional(),
+  googleApiKey: z.string().optional(),
   elevenlabsApiKey: z.string().optional(),
 });
 

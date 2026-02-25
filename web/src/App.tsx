@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Routes, Route, NavLink, Navigate, useNavigate } from "react-router-dom";
 import { TooltipProvider } from "./components/ui";
 import { useWebSocket } from "./hooks/useWebSocket";
@@ -25,12 +25,18 @@ import AutoDev from "./pages/AutoDev";
 import Media from "./pages/Media";
 import QualityCenter from "./pages/QualityCenter";
 import AgentSocial from "./pages/AgentSocial";
+import CloudSync from "./pages/CloudSync";
 import AssistantChat from "./components/AssistantChat";
 import JoiOrb from "./components/JoiOrb";
 
 type ChatMode = "api" | "claude-code";
 
 type ServiceHealth = Record<string, { status: "green" | "orange" | "red"; detail?: string }>;
+type HealthResponse = {
+  services?: ServiceHealth;
+  uptime?: number;
+  debug?: Record<string, unknown>;
+};
 
 function App() {
   const ws = useWebSocket();
@@ -40,8 +46,21 @@ function App() {
   const navigate = useNavigate();
   const [autodevState, setAutodevState] = useState<string>("waiting");
   const [health, setHealth] = useState<ServiceHealth>({});
+  const [healthResponse, setHealthResponse] = useState<HealthResponse | null>(null);
   const [watchdogAutoRestart, setWatchdogAutoRestart] = useState(true);
   const [restartingService, setRestartingService] = useState<string | null>(null);
+  const [healthCopied, setHealthCopied] = useState(false);
+
+  const refreshHealth = useCallback(async () => {
+    try {
+      const res = await fetch("/api/health");
+      const data = await res.json() as HealthResponse;
+      if (data.services) setHealth(data.services);
+      setHealthResponse(data);
+    } catch {
+      // Keep last known health on fetch errors.
+    }
+  }, []);
 
   const restartService = async (service: string) => {
     setRestartingService(service);
@@ -49,10 +68,7 @@ function App() {
       await fetch(`/api/services/${service}/restart`, { method: "POST" });
       // Refresh health after a brief delay
       setTimeout(() => {
-        fetch("/api/health")
-          .then((r) => r.json())
-          .then((data) => { if (data.services) setHealth(data.services); })
-          .catch(() => {});
+        void refreshHealth();
         setRestartingService(null);
       }, 3000);
     } catch {
@@ -60,13 +76,32 @@ function App() {
     }
   };
 
+  const copyHealthDebug = useCallback(async () => {
+    if (!navigator?.clipboard) return;
+    const payload = {
+      capturedAt: new Date().toISOString(),
+      ws: { status: ws.status },
+      ui: {
+        autodevState,
+        watchdogAutoRestart,
+        restartingService,
+      },
+      services: health,
+      healthResponse,
+    };
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+      setHealthCopied(true);
+      setTimeout(() => setHealthCopied(false), 1600);
+    } catch {
+      setHealthCopied(false);
+    }
+  }, [autodevState, health, healthResponse, restartingService, watchdogAutoRestart, ws.status]);
+
   // Fetch health + autodev state on WS connect/reconnect
   useEffect(() => {
     if (ws.status !== "connected") return;
-    fetch("/api/health")
-      .then((r) => r.json())
-      .then((data) => { if (data.services) setHealth(data.services); })
-      .catch(() => {});
+    void refreshHealth();
     fetch("/api/autodev/status")
       .then((r) => r.json())
       .then((data) => { if (data.state) setAutodevState(data.state); })
@@ -75,18 +110,15 @@ function App() {
       .then((r) => r.json())
       .then((data) => { if (typeof data.autoRestartEnabled === "boolean") setWatchdogAutoRestart(data.autoRestartEnabled); })
       .catch(() => {});
-  }, [ws.status]);
+  }, [refreshHealth, ws.status]);
 
   // Refresh health every 30s
   useEffect(() => {
     const id = setInterval(() => {
-      fetch("/api/health")
-        .then((r) => r.json())
-        .then((data) => { if (data.services) setHealth(data.services); })
-        .catch(() => {});
+      void refreshHealth();
     }, 30_000);
     return () => clearInterval(id);
-  }, []);
+  }, [refreshHealth]);
 
   useEffect(() => {
     return ws.on("autodev.status", (frame) => {
@@ -176,6 +208,9 @@ function App() {
           <NavLink to="/reports">
             Reports
           </NavLink>
+          <NavLink to="/cloud-sync">
+            Cloud Sync
+          </NavLink>
           <NavLink to="/integrations">
             Integrations
           </NavLink>
@@ -255,6 +290,16 @@ function App() {
           </span>
         </div>
         <div className="sidebar-health">
+          <div className="sidebar-health-header">
+            <span className="sidebar-health-title">System Health</span>
+            <button
+              className={`sidebar-health-copy${healthCopied ? " copied" : ""}`}
+              title="Copy full health debug snapshot"
+              onClick={copyHealthDebug}
+            >
+              {healthCopied ? "copied" : "copy"}
+            </button>
+          </div>
           <div className="sidebar-health-row">
             <span className={`sidebar-health-dot ${ws.status === "connected" ? "green" : "red"}`} />
             <span>Gateway</span>
@@ -332,6 +377,7 @@ function App() {
           <Route path="/settings" element={<Settings />} />
           <Route path="/tasks" element={<Tasks ws={ws} chatMode={chatMode} />} />
           <Route path="/reviews" element={<Reviews ws={ws} />} />
+          <Route path="/cloud-sync" element={<CloudSync />} />
           <Route path="/integrations" element={<Channels ws={ws} />} />
           <Route path="/autodev" element={<AutoDev ws={ws} />} />
           <Route path="/quality" element={<QualityCenter ws={ws} />} />

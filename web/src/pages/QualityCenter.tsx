@@ -117,6 +117,8 @@ interface Issue {
   autodev_task_id: string | null;
   created_at: string;
   updated_at: string;
+  evidence?: unknown;
+  tags?: string[];
 }
 
 interface Stats {
@@ -129,6 +131,36 @@ interface Stats {
   last_run: TestRun | null;
 }
 
+interface SoulRollout {
+  id: string;
+  agent_id: string;
+  status: "canary_active" | "promoted" | "rolled_back" | "cancelled";
+  traffic_percent: number;
+  minimum_sample_size: number;
+  metrics: Record<string, unknown>;
+  decision_reason: string | null;
+  started_at: string;
+  ended_at: string | null;
+  created_at: string;
+}
+
+interface SoulGovernanceSummary {
+  generatedAt: string;
+  policyVersion: string;
+  active: number;
+  overdueActive: number;
+  openSoulIssues: number;
+  statusCounts: Record<string, number>;
+  coverage: {
+    totalAgents: number;
+    soulCoverage: number;
+    qaCoverage: number;
+    soulCoverageRate: number;
+    qaCoverageRate: number;
+  };
+  recentRollouts: SoulRollout[];
+}
+
 interface WsHandle {
   status: string;
   on: (type: string, handler: (frame: { data?: unknown }) => void) => () => void;
@@ -138,6 +170,8 @@ interface WsHandle {
 
 const emptySuiteForm = { name: "", description: "", agent_id: "personal", tags: "" };
 const emptyCaseForm = { name: "", input_message: "", expected_tools: "", unexpected_tools: "", expected_content_patterns: "", max_latency_ms: "", min_quality_score: "0.5" };
+const SOUL_REVIEW_DELTA_WARN = 0.05;
+const SOUL_QA_DELTA_WARN = 0.03;
 
 // ─── Helpers ───
 
@@ -179,6 +213,41 @@ function csvToArr(s: string): string[] {
   return s.split(",").map((x) => x.trim()).filter(Boolean);
 }
 
+function formatIssueEvidence(evidence: unknown): string {
+  if (evidence == null) return "";
+  if (typeof evidence === "string") {
+    try {
+      return JSON.stringify(JSON.parse(evidence), null, 2);
+    } catch {
+      return evidence;
+    }
+  }
+  try {
+    return JSON.stringify(evidence, null, 2);
+  } catch {
+    return String(evidence);
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function rolloutMetricNumber(rollout: SoulRollout, path: string[]): number | null {
+  let cursor: unknown = rollout.metrics;
+  for (const segment of path) {
+    const record = asRecord(cursor);
+    if (!record) return null;
+    cursor = record[segment];
+  }
+  return asNumber(cursor);
+}
+
 // ─── Component ───
 
 export default function QualityCenter({ ws }: { ws?: WsHandle }) {
@@ -193,6 +262,11 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
   const [runProgress, setRunProgress] = useState<Record<string, { runId: string; suiteId: string; total: number; completed: number; currentCase: string; results: Array<{ caseName: string; status: string }> }>>({});
   const [issueFilter, setIssueFilter] = useState<string>("open");
   const [search, setSearch] = useState("");
+  const [selectedIssue, setSelectedIssue] = useState<Issue | null>(null);
+  const [soulSummary, setSoulSummary] = useState<SoulGovernanceSummary | null>(null);
+  const [soulRollouts, setSoulRollouts] = useState<SoulRollout[]>([]);
+  const [soulBusy, setSoulBusy] = useState(false);
+  const [soulActionKey, setSoulActionKey] = useState<string | null>(null);
 
   // Create/edit modals
   const [showSuiteModal, setShowSuiteModal] = useState(false);
@@ -230,9 +304,26 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
     if (res.ok) setStats(await res.json());
   }, []);
 
+  const loadSoulGovernance = useCallback(async () => {
+    const [summaryRes, rolloutsRes] = await Promise.all([
+      fetch("/api/soul/governance/summary"),
+      fetch("/api/soul/rollouts?limit=120"),
+    ]);
+
+    if (summaryRes.ok) {
+      const payload = await summaryRes.json() as { summary?: SoulGovernanceSummary };
+      setSoulSummary(payload.summary || null);
+    }
+
+    if (rolloutsRes.ok) {
+      const payload = await rolloutsRes.json() as { rollouts?: SoulRollout[] };
+      setSoulRollouts(Array.isArray(payload.rollouts) ? payload.rollouts : []);
+    }
+  }, []);
+
   const loadAll = useCallback(() => {
-    loadSuites(); loadRuns(); loadIssues(); loadStats();
-  }, [loadSuites, loadRuns, loadIssues, loadStats]);
+    loadSuites(); loadRuns(); loadIssues(); loadStats(); loadSoulGovernance();
+  }, [loadSuites, loadRuns, loadIssues, loadStats, loadSoulGovernance]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
   useEffect(() => { loadIssues(); }, [loadIssues]);
@@ -402,8 +493,58 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
   };
 
   const pushIssueToAutodev = async (issueId: string) => {
-    await fetch(`/api/quality/issues/${issueId}/autodev`, { method: "POST" });
-    loadIssues();
+    const res = await fetch(`/api/quality/issues/${issueId}/autodev`, { method: "POST" });
+    const data = res.ok ? await res.json() as { issue?: Issue } : null;
+    const updated = data?.issue;
+    await Promise.all([loadIssues(), loadStats()]);
+    setSelectedIssue((prev) => {
+      if (!prev || prev.id !== issueId) return prev;
+      if (updated) return updated;
+      return { ...prev, status: "autodev_assigned" };
+    });
+  };
+
+  const openTaskInThings = async (taskUuid: string) => {
+    await fetch(`/api/tasks/${taskUuid}/show`, { method: "POST" });
+  };
+
+  const runSoulRolloutAction = async (
+    rolloutId: string,
+    action: "evaluate" | "promote" | "rollback" | "cancel",
+  ) => {
+    const actionKey = `${rolloutId}:${action}`;
+    setSoulActionKey(actionKey);
+    try {
+      const response = await fetch(`/api/soul/rollouts/${rolloutId}/${action}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          action === "evaluate"
+            ? { applyDecision: true }
+            : { reason: `Manual ${action} from Quality Center` },
+        ),
+      });
+      if (!response.ok) {
+        throw new Error(`Soul rollout action failed: ${action}`);
+      }
+      await Promise.all([loadSoulGovernance(), loadIssues(), loadStats()]);
+    } finally {
+      setSoulActionKey(null);
+    }
+  };
+
+  const evaluateAllSoulRolloutsNow = async () => {
+    setSoulBusy(true);
+    try {
+      await fetch("/api/soul/rollouts/evaluate-all", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ applyDecision: true }),
+      });
+      await Promise.all([loadSoulGovernance(), loadIssues(), loadStats()]);
+    } finally {
+      setSoulBusy(false);
+    }
   };
 
   // ─── Filtered Data ───
@@ -425,6 +566,15 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
     const q = search.toLowerCase();
     return issues.filter((i) => i.title.toLowerCase().includes(q) || i.category.includes(q));
   }, [issues, search]);
+
+  const filteredSoulRollouts = useMemo(() => {
+    if (!search) return soulRollouts;
+    const q = search.toLowerCase();
+    return soulRollouts.filter((r) =>
+      r.agent_id.toLowerCase().includes(q)
+      || r.status.toLowerCase().includes(q)
+      || (r.decision_reason || "").toLowerCase().includes(q));
+  }, [soulRollouts, search]);
 
   // ─── Column Definitions ───
 
@@ -533,10 +683,118 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
     {
       key: "autodev", header: "AutoDev", width: 100,
       render: (i) => i.autodev_task_id
-        ? <Badge status="accent">assigned</Badge>
-        : <Button size="sm" variant="ghost" onClick={(e: React.MouseEvent) => { e.stopPropagation(); pushIssueToAutodev(i.id); }}>Push</Button>,
+        ? (
+            <Row gap={4}>
+              <Badge status="accent">assigned</Badge>
+              <Button size="sm" variant="ghost" onClick={(e: React.MouseEvent) => { e.stopPropagation(); openTaskInThings(i.autodev_task_id!); }}>Open</Button>
+            </Row>
+          )
+        : i.status === "autodev_assigned"
+          ? <Badge status="accent">assigned</Badge>
+          : <Button size="sm" variant="ghost" onClick={(e: React.MouseEvent) => { e.stopPropagation(); pushIssueToAutodev(i.id); }}>Push</Button>,
     },
     { key: "date", header: "Created", width: 100, render: (i) => <MetaText>{timeAgo(i.created_at)}</MetaText>, sortValue: (i) => i.created_at },
+  ];
+
+  const soulRolloutColumns: UnifiedListColumn<SoulRollout>[] = [
+    { key: "agent", header: "Agent", width: 120, render: (r) => <strong>{r.agent_id}</strong>, sortValue: (r) => r.agent_id },
+    { key: "status", header: "Status", width: 140, render: (r) => statusBadge(r.status) },
+    { key: "traffic", header: "Traffic", width: 90, align: "right", render: (r) => <MetaText>{r.traffic_percent}%</MetaText> },
+    {
+      key: "sample",
+      header: "Samples",
+      width: 100,
+      align: "right",
+      render: (r) => <MetaText>{rolloutMetricNumber(r, ["sampleSize"]) ?? 0}/{r.minimum_sample_size}</MetaText>,
+      sortValue: (r) => rolloutMetricNumber(r, ["sampleSize"]) ?? -1,
+    },
+    {
+      key: "risk",
+      header: "Risk",
+      width: 230,
+      render: (r) => {
+        const reviewDelta = rolloutMetricNumber(r, ["reviewRejectRate", "delta"]);
+        const qaDelta = rolloutMetricNumber(r, ["qaFailureRate", "delta"]);
+        const incidents = rolloutMetricNumber(r, ["highSeverityIncidents"]);
+        return (
+          <Row gap={6}>
+            <Badge status={reviewDelta !== null && reviewDelta > SOUL_REVIEW_DELTA_WARN ? "error" : "muted"}>
+              RR {reviewDelta !== null ? `${(reviewDelta * 100).toFixed(1)}%` : "n/a"}
+            </Badge>
+            <Badge status={qaDelta !== null && qaDelta > SOUL_QA_DELTA_WARN ? "error" : "muted"}>
+              QA {qaDelta !== null ? `${(qaDelta * 100).toFixed(1)}%` : "n/a"}
+            </Badge>
+            <Badge status={(incidents || 0) > 0 ? "warning" : "success"}>
+              HI {incidents ?? 0}
+            </Badge>
+          </Row>
+        );
+      },
+    },
+    { key: "started", header: "Started", width: 110, render: (r) => <MetaText>{timeAgo(r.started_at)}</MetaText>, sortValue: (r) => r.started_at },
+    {
+      key: "actions",
+      header: "",
+      width: 330,
+      align: "right",
+      render: (r) => {
+        const canOperate = r.status === "canary_active";
+        const evaluateKey = `${r.id}:evaluate`;
+        const promoteKey = `${r.id}:promote`;
+        const rollbackKey = `${r.id}:rollback`;
+        const cancelKey = `${r.id}:cancel`;
+        return (
+          <Row gap={4}>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={(e: React.MouseEvent) => {
+                e.stopPropagation();
+                runSoulRolloutAction(r.id, "evaluate");
+              }}
+              disabled={!canOperate || soulActionKey !== null}
+            >
+              {soulActionKey === evaluateKey ? "Evaluating..." : "Evaluate"}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={(e: React.MouseEvent) => {
+                e.stopPropagation();
+                runSoulRolloutAction(r.id, "promote");
+              }}
+              disabled={!canOperate || soulActionKey !== null}
+            >
+              {soulActionKey === promoteKey ? "Promoting..." : "Promote"}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={(e: React.MouseEvent) => {
+                e.stopPropagation();
+                if (!window.confirm("Rollback this rollout to baseline?")) return;
+                runSoulRolloutAction(r.id, "rollback");
+              }}
+              disabled={!canOperate || soulActionKey !== null}
+            >
+              {soulActionKey === rollbackKey ? "Rolling back..." : "Rollback"}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={(e: React.MouseEvent) => {
+                e.stopPropagation();
+                if (!window.confirm("Cancel this active rollout?")) return;
+                runSoulRolloutAction(r.id, "cancel");
+              }}
+              disabled={!canOperate || soulActionKey !== null}
+            >
+              {soulActionKey === cancelKey ? "Cancelling..." : "Cancel"}
+            </Button>
+          </Row>
+        );
+      },
+    },
   ];
 
   // ─── Render ───
@@ -814,8 +1072,68 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
                     items={filteredIssues}
                     columns={issueColumns}
                     rowKey={(i) => i.id}
+                    onRowClick={(i) => setSelectedIssue(i)}
                     emptyMessage="No issues — everything looks good!"
                     defaultSort={{ key: "date", direction: "desc" }}
+                  />
+                </Stack>
+              ),
+            },
+            {
+              label: "Soul Governance",
+              value: "soul-governance",
+              content: (
+                <Stack gap={12}>
+                  {soulSummary && (
+                    <Row gap={12} style={{ flexWrap: "wrap" }}>
+                      <Card style={{ flex: 1, minWidth: 160, textAlign: "center" }}>
+                        <MetaText>Active Canaries</MetaText>
+                        <div style={{ fontSize: 24, fontWeight: 700 }}>{soulSummary.active}</div>
+                      </Card>
+                      <Card style={{ flex: 1, minWidth: 160, textAlign: "center" }}>
+                        <MetaText>Overdue Canaries</MetaText>
+                        <div style={{ fontSize: 24, fontWeight: 700, color: soulSummary.overdueActive > 0 ? "var(--orange)" : "var(--green)" }}>
+                          {soulSummary.overdueActive}
+                        </div>
+                      </Card>
+                      <Card style={{ flex: 1, minWidth: 160, textAlign: "center" }}>
+                        <MetaText>Open Soul Issues</MetaText>
+                        <div style={{ fontSize: 24, fontWeight: 700, color: soulSummary.openSoulIssues > 0 ? "var(--red)" : "var(--green)" }}>
+                          {soulSummary.openSoulIssues}
+                        </div>
+                      </Card>
+                      <Card style={{ flex: 1, minWidth: 200, textAlign: "center" }}>
+                        <MetaText>Coverage</MetaText>
+                        <div style={{ fontSize: 14, marginTop: 4 }}>
+                          Soul {(soulSummary.coverage.soulCoverageRate * 100).toFixed(0)}%
+                          {" · "}
+                          QA {(soulSummary.coverage.qaCoverageRate * 100).toFixed(0)}%
+                        </div>
+                        <MetaText>
+                          {soulSummary.coverage.soulCoverage}/{soulSummary.coverage.totalAgents} agents with soul versions
+                        </MetaText>
+                      </Card>
+                    </Row>
+                  )}
+
+                  <Row gap={8}>
+                    <Button variant="primary" onClick={evaluateAllSoulRolloutsNow} disabled={soulBusy}>
+                      {soulBusy ? "Evaluating all..." : "Evaluate Active Rollouts"}
+                    </Button>
+                    <Button variant="ghost" onClick={loadSoulGovernance} disabled={soulBusy}>
+                      Refresh
+                    </Button>
+                    {soulSummary && (
+                      <MetaText>Policy v{soulSummary.policyVersion} · updated {timeAgo(soulSummary.generatedAt)}</MetaText>
+                    )}
+                  </Row>
+
+                  <UnifiedList<SoulRollout>
+                    items={filteredSoulRollouts}
+                    columns={soulRolloutColumns}
+                    rowKey={(r) => r.id}
+                    emptyMessage="No soul rollouts found."
+                    defaultSort={{ key: "started", direction: "desc" }}
                   />
                 </Stack>
               ),
@@ -858,6 +1176,67 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
           ]}
         />
       </PageBody>
+
+      <Modal
+        open={Boolean(selectedIssue)}
+        onClose={() => setSelectedIssue(null)}
+        title={selectedIssue ? `Issue: ${selectedIssue.title}` : "Issue"}
+        width={760}
+      >
+        {selectedIssue && (
+          <Stack gap={12}>
+            <Row gap={8} style={{ flexWrap: "wrap" }}>
+              {statusBadge(selectedIssue.severity)}
+              {statusBadge(selectedIssue.status)}
+              <Badge status="muted">{selectedIssue.category}</Badge>
+              {selectedIssue.autodev_task_id ? <Badge status="accent">assigned</Badge> : null}
+            </Row>
+
+            <Card>
+              <Stack gap={6}>
+                <strong>Description</strong>
+                <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.45 }}>
+                  {selectedIssue.description || "No description"}
+                </div>
+              </Stack>
+            </Card>
+
+            <Card>
+              <Stack gap={4}>
+                <MetaText>ID: {selectedIssue.id}</MetaText>
+                <MetaText>Created: {new Date(selectedIssue.created_at).toLocaleString()}</MetaText>
+                <MetaText>Updated: {new Date(selectedIssue.updated_at).toLocaleString()}</MetaText>
+                {selectedIssue.autodev_task_id && (
+                  <Row gap={8}>
+                    <MetaText>AutoDev Task: {selectedIssue.autodev_task_id}</MetaText>
+                    <Button size="sm" variant="ghost" onClick={() => openTaskInThings(selectedIssue.autodev_task_id!)}>Open</Button>
+                  </Row>
+                )}
+              </Stack>
+            </Card>
+
+            {selectedIssue.evidence ? (
+              <Card>
+                <Stack gap={6}>
+                  <strong>Evidence</strong>
+                  <pre style={{ fontSize: 12, whiteSpace: "pre-wrap", maxHeight: 280, overflow: "auto", margin: 0, padding: 10, background: "var(--bg-secondary)", borderRadius: 6 }}>
+                    {formatIssueEvidence(selectedIssue.evidence).slice(0, 14000)}
+                  </pre>
+                </Stack>
+              </Card>
+            ) : null}
+
+            <Row gap={8}>
+              {!selectedIssue.autodev_task_id && selectedIssue.status !== "autodev_assigned" ? (
+                <Button variant="primary" onClick={() => pushIssueToAutodev(selectedIssue.id)}>Push to AutoDev</Button>
+              ) : (
+                <Button variant="ghost" disabled>Already assigned</Button>
+              )}
+              <Button onClick={() => setSelectedIssue(null)}>Close</Button>
+            </Row>
+          </Stack>
+        )}
+      </Modal>
 
       {/* ─── Create / Edit Suite Modal ─── */}
       <Modal open={showSuiteModal} onClose={() => setShowSuiteModal(false)} title={editingSuiteId ? "Edit Test Suite" : "New Test Suite"} width={520}>

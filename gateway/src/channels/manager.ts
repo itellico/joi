@@ -15,6 +15,9 @@ import { createTelegramAdapter } from "./adapters/telegram.js";
 import { createIMessageAdapter } from "./adapters/imessage.js";
 import { createSlackAdapter } from "./adapters/slack.js";
 import { createDiscordAdapter } from "./adapters/discord.js";
+import { createEmbyAdapter } from "./adapters/emby.js";
+import { createJellyseerrAdapter } from "./adapters/jellyseerr.js";
+import { createWebhookAdapter } from "./adapters/webhook.js";
 import type { JoiConfig } from "../config/schema.js";
 
 type BroadcastFn = (type: string, data: unknown) => void;
@@ -35,6 +38,12 @@ function createAdapter(channelId: string, type: ChannelType): ChannelAdapter {
       return createSlackAdapter(channelId);
     case "discord":
       return createDiscordAdapter(channelId);
+    case "emby":
+      return createEmbyAdapter(channelId);
+    case "jellyseerr":
+      return createJellyseerrAdapter(channelId);
+    case "webhook":
+      return createWebhookAdapter(channelId);
     default:
       throw new Error(`Unknown channel type: ${type}`);
   }

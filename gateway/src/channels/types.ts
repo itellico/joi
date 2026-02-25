@@ -1,6 +1,16 @@
 // Channel adapter types
 
-export type ChannelType = "whatsapp" | "telegram" | "imessage" | "email" | "slack" | "discord" | "notion";
+export type ChannelType =
+  | "whatsapp"
+  | "telegram"
+  | "imessage"
+  | "email"
+  | "slack"
+  | "discord"
+  | "notion"
+  | "emby"
+  | "jellyseerr"
+  | "webhook";
 
 export type ChannelStatus = "disconnected" | "connecting" | "connected" | "error" | "awaiting_code" | "awaiting_2fa";
 

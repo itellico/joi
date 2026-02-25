@@ -5,6 +5,7 @@ import { GoogleGenAI, Modality } from "@google/genai";
 import type { JoiConfig } from "../config/schema.js";
 import { query } from "../db/client.js";
 import { storeMedia } from "../media/storage.js";
+import { ensureAgentSoulDocument } from "../agent/soul-documents.js";
 
 export type AvatarRenderMode = "nano" | "pro";
 
@@ -366,8 +367,18 @@ export async function generateAvatarsForAllAgents(opts: {
   model?: string;
   conversationId?: string | null;
 }): Promise<BulkAvatarResult[]> {
-  const { rows } = await query(
-    `SELECT id, name, system_prompt FROM agents WHERE enabled = true ORDER BY name`,
+  const { rows } = await query<{
+    id: string;
+    name: string | null;
+    description: string | null;
+    model: string | null;
+    skills: string[] | null;
+    system_prompt: string | null;
+  }>(
+    `SELECT id, name, description, model, skills, system_prompt
+     FROM agents
+     WHERE enabled = true
+     ORDER BY name`,
   );
 
   if (!rows || rows.length === 0) {
@@ -377,11 +388,17 @@ export async function generateAvatarsForAllAgents(opts: {
   const results: BulkAvatarResult[] = [];
 
   for (const agent of rows) {
-    const agentId = agent.id as string;
-    const agentName = (agent.name as string) || agentId;
-    const soulSnippet = typeof agent.system_prompt === "string"
-      ? agent.system_prompt.slice(0, 300)
-      : undefined;
+    const agentId = agent.id;
+    const agentName = agent.name || agentId;
+    const ensuredSoul = ensureAgentSoulDocument({
+      id: agentId,
+      name: agentName,
+      description: agent.description,
+      model: agent.model,
+      skills: agent.skills,
+    });
+    const fallbackPrompt = typeof agent.system_prompt === "string" ? agent.system_prompt : "";
+    const soulSnippet = compactLine((ensuredSoul.content || fallbackPrompt).trim(), 300);
 
     const agentPrompt = opts.prompt
       ? `${opts.prompt} — for agent "${agentName}"`

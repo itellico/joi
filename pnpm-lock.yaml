@@ -13,6 +13,9 @@ importers:
       '@anthropic-ai/sdk':
         specifier: ^0.39.0
         version: 0.39.0(encoding@0.1.13)
+      '@google/genai':
+        specifier: ^1.42.0
+        version: 1.42.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)
       '@livekit/protocol':
         specifier: ^1.44.0
         version: 1.44.0

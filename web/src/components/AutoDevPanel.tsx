@@ -1,4 +1,5 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
+import { formatCliOutput } from "../lib/autodevLogFormat";
 
 interface WsHandle {
   send: (type: string, data?: unknown, id?: string) => void;
@@ -36,6 +37,7 @@ export default function AutoDevPanel({ ws }: Props) {
   const [log, setLog] = useState("");
   const logRef = useRef<HTMLDivElement>(null);
   const [completions, setCompletions] = useState<Array<{ title: string; summary: string }>>([]);
+  const visibleLog = useMemo(() => formatCliOutput(log.slice(-5000)), [log]);
 
   useEffect(() => {
     localStorage.setItem(LS_KEY_OPEN, String(open));
@@ -143,7 +145,7 @@ export default function AutoDevPanel({ ws }: Props) {
           {/* Log output (last portion) */}
           {log && (
             <div className="autodev-log" ref={logRef}>
-              {log.slice(-2000)}
+              {visibleLog}
             </div>
           )}
 

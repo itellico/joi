@@ -130,6 +130,7 @@ const TYPE_CLASS: Record<string, string> = {
   verify: "reviews-type-verify",
   freeform: "reviews-type-freeform",
   triage: "reviews-type-triage",
+  soul_update: "reviews-type-soul_update",
 };
 
 const TYPE_LABEL: Record<string, string> = {
@@ -140,6 +141,7 @@ const TYPE_LABEL: Record<string, string> = {
   verify: "Verification",
   freeform: "Manual Review",
   triage: "Inbox Triage",
+  soul_update: "Soul Update",
 };
 
 function timeAgo(dateStr: string): string {
@@ -177,6 +179,44 @@ function extractContentBlock(
 function getReviewTypeLabel(review: ReviewItem): string {
   if (isVerifyFactReview(review)) return "Fact Verify";
   return TYPE_LABEL[review.type] || review.type;
+}
+
+function getSoulUpdatePreview(review: ReviewItem): {
+  agentId: string | null;
+  summary: string | null;
+  runQualityGate: boolean;
+  qualitySuiteId: string | null;
+} | null {
+  if (review.type !== "soul_update") return null;
+  const action = asRecord(review.proposed_action);
+  if (!action) return null;
+
+  const agentId = (
+    (typeof action.agentId === "string" && action.agentId.trim())
+    || (typeof action.agent_id === "string" && action.agent_id.trim())
+    || null
+  );
+  const summary = (
+    (typeof action.summary === "string" && action.summary.trim())
+    || (typeof action.changeSummary === "string" && action.changeSummary.trim())
+    || null
+  );
+  const qualitySuiteId = (
+    (typeof action.qualitySuiteId === "string" && action.qualitySuiteId.trim())
+    || (typeof action.quality_suite_id === "string" && action.quality_suite_id.trim())
+    || null
+  );
+  const runQualityGate = Boolean(
+    (typeof action.runQualityGate === "boolean" && action.runQualityGate)
+    || (typeof action.qualityGate === "boolean" && action.qualityGate),
+  );
+
+  return {
+    agentId,
+    summary,
+    runQualityGate,
+    qualitySuiteId,
+  };
 }
 
 function getTriageClassification(review: ReviewItem): TriageClassification | null {
@@ -273,6 +313,20 @@ function summarizeReviewActions(review: ReviewItem): ActionSummary[] {
     return [{ title: "Verify fact", detail: triple || "Confirm or reject learned fact" }];
   }
 
+  const soulUpdate = getSoulUpdatePreview(review);
+  if (soulUpdate) {
+    return [{
+      title: "Update soul document",
+      detail: [
+        soulUpdate.agentId ? `agent ${getAgentLabel(soulUpdate.agentId)}` : null,
+        soulUpdate.summary || null,
+        soulUpdate.runQualityGate
+          ? `quality gate${soulUpdate.qualitySuiteId ? ` (${soulUpdate.qualitySuiteId})` : ""}`
+          : "quality gate disabled",
+      ].filter(Boolean).join(" · "),
+    }];
+  }
+
   const actions = getTriageActions(review);
   if (actions.length === 0) return [];
   return actions.map(summarizeAction);
@@ -282,6 +336,7 @@ function getReviewActionPreviewText(review: ReviewItem): string {
   const summaries = summarizeReviewActions(review);
   if (summaries.length === 0) {
     if (review.type === "triage") return "No action plan proposed";
+    if (review.type === "soul_update") return "Review proposed soul revision";
     return "Open to inspect details";
   }
   const short = summaries.slice(0, 2).map((s) => s.title).join(" + ");
@@ -333,6 +388,9 @@ function getLearningImpact(review: ReviewItem): string {
   if (isVerifyFactReview(review)) {
     return "Approve verifies this fact for future context. Reject archives it as outdated. This path does not generate preference/reflection learning.";
   }
+  if (review.type === "soul_update") {
+    return "Approve writes a new active soul version for the target agent and links it to this review for governance traceability.";
+  }
   if (review.type === "triage") {
     return "Every decision becomes a learning episode. Approve reinforces current behavior; modify/reject teaches stronger corrections and can produce new preference/solution signals.";
   }
@@ -359,6 +417,14 @@ function getActionLabels(review: ReviewItem): {
       reject: "Dismiss Plan",
       approveNext: "Apply + Next",
       rejectNext: "Dismiss + Next",
+    };
+  }
+  if (review.type === "soul_update") {
+    return {
+      approve: "Activate Soul",
+      reject: "Reject Update",
+      approveNext: "Activate + Next",
+      rejectNext: "Reject + Next",
     };
   }
   return {
@@ -1383,6 +1449,8 @@ function DetailPanel({
           <MetaText size="xs" className="block mt-2">
             {isVerifyFactReview(review)
               ? "Verify confirms the fact as valid memory. Reject keeps it out of memory."
+              : review.type === "soul_update"
+                ? "Activate writes and versions the new soul document for this agent. Reject leaves the current active soul unchanged."
               : "Apply runs the proposed action now. Dismiss rejects the action and stores your correction for future learning."}
           </MetaText>
         </Card>

@@ -1,4 +1,7 @@
 import pg from "pg";
+import dotenv from "dotenv";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 let pool: pg.Pool | null = null;
 let consecutiveFailures = 0;
@@ -95,4 +98,14 @@ export async function close(): Promise<void> {
   }
 }
 
-export default { query, getClient, transaction, close, resetPool, recordSuccess, recordFailure };
+/** Re-read .env from disk, update DATABASE_URL in process.env, and reset the pool. */
+export async function reloadFromEnv(): Promise<{ old: string; new: string }> {
+  const oldUrl = process.env.DATABASE_URL || "(unset)";
+  const envPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../.env");
+  dotenv.config({ path: envPath, override: true });
+  const newUrl = process.env.DATABASE_URL || "(unset)";
+  await resetPool();
+  return { old: oldUrl, new: newUrl };
+}
+
+export default { query, getClient, transaction, close, resetPool, reloadFromEnv, recordSuccess, recordFailure };

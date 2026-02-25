@@ -19,12 +19,22 @@ import {
 
 interface Channel {
   id: string;
-  channel_type: "whatsapp" | "telegram" | "imessage" | "slack" | "discord" | "notion";
+  channel_type:
+    | "whatsapp"
+    | "telegram"
+    | "imessage"
+    | "slack"
+    | "discord"
+    | "notion"
+    | "emby"
+    | "jellyseerr"
+    | "webhook";
   enabled: boolean;
   status: string;
   display_name: string | null;
   error_message: string | null;
   last_connected_at: string | null;
+  webhook_secret: string | null;
   scope: string | null;
   scope_metadata: Record<string, unknown> | null;
   language: string | null;
@@ -85,6 +95,21 @@ const CHANNEL_LABELS: Record<string, string> = {
   slack: "Slack",
   discord: "Discord",
   notion: "Notion",
+  emby: "Emby",
+  jellyseerr: "Jellyseerr",
+  webhook: "Webhook",
+};
+
+const CHANNEL_CATEGORY_LABELS: Record<string, string> = {
+  whatsapp: "Communication",
+  telegram: "Communication",
+  imessage: "Communication",
+  slack: "Communication",
+  discord: "Communication",
+  notion: "Knowledge",
+  emby: "Media",
+  jellyseerr: "Media",
+  webhook: "Automation",
 };
 
 const SETUP_GUIDES: Record<string, { steps: string[]; note?: string }> = {
@@ -146,6 +171,40 @@ const SETUP_GUIDES: Record<string, { steps: string[]; note?: string }> = {
     ],
     note: "Notion is a tools-based integration (not a messaging channel). JOI's agent can search, read, create, and update Notion pages on your behalf.",
   },
+  emby: {
+    steps: [
+      "Open Emby Dashboard > API Keys and create (or copy) an API key",
+      "Enter your Emby server URL including port (for example: http://192.168.x.x:8096)",
+      "Set a webhook secret in JOI and copy the Emby webhook URL from the channel card",
+      "Configure Emby webhook URL: /api/webhooks/emby/<channel-id>?secret=<webhookSecret>",
+      "Enter your API key and add the integration",
+      "Click Connect to validate credentials and set status to connected",
+    ],
+    note: "Emby is both browsing + webhook integration. Webhook events are ingested into JOI through the gateway.",
+  },
+  jellyseerr: {
+    steps: [
+      "Open Jellyseerr Settings > General and copy your API key",
+      "Enter your Jellyseerr server URL including port",
+      "Set a webhook secret in JOI and copy the Jellyseerr webhook URL from the channel card",
+      "Configure Jellyseerr webhook URL: /api/webhooks/jellyseerr/<channel-id>?secret=<webhookSecret>",
+      "Enter API key and add the integration",
+      "Click Connect to validate credentials and enable request management tools",
+    ],
+    note: "Jellyseerr supports request tools and inbound webhook events through JOI gateway webhooks.",
+  },
+  webhook: {
+    steps: [
+      "Set a channel name, then add a webhook secret in JOI",
+      "Create the integration and copy its webhook URL from the channel card",
+      "Generic webhook URL format: /api/webhooks/inbound/<channel-id>?secret=<webhookSecret>",
+      "Configure your external app to send POST JSON to that URL",
+      "Authenticate with one of: ?secret=<secret>, x-joi-webhook-secret, x-webhook-secret, or Authorization: Bearer <secret>",
+      "Optional: configure sender/message/event field paths for custom payload mapping",
+      "Click Connect to activate and start ingesting webhook events",
+    ],
+    note: "Webhook channels are inbound-only. JOI stores, triages, and routes these events through the same gateway inbox flow as other channels.",
+  },
 };
 
 const CONNECTED_INFO: Record<string, string[]> = {
@@ -185,6 +244,24 @@ const CONNECTED_INFO: Record<string, string[]> = {
     "Query Notion databases with filters via notion_query_db",
     "Multi-workspace support \u2014 add multiple Notion integrations with different scopes",
   ],
+  emby: [
+    "JOI can browse your Emby movie and series libraries",
+    "Use emby_library and emby_search to discover content quickly",
+    "Use emby_recently_watched, emby_continue_watching, and emby_next_up for watch state",
+    "Use emby_now_playing to inspect active playback sessions",
+  ],
+  jellyseerr: [
+    "JOI can search discover results via Jellyseerr",
+    "Use jellyseerr_requests and jellyseerr_request_status to audit request flow",
+    "Use jellyseerr_create_request and jellyseerr_cancel_request to manage requests",
+    "Use jellyseerr_available to check if a title is available or still pending",
+  ],
+  webhook: [
+    "JOI ingests incoming webhook events as channel messages",
+    "Each sender/source is grouped into conversations in the Chat inbox",
+    "Use webhookSecret and header/query auth to secure inbound calls",
+    "Route any SaaS/app events through the JOI gateway endpoint",
+  ],
 };
 
 // ─── Helpers ───
@@ -223,6 +300,7 @@ function channelBadgeStatus(channel: Channel): "success" | "error" | "warning" {
 export default function Channels({ ws }: { ws: WsHandle }) {
   const [channels, setChannels] = useState<Channel[]>([]);
   const [googleAccounts, setGoogleAccounts] = useState<GoogleAccount[]>([]);
+  const [webhookBaseUrl, setWebhookBaseUrl] = useState("");
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [showAddGoogle, setShowAddGoogle] = useState(false);
@@ -250,9 +328,23 @@ export default function Channels({ ws }: { ws: WsHandle }) {
     }
   }, []);
 
+  const fetchWebhookBase = useCallback(async () => {
+    try {
+      const res = await fetch("/api/gateway/webhook-base");
+      const data = await res.json() as {
+        webhookBaseUrl?: string | null;
+      };
+      const resolved = (data.webhookBaseUrl || "").trim().replace(/\/+$/, "");
+      setWebhookBaseUrl(resolved);
+    } catch (err) {
+      console.error("Failed to resolve webhook base URL:", err);
+      setWebhookBaseUrl("");
+    }
+  }, []);
+
   useEffect(() => {
-    Promise.all([fetchChannels(), fetchGoogleAccounts()]).finally(() => setLoading(false));
-  }, [fetchChannels, fetchGoogleAccounts]);
+    Promise.all([fetchChannels(), fetchGoogleAccounts(), fetchWebhookBase()]).finally(() => setLoading(false));
+  }, [fetchChannels, fetchGoogleAccounts, fetchWebhookBase]);
 
   // Live status updates via WS
   useEffect(() => {
@@ -365,12 +457,19 @@ export default function Channels({ ws }: { ws: WsHandle }) {
   const connectedChannels = channels.filter((ch) => ch.status === "connected").length;
   const connectedGoogle = googleAccounts.filter((a) => a.status === "connected").length;
   const isEmpty = channels.length === 0 && googleAccounts.length === 0;
+  const channelGroups = channels.reduce<Record<string, Channel[]>>((acc, ch) => {
+    const group = CHANNEL_CATEGORY_LABELS[ch.channel_type] || "Other";
+    if (!acc[group]) acc[group] = [];
+    acc[group].push(ch);
+    return acc;
+  }, {});
+  const channelGroupOrder = ["Communication", "Automation", "Media", "Knowledge", "Other"];
 
   function renderStatusSummary(): string {
     if (connectedChannels > 0 && connectedGoogle > 0) {
-      return `${connectedChannels} messaging | ${connectedGoogle} Google`;
+      return `${connectedChannels} integrations | ${connectedGoogle} Google`;
     }
-    if (connectedChannels > 0) return `${connectedChannels} messaging`;
+    if (connectedChannels > 0) return `${connectedChannels} integrations`;
     if (connectedGoogle > 0) return `${connectedGoogle} Google`;
     return "none connected";
   }
@@ -396,21 +495,33 @@ export default function Channels({ ws }: { ws: WsHandle }) {
           <IntegrationsEmptyState onAdd={() => setShowAdd(true)} />
         ) : (
           <>
-            {/* ─── Messaging Section ─── */}
+            {/* ─── Integrations Section ─── */}
             {channels.length > 0 && (
               <div>
-                <SectionHeader title="Messaging" />
+                <SectionHeader title="Integrations" />
                 <Stack gap={3}>
-                  {channels.map((ch) => (
-                    <ChannelCard
-                      key={ch.id}
-                      channel={ch}
-                      onConnect={handleConnect}
-                      onDisconnect={handleDisconnect}
-                      onDelete={handleDeleteChannel}
-                      onAuthPrompt={(id, mode) => setTelegramAuth({ channelId: id, mode })}
-                    />
-                  ))}
+                  {channelGroupOrder
+                    .filter((group) => (channelGroups[group] || []).length > 0)
+                    .map((group) => (
+                      <div key={group}>
+                        <MetaText size="xs" className="block mb-2 text-secondary">
+                          {group}
+                        </MetaText>
+                        <Stack gap={3}>
+                          {(channelGroups[group] || []).map((ch) => (
+                            <ChannelCard
+                              key={ch.id}
+                              channel={ch}
+                              webhookBaseUrl={webhookBaseUrl}
+                              onConnect={handleConnect}
+                              onDisconnect={handleDisconnect}
+                              onDelete={handleDeleteChannel}
+                              onAuthPrompt={(id, mode) => setTelegramAuth({ channelId: id, mode })}
+                            />
+                          ))}
+                        </Stack>
+                      </div>
+                    ))}
                 </Stack>
               </div>
             )}
@@ -510,6 +621,9 @@ function IntegrationsEmptyState({ onAdd }: { onAdd: () => void }) {
         <IntegrationPreview type="Slack" desc="Connect workspaces via Socket Mode" color="#4A154B" />
         <IntegrationPreview type="Discord" desc="Monitor servers with a bot" color="#5865F2" />
         <IntegrationPreview type="Notion" desc="Search, read, and create pages" color="#000000" />
+        <IntegrationPreview type="Emby" desc="Browse media libraries and watch status" color="#52B54B" />
+        <IntegrationPreview type="Jellyseerr" desc="Manage media request workflows" color="#6366F1" />
+        <IntegrationPreview type="Webhook" desc="Ingest events from any external app" color="#FF7A00" />
         <IntegrationPreview type="Google" desc="Gmail, Calendar, and Drive" color="#4285F4" />
       </Row>
 
@@ -533,12 +647,14 @@ function IntegrationPreview({ type, desc, color }: { type: string; desc: string;
 
 function ChannelCard({
   channel,
+  webhookBaseUrl,
   onConnect,
   onDisconnect,
   onDelete,
   onAuthPrompt,
 }: {
   channel: Channel;
+  webhookBaseUrl: string;
   onConnect: (id: string) => void;
   onDisconnect: (id: string) => void;
   onDelete: (id: string) => void;
@@ -550,6 +666,39 @@ function ChannelCard({
   const [showInfo, setShowInfo] = useState(false);
 
   const capabilities = CONNECTED_INFO[channel.channel_type] || [];
+  const typeLabel = CHANNEL_LABELS[channel.channel_type] || channel.channel_type;
+  const categoryLabel = CHANNEL_CATEGORY_LABELS[channel.channel_type] || "Other";
+  const displayLabel = channel.display_name || channel.id;
+  const showTypeBadge = displayLabel.trim().toLowerCase() !== typeLabel.toLowerCase();
+  const webhookPathByType: Record<string, string | null> = {
+    emby: `/api/webhooks/emby/${encodeURIComponent(channel.id)}`,
+    jellyseerr: `/api/webhooks/jellyseerr/${encodeURIComponent(channel.id)}`,
+    webhook: `/api/webhooks/inbound/${encodeURIComponent(channel.id)}`,
+  };
+  const webhookPath = webhookPathByType[channel.channel_type] || null;
+  const hasWebhookEndpoint = Boolean(webhookPath);
+  const originFallback = (() => {
+    if (typeof window === "undefined") return "";
+    try {
+      const parsed = new URL(window.location.origin);
+      const host = parsed.hostname.toLowerCase();
+      if (host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0" || host === "::1") {
+        return "";
+      }
+      return parsed.origin;
+    } catch {
+      return "";
+    }
+  })();
+  const webhookBase = (webhookBaseUrl || originFallback).replace(/\/+$/, "");
+  const webhookUrl = hasWebhookEndpoint && webhookPath && webhookBase
+    ? `${webhookBase}${webhookPath}${channel.webhook_secret ? `?secret=${encodeURIComponent(channel.webhook_secret)}` : ""}`
+    : "";
+
+  const copyWebhookUrl = () => {
+    if (!webhookUrl || !navigator?.clipboard) return;
+    void navigator.clipboard.writeText(webhookUrl);
+  };
 
   return (
     <Card>
@@ -557,11 +706,14 @@ function ChannelCard({
         <div className="flex-1">
           <Row gap={2} className="mb-2">
             <span className="text-md font-semibold">
-              {channel.display_name || channel.id}
+              {displayLabel}
             </span>
-            <Badge status={channelBadgeStatus(channel)}>
-              {CHANNEL_LABELS[channel.channel_type]}
-            </Badge>
+            <Badge status="warning">{categoryLabel}</Badge>
+            {showTypeBadge && (
+              <Badge status={channelBadgeStatus(channel)}>
+                {typeLabel}
+              </Badge>
+            )}
             {channel.scope && (
               <Badge status="warning">{channel.scope}</Badge>
             )}
@@ -583,6 +735,38 @@ function ChannelCard({
             <MetaText size="xs" className="block mb-1">
               Last connected: {new Date(channel.last_connected_at).toLocaleString()}
             </MetaText>
+          )}
+
+          {hasWebhookEndpoint && (
+            <div className="mt-2">
+              <MetaText size="xs" className="block mb-1">
+                Webhook URL
+              </MetaText>
+              <Row gap={2}>
+                <input
+                  type="text"
+                  readOnly
+                  value={webhookUrl}
+                  className="channels-input"
+                />
+                <Button size="sm" type="button" onClick={copyWebhookUrl} disabled={!webhookUrl}>
+                  Copy URL
+                </Button>
+              </Row>
+              {!channel.webhook_secret && (
+                <MetaText size="xs" className="block mt-1 text-secondary">
+                  No webhook secret set. Recreate the integration with a webhook secret.
+                </MetaText>
+              )}
+              {!webhookBase && (
+                <MetaText size="xs" className="block mt-1 text-secondary">
+                  Could not auto-resolve gateway host yet. Reload this page after gateway is reachable.
+                </MetaText>
+              )}
+              <MetaText size="xs" className="block mt-1 text-secondary">
+                Auth supported: query `secret`, header `x-joi-webhook-secret` / `x-webhook-secret`, or `Authorization: Bearer`.
+              </MetaText>
+            </div>
           )}
 
           {isConnected && (
@@ -772,10 +956,10 @@ function AddIntegrationModal({
       <Stack gap={3}>
         <button onClick={() => setMode("channel")} className="channels-option-btn">
           <span className="text-base font-semibold text-primary">
-            Messaging Channel
+            Channel / Integration
           </span>
           <p className="text-xs text-muted channels-option-desc">
-            WhatsApp, Telegram, iMessage, Slack, or Discord
+            WhatsApp, Telegram, iMessage, Slack, Discord, Notion, Emby, Jellyseerr, or Webhook
           </p>
         </button>
 
@@ -798,7 +982,16 @@ function AddIntegrationModal({
 
 /* ---------- Add Channel Modal ---------- */
 
-type ChannelTypeOption = "whatsapp" | "telegram" | "imessage" | "slack" | "discord" | "notion";
+type ChannelTypeOption =
+  | "whatsapp"
+  | "telegram"
+  | "imessage"
+  | "slack"
+  | "discord"
+  | "notion"
+  | "emby"
+  | "jellyseerr"
+  | "webhook";
 
 const CHANNEL_NAME_PLACEHOLDERS: Record<ChannelTypeOption, string> = {
   whatsapp: "Personal WhatsApp",
@@ -807,7 +1000,17 @@ const CHANNEL_NAME_PLACEHOLDERS: Record<ChannelTypeOption, string> = {
   slack: "Itellico Slack",
   discord: "My Discord Server",
   notion: "Itellico Notion",
+  emby: "Emby",
+  jellyseerr: "Jellyseerr",
+  webhook: "Ops Webhook",
 };
+
+function createWebhookSecret(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID().replace(/-/g, "");
+  }
+  return `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+}
 
 function AddChannelModal({
   open,
@@ -832,8 +1035,21 @@ function AddChannelModal({
   const [guildIds, setGuildIds] = useState("");
   const [notionToken, setNotionToken] = useState("");
   const [workspaceName, setWorkspaceName] = useState("");
+  const [mediaServerUrl, setMediaServerUrl] = useState("");
+  const [mediaApiKey, setMediaApiKey] = useState("");
+  const [webhookSecret, setWebhookSecret] = useState("");
+  const [webhookSourceLabel, setWebhookSourceLabel] = useState("");
+  const [webhookMessagePath, setWebhookMessagePath] = useState("");
+  const [webhookSenderPath, setWebhookSenderPath] = useState("");
+  const [webhookEventPath, setWebhookEventPath] = useState("");
 
   const guide = SETUP_GUIDES[type];
+
+  useEffect(() => {
+    if ((type === "emby" || type === "jellyseerr" || type === "webhook") && !webhookSecret) {
+      setWebhookSecret(createWebhookSecret());
+    }
+  }, [type, webhookSecret]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -866,6 +1082,18 @@ function AddChannelModal({
         config.token = notionToken;
         if (workspaceName.trim()) config.workspaceName = workspaceName.trim();
       }
+      if (type === "emby" || type === "jellyseerr") {
+        config.serverUrl = mediaServerUrl.trim();
+        config.apiKey = mediaApiKey.trim();
+        config.webhookSecret = webhookSecret.trim() || createWebhookSecret();
+      }
+      if (type === "webhook") {
+        config.webhookSecret = webhookSecret.trim() || createWebhookSecret();
+        if (webhookSourceLabel.trim()) config.sourceLabel = webhookSourceLabel.trim();
+        if (webhookMessagePath.trim()) config.messagePath = webhookMessagePath.trim();
+        if (webhookSenderPath.trim()) config.senderPath = webhookSenderPath.trim();
+        if (webhookEventPath.trim()) config.eventPath = webhookEventPath.trim();
+      }
 
       await fetch("/api/channels", {
         method: "POST",
@@ -893,7 +1121,7 @@ function AddChannelModal({
         <Stack gap={4}>
           <FormField label="Channel Type">
             <Row gap={2} wrap>
-              {(["whatsapp", "telegram", "imessage", "slack", "discord", "notion"] as const).map((t) => (
+              {(["whatsapp", "telegram", "imessage", "slack", "discord", "notion", "emby", "jellyseerr", "webhook"] as const).map((t) => (
                 <button
                   key={t}
                   type="button"
@@ -1056,6 +1284,112 @@ function AddChannelModal({
                   value={workspaceName}
                   onChange={(e) => setWorkspaceName(e.target.value)}
                   placeholder="Itellico AI"
+                  className="channels-input"
+                />
+              </FormField>
+            </>
+          )}
+
+          {(type === "emby" || type === "jellyseerr") && (
+            <>
+              <FormField label="Server URL" hint="Full URL including port.">
+                <input
+                  type="url"
+                  value={mediaServerUrl}
+                  onChange={(e) => setMediaServerUrl(e.target.value)}
+                  placeholder={type === "emby" ? "http://192.168.178.162:8096" : "http://192.168.178.162:5055"}
+                  required
+                  className="channels-input"
+                />
+              </FormField>
+              <FormField label="API Key" hint="API key from Emby/Jellyseerr settings.">
+                <input
+                  type="password"
+                  value={mediaApiKey}
+                  onChange={(e) => setMediaApiKey(e.target.value)}
+                  placeholder="Paste API key"
+                  required
+                  className="channels-input"
+                />
+              </FormField>
+              <FormField label="Webhook Secret" hint="Used to verify incoming webhook calls from Emby/Jellyseerr.">
+                <input
+                  type="text"
+                  value={webhookSecret}
+                  onChange={(e) => setWebhookSecret(e.target.value)}
+                  placeholder="Auto-generated secret"
+                  className="channels-input"
+                />
+                <Row justify="end" className="mt-1">
+                  <Button
+                    size="sm"
+                    type="button"
+                    onClick={() => setWebhookSecret(createWebhookSecret())}
+                  >
+                    Generate New Secret
+                  </Button>
+                </Row>
+              </FormField>
+            </>
+          )}
+
+          {type === "webhook" && (
+            <>
+              <FormField label="Webhook Secret" hint="Used to verify incoming webhook calls into JOI.">
+                <input
+                  type="text"
+                  value={webhookSecret}
+                  onChange={(e) => setWebhookSecret(e.target.value)}
+                  placeholder="Auto-generated secret"
+                  className="channels-input"
+                />
+                <Row justify="end" className="mt-1">
+                  <Button
+                    size="sm"
+                    type="button"
+                    onClick={() => setWebhookSecret(createWebhookSecret())}
+                  >
+                    Generate New Secret
+                  </Button>
+                </Row>
+              </FormField>
+
+              <FormField label="Source Label" hint="Optional label shown in message titles (e.g. Stripe, GitHub, CI).">
+                <input
+                  type="text"
+                  value={webhookSourceLabel}
+                  onChange={(e) => setWebhookSourceLabel(e.target.value)}
+                  placeholder="Optional source label"
+                  className="channels-input"
+                />
+              </FormField>
+
+              <FormField label="Message Path" hint="Optional dot path to payload text (example: data.message or detail.text).">
+                <input
+                  type="text"
+                  value={webhookMessagePath}
+                  onChange={(e) => setWebhookMessagePath(e.target.value)}
+                  placeholder="message"
+                  className="channels-input"
+                />
+              </FormField>
+
+              <FormField label="Sender Path" hint="Optional dot path to sender (example: user.name or actor.email).">
+                <input
+                  type="text"
+                  value={webhookSenderPath}
+                  onChange={(e) => setWebhookSenderPath(e.target.value)}
+                  placeholder="sender.name"
+                  className="channels-input"
+                />
+              </FormField>
+
+              <FormField label="Event Path" hint="Optional dot path to event type (example: type or detail.event).">
+                <input
+                  type="text"
+                  value={webhookEventPath}
+                  onChange={(e) => setWebhookEventPath(e.target.value)}
+                  placeholder="event"
                   className="channels-input"
                 />
               </FormField>

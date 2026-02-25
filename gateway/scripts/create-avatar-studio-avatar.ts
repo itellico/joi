@@ -10,7 +10,7 @@ import { join, dirname } from "node:path";
 
 // ── Config ──
 const MEDIA_ROOT = join(process.env.HOME || "/Users/mm2", ".joi", "media");
-const DB_URL = process.env.DATABASE_URL || "postgres://joi:joi@mini.local:5434/joi";
+const DB_URL = process.env.DATABASE_URL || "postgres://joi:joi@mini:5434/joi";
 
 const AGENT_ID = "avatar-studio";
 const AGENT_NAME = "Avatar Studio";

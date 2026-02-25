@@ -36,6 +36,7 @@ export function loadConfig(): JoiConfig {
   if (process.env.OPENROUTER_API_KEY) auth.openrouterApiKey = process.env.OPENROUTER_API_KEY;
   if (process.env.OPENROUTER_MGMT_KEY) auth.openrouterMgmtKey = process.env.OPENROUTER_MGMT_KEY;
   if (process.env.OPENAI_API_KEY) auth.openaiApiKey = process.env.OPENAI_API_KEY;
+  if (process.env.GOOGLE_API_KEY) auth.googleApiKey = process.env.GOOGLE_API_KEY;
   if (process.env.ELEVENLABS_API_KEY) auth.elevenlabsApiKey = process.env.ELEVENLABS_API_KEY;
 
   // Merge env vars into gateway config
@@ -48,7 +49,9 @@ export function loadConfig(): JoiConfig {
   // Merge env vars into memory config
   if (!raw.memory) raw.memory = {};
   const mem = raw.memory as Record<string, unknown>;
-  if (process.env.OLLAMA_URL) mem.ollamaUrl = process.env.OLLAMA_URL;
+  if (process.env.OLLAMA_URL) {
+    mem.ollamaUrl = process.env.OLLAMA_URL;
+  }
   if (process.env.DATABASE_URL) {
     // DB URL handled by pg client directly
   }

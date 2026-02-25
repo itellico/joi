@@ -17,6 +17,7 @@ import { runTestSuite } from "../quality/runner.js";
 import { createIssuesFromRun } from "../quality/issues.js";
 import { checkHeartbeats } from "../agent/heartbeat.js";
 import type { JoiConfig } from "../config/schema.js";
+import { evaluateAllActiveSoulRollouts, getSoulGovernanceSummary } from "../agent/soul-rollouts.js";
 
 export interface CronJob {
   id: string;
@@ -270,6 +271,47 @@ async function executeJob(job: CronJob): Promise<void> {
               console.error(`[QA] Suite "${suite.name}" failed:`, err);
             }
           }
+          break;
+        }
+        case "evaluate_soul_rollouts": {
+          const evaluations = await evaluateAllActiveSoulRollouts({ applyDecision: true, limit: 300 });
+          const promoted = evaluations.filter((item) => item.decision === "promote").length;
+          const rolledBack = evaluations.filter((item) => item.decision === "rollback").length;
+          const pending = evaluations.filter((item) => item.decision === "pending").length;
+          console.log(
+            `[Soul] Evaluated ${evaluations.length} active rollouts (promoted=${promoted}, rolledBack=${rolledBack}, pending=${pending})`,
+          );
+          break;
+        }
+        case "soul_governance_review": {
+          const summary = await getSoulGovernanceSummary();
+          const titleDate = new Date().toISOString().slice(0, 10);
+          await query(
+            `INSERT INTO review_queue (
+               agent_id, conversation_id, type, title, description,
+               content, proposed_action, alternatives, priority, tags, batch_id
+             ) VALUES (
+               'quality-controller', NULL, 'info', $1, $2,
+               $3::jsonb, NULL, NULL, 5, ARRAY['soul','governance','monthly'], 'soul-governance-monthly'
+             )`,
+            [
+              `Soul Governance Review - ${titleDate}`,
+              "Monthly soul governance report with rollout outcomes, coverage, and open risk indicators.",
+              JSON.stringify([
+                {
+                  type: "text",
+                  label: "Summary",
+                  content: "Review the current soul governance health and decide follow-up actions.",
+                },
+                {
+                  type: "json",
+                  label: "Governance Snapshot",
+                  data: summary,
+                },
+              ]),
+            ],
+          );
+          console.log("[Soul] Created monthly governance review item");
           break;
         }
         default:

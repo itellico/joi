@@ -306,12 +306,12 @@ export default function VoiceTab({ settings, livekitKeys, setLivekitKeys, liveki
             />
           </FormField>
 
-          <FormField label="Redis URL (mini.local)" hint="Redis endpoint on your mini host, e.g. redis://mini.local:6379/0">
+          <FormField label="Redis URL (mini)" hint="Redis endpoint on your mini host alias, e.g. redis://mini:6379/0">
             <input
               type="text"
               value={livekitEdits.ttsCacheRedisUrl}
               onChange={(e) => setLivekitEdits((p) => ({ ...p, ttsCacheRedisUrl: e.target.value }))}
-              placeholder="redis://mini.local:6379/0"
+              placeholder="redis://mini:6379/0"
             />
           </FormField>
         </FormGrid>

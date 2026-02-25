@@ -23,8 +23,8 @@ via existing `memory_store`/auto-learn paths.
 ## Required env
 
 ```bash
-DATABASE_URL=postgresql://joi:joi@mini.local:5434/joi
-OLLAMA_URL=http://mini.local:11434
+DATABASE_URL=postgresql://joi:joi@mini:5434/joi
+OLLAMA_URL=http://mini:11434
 MEM0_ENABLED=true
 MEM0_USER_ID=primary-user
 MEM0_APP_ID=joi

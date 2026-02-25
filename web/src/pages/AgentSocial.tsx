@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { Badge, Button, Collapsible, MetaText, Modal, PageBody, PageHeader, Switch } from "../components/ui";
+import { getCapabilities, getToolCapability } from "../lib/agentCapabilities";
 import "./AgentSocial.css";
 
 interface ApiAgent {
@@ -9,6 +10,7 @@ interface ApiAgent {
   model: string;
   enabled: boolean;
   skills: string[] | null;
+  config?: Record<string, unknown> | null;
 }
 
 interface RuntimeAgent {
@@ -18,6 +20,7 @@ interface RuntimeAgent {
   model: string;
   enabled: boolean;
   skills: string[];
+  executor: string;
 }
 
 interface SocialProfile {
@@ -122,6 +125,19 @@ interface AvatarGenerateResponse {
   stylePath: string;
 }
 
+interface SoulDocumentsResponse {
+  souls?: Record<string, unknown>;
+}
+
+interface SoulValidation {
+  valid: boolean;
+  score: number;
+  wordCount: number;
+  presentSections: string[];
+  missingSections: string[];
+  issues: string[];
+}
+
 interface WikipediaSearchResponse {
   query?: {
     search?: Array<{ title: string }>;
@@ -145,8 +161,7 @@ type EditableProfileField =
   | "personality"
   | "mission"
   | "values"
-  | "growthGoal"
-  | "soulDocument";
+  | "growthGoal";
 
 type RelationshipType = "self" | "none" | "outbound" | "inbound" | "friends";
 
@@ -162,6 +177,7 @@ const FALLBACK_AGENTS: RuntimeAgent[] = [
     model: "claude-sonnet",
     enabled: true,
     skills: ["coordination", "memory", "planning"],
+    executor: "anthropic-runtime",
   },
   {
     id: "coder",
@@ -170,6 +186,7 @@ const FALLBACK_AGENTS: RuntimeAgent[] = [
     model: "claude-sonnet",
     enabled: true,
     skills: ["code-generation", "refactoring", "debugging"],
+    executor: "claude-code",
   },
   {
     id: "google-coder",
@@ -178,6 +195,7 @@ const FALLBACK_AGENTS: RuntimeAgent[] = [
     model: "gemini",
     enabled: true,
     skills: ["multimodal", "image-ops", "search-synthesis"],
+    executor: "gemini-cli",
   },
   {
     id: "avatar-studio",
@@ -186,6 +204,7 @@ const FALLBACK_AGENTS: RuntimeAgent[] = [
     model: "gemini-image",
     enabled: true,
     skills: ["gemini_avatar_generate", "avatar_style_get", "avatar_style_set"],
+    executor: "gemini-cli",
   },
   {
     id: "scout",
@@ -194,6 +213,7 @@ const FALLBACK_AGENTS: RuntimeAgent[] = [
     model: "claude-haiku",
     enabled: true,
     skills: ["research", "trend-analysis", "scoring"],
+    executor: "anthropic-runtime",
   },
 ];
 
@@ -244,6 +264,17 @@ function toHandle(agentId: string): string {
 }
 
 function normalizeAgent(agent: ApiAgent): RuntimeAgent {
+  const rawExecutor = isObjectRecord(agent.config) ? agent.config.executor : null;
+  const model = agent.model || "";
+  const inferredExecutor =
+    typeof rawExecutor === "string" && rawExecutor.trim()
+      ? rawExecutor
+      : model.toLowerCase().includes("gpt-5-codex")
+        ? "codex-cli"
+        : model.toLowerCase().includes("gemini")
+          ? "gemini-cli"
+          : "anthropic-runtime";
+
   return {
     id: agent.id,
     name: agent.name,
@@ -251,6 +282,7 @@ function normalizeAgent(agent: ApiAgent): RuntimeAgent {
     model: agent.model,
     enabled: agent.enabled,
     skills: Array.isArray(agent.skills) ? agent.skills : [],
+    executor: inferredExecutor,
   };
 }
 
@@ -384,6 +416,46 @@ function dedupeStrings(values: string[]): string[] {
   return Array.from(new Set(values));
 }
 
+interface AgentSkillSignals {
+  lane: string | null;
+  capabilities: string[];
+  tools: string[];
+  expertise: string[];
+}
+
+const EMPTY_SKILL_SIGNALS: AgentSkillSignals = {
+  lane: null,
+  capabilities: [],
+  tools: [],
+  expertise: [],
+};
+
+function executorLaneLabel(executor: string | null | undefined): string | null {
+  if (executor === "codex-cli") return "Codex CLI";
+  if (executor === "gemini-cli") return "Gemini CLI";
+  if (executor === "claude-code") return "Claude Code CLI";
+  return null;
+}
+
+function deriveSkillSignals(agentSkills: string[], verifiedSkills: string[], executor?: string): AgentSkillSignals {
+  const builtInTools = agentSkills.filter((skill) => Boolean(getToolCapability(skill)));
+  const builtInExpertise = agentSkills.filter((skill) => !getToolCapability(skill));
+  const verifiedTools = verifiedSkills.filter((skill) => Boolean(getToolCapability(skill)));
+  const verifiedExpertise = verifiedSkills.filter((skill) => !getToolCapability(skill));
+
+  const capabilities = dedupeStrings([
+    ...getCapabilities(builtInTools),
+    ...getCapabilities(verifiedTools),
+  ]);
+
+  return {
+    lane: executorLaneLabel(executor),
+    capabilities,
+    tools: dedupeStrings([...builtInTools, ...verifiedTools]),
+    expertise: dedupeStrings([...builtInExpertise, ...verifiedExpertise]),
+  };
+}
+
 function hydrateState(state: SocialState, agents: RuntimeAgent[]): SocialState {
   const validIds = new Set(agents.map((agent) => agent.id));
   const profiles: Record<string, SocialProfile> = { ...state.profiles };
@@ -494,6 +566,12 @@ function firstLine(text: string, max = 190): string {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (normalized.length <= max) return normalized;
   return `${normalized.slice(0, max - 1)}...`;
+}
+
+function soulFromPayload(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (isObjectRecord(value) && typeof value.content === "string") return value.content;
+  return "";
 }
 
 function initials(name: string): string {
@@ -795,6 +873,7 @@ export default function AgentSocial() {
   const [avatarError, setAvatarError] = useState("");
   const [styleBusy, setStyleBusy] = useState(false);
   const [styleError, setStyleError] = useState("");
+  const [soulValidation, setSoulValidation] = useState<SoulValidation | null>(null);
   const [profileViewId, setProfileViewId] = useState<string | null>(null);
   const [editProfileOpen, setEditProfileOpen] = useState(false);
   const [geminiToolsOpen, setGeminiToolsOpen] = useState(false);
@@ -872,7 +951,38 @@ export default function AgentSocial() {
   }, []);
 
   useEffect(() => {
-    setSocialState((prev) => hydrateState(prev, agents));
+    let active = true;
+    const hydrateWithSouls = async () => {
+      try {
+        const response = await fetch("/api/souls");
+        const payload = (await response.json().catch(() => ({}))) as SoulDocumentsResponse;
+
+        if (!active) return;
+        setSocialState((prev) => {
+          const hydrated = hydrateState(prev, agents);
+          const souls = isObjectRecord(payload.souls) ? payload.souls : {};
+          const profiles = { ...hydrated.profiles };
+
+          for (const agent of agents) {
+            const soul = soulFromPayload(souls[agent.id]);
+            if (!soul.trim()) continue;
+            const profile = profiles[agent.id];
+            if (!profile) continue;
+            profiles[agent.id] = { ...profile, soulDocument: soul };
+          }
+
+          return { ...hydrated, profiles };
+        });
+      } catch {
+        if (!active) return;
+        setSocialState((prev) => hydrateState(prev, agents));
+      }
+    };
+
+    void hydrateWithSouls();
+    return () => {
+      active = false;
+    };
   }, [agents]);
 
   useEffect(() => {
@@ -889,6 +999,30 @@ export default function AgentSocial() {
       setLearningAgentId(socialState.currentActorId || agents[0]?.id || "");
     }
   }, [agents, learningAgentId, socialState.currentActorId]);
+
+  useEffect(() => {
+    if (!editProfileOpen) return;
+    setSoulValidation(null);
+
+    const targetId = socialState.focusAgentId;
+    if (!targetId) return;
+
+    let active = true;
+    const loadSoulValidation = async () => {
+      try {
+        const response = await fetch(`/api/soul/${encodeURIComponent(targetId)}`);
+        const payload = await response.json().catch(() => ({} as { validation?: SoulValidation }));
+        if (!response.ok || !active) return;
+        setSoulValidation(payload.validation || null);
+      } catch {
+        if (active) setSoulValidation(null);
+      }
+    };
+    void loadSoulValidation();
+    return () => {
+      active = false;
+    };
+  }, [editProfileOpen, socialState.focusAgentId]);
 
   const agentMap = useMemo(
     () => new Map(agents.map((agent) => [agent.id, agent])),
@@ -936,13 +1070,18 @@ export default function AgentSocial() {
   );
   const profilePostCount = profilePosts.length;
   const profileFriendCount = profileViewId ? (friendCounts.get(profileViewId) || 0) : 0;
-  const profileSkills = useMemo(() => {
-    if (!profileViewId) return [];
+  const profileSkillSignals = useMemo(() => {
+    if (!profileViewId) return EMPTY_SKILL_SIGNALS;
     const agent = agentMap.get(profileViewId);
     const builtIn = agent?.skills || [];
     const verified = verifiedSkillsByAgent.get(profileViewId) || [];
-    return dedupeStrings([...builtIn, ...verified]);
+    return deriveSkillSignals(builtIn, verified, agent?.executor);
   }, [profileViewId, agentMap, verifiedSkillsByAgent]);
+  const profileSignalCount =
+    (profileSkillSignals.lane ? 1 : 0)
+    + profileSkillSignals.capabilities.length
+    + profileSkillSignals.tools.length
+    + profileSkillSignals.expertise.length;
   const profileRelation = profileViewId
     ? relationshipType(socialState.friendships, currentActorId, profileViewId)
     : { type: "none" as RelationshipType, friendship: null };
@@ -1495,18 +1634,48 @@ export default function AgentSocial() {
                   <div className="social-profile-stats">
                     <span><strong>{profilePostCount}</strong> posts</span>
                     <span><strong>{profileFriendCount}</strong> friends</span>
-                    <span><strong>{profileSkills.length}</strong> skills</span>
+                    <span><strong>{profileSignalCount}</strong> signals</span>
                   </div>
-                  {profileSkills.length > 0 && (
-                    <div className="social-profile-skills">
-                      {profileSkills.map((skill) => {
-                        const isVerified = (verifiedSkillsByAgent.get(profileViewId) || []).includes(skill);
-                        return (
-                          <span key={skill} className={`social-skill-chip${isVerified ? " social-skill-chip--verified" : ""}`}>
-                            {skill}
-                          </span>
-                        );
-                      })}
+                  {(profileSkillSignals.lane || profileSkillSignals.capabilities.length > 0 || profileSkillSignals.tools.length > 0 || profileSkillSignals.expertise.length > 0) && (
+                    <div className="social-profile-skill-groups">
+                      {profileSkillSignals.lane && (
+                        <div className="social-skill-group">
+                          <div className="social-skill-group-label">Executor Lane</div>
+                          <div className="social-profile-skills">
+                            <span className="social-skill-chip social-skill-chip--verified">{profileSkillSignals.lane}</span>
+                          </div>
+                        </div>
+                      )}
+                      {profileSkillSignals.capabilities.length > 0 && (
+                        <div className="social-skill-group">
+                          <div className="social-skill-group-label">Capabilities</div>
+                          <div className="social-profile-skills">
+                            {profileSkillSignals.capabilities.map((capability) => (
+                              <span key={`cap-${capability}`} className="social-skill-chip">{capability}</span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {profileSkillSignals.tools.length > 0 && (
+                        <div className="social-skill-group">
+                          <div className="social-skill-group-label">Tools</div>
+                          <div className="social-profile-skills">
+                            {profileSkillSignals.tools.slice(0, 10).map((tool) => (
+                              <span key={`tool-${tool}`} className="social-skill-chip">{tool}</span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {profileSkillSignals.expertise.length > 0 && (
+                        <div className="social-skill-group">
+                          <div className="social-skill-group-label">Verified Expertise</div>
+                          <div className="social-profile-skills">
+                            {profileSkillSignals.expertise.map((skill) => (
+                              <span key={`exp-${skill}`} className="social-skill-chip social-skill-chip--verified">{skill}</span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                   <div className="social-profile-actions">
@@ -1581,19 +1750,25 @@ export default function AgentSocial() {
                 {agents.map((agent) => {
                   const profile = socialState.profiles[agent.id];
                   const relation = relationshipType(socialState.friendships, currentActorId, agent.id);
-                  const allSkills = dedupeStrings([...agent.skills, ...(verifiedSkillsByAgent.get(agent.id) || [])]);
+                  const signals = deriveSkillSignals(agent.skills, verifiedSkillsByAgent.get(agent.id) || [], agent.executor);
+                  const preview = [
+                    ...(signals.lane ? [signals.lane] : []),
+                    ...signals.capabilities.slice(0, 2),
+                    ...signals.expertise.slice(0, 1).map((skill) => `★ ${skill}`),
+                  ];
+                  const totalSignals = (signals.lane ? 1 : 0) + signals.capabilities.length + signals.expertise.length;
                   return (
                     <div key={agent.id} className="social-follow-row" onClick={() => openProfile(agent.id)}>
                       <AvatarCircle profile={profile} seed={agent.id} name={agent.name} size="sm" />
                       <div className="social-follow-info">
                         <div className="social-follow-name">{agent.name}</div>
                         <div className="social-follow-handle">{profile?.handle || toHandle(agent.id)}</div>
-                        {allSkills.length > 0 && (
+                        {preview.length > 0 && (
                           <div className="social-follow-skills">
-                            {allSkills.slice(0, 3).map((skill) => (
+                            {preview.map((skill) => (
                               <span key={skill} className="social-skill-tag">{skill}</span>
                             ))}
-                            {allSkills.length > 3 && <span className="social-skill-tag social-skill-tag--more">+{allSkills.length - 3}</span>}
+                            {totalSignals > preview.length && <span className="social-skill-tag social-skill-tag--more">+{totalSignals - preview.length}</span>}
                           </div>
                         )}
                       </div>
@@ -1819,11 +1994,33 @@ export default function AgentSocial() {
             </div>
             <div className="social-edit-field">
               <label>Soul Document</label>
-              <textarea value={focusProfile.soulDocument} onChange={(e) => updateProfileField("soulDocument", e.target.value)} rows={4} />
+              <div className="social-inline-hint">
+                Soul is managed in unified admin only. Agent Social shows a preview.
+              </div>
+              <textarea value={focusProfile.soulDocument} rows={5} readOnly />
             </div>
             <div className="social-edit-actions">
+              <Button
+                size="sm"
+                onClick={() => {
+                  if (!focusAgent?.id) return;
+                  window.location.href = `/agents?agent=${encodeURIComponent(focusAgent.id)}&tab=soul`;
+                }}
+              >
+                Open unified admin
+              </Button>
               <Button size="sm" onClick={() => setEditProfileOpen(false)}>Done</Button>
             </div>
+            {soulValidation && (
+              <p className={`social-inline-${soulValidation.valid ? "hint" : "error"}`}>
+                Soul validation: {soulValidation.valid ? "valid" : "issues"}
+                {" · "}
+                {Math.round((soulValidation.score || 0) * 100)}% score
+                {" · "}
+                {soulValidation.wordCount} words
+                {soulValidation.missingSections.length > 0 ? ` · missing: ${soulValidation.missingSections.join(", ")}` : ""}
+              </p>
+            )}
           </div>
         )}
       </Modal>

@@ -28,6 +28,6 @@ pnpm monorepo:
 
 ## Environment
 - macOS, OrbStack (not Docker Desktop)
-- PostgreSQL on `mini.local:5434` (pgvector/pgvector:pg17)
+- PostgreSQL on `mini:5434` (pgvector/pgvector:pg17)
 - Gateway on port 3100
 - Web dev server on port 5173

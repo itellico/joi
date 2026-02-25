@@ -54,9 +54,16 @@ const STATUS_COLORS: Record<string, string> = {
   archived: "var(--text-muted)",
 };
 
+function firstGrapheme(s: string | null): string {
+  const t = s?.trim();
+  if (!t) return "";
+  const seg = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  return seg.segment(t)[Symbol.iterator]().next().value?.segment || "";
+}
+
 function getInitials(first: string | null, last: string | null): string {
-  const f = first?.trim()?.[0] || "";
-  const l = last?.trim()?.[0] || "";
+  const f = firstGrapheme(first);
+  const l = firstGrapheme(last);
   return (f + l).toUpperCase() || "?";
 }
 

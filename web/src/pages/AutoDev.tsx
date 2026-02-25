@@ -1,6 +1,7 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { Badge, Button } from "../components/ui";
 import type { useWebSocket } from "../hooks/useWebSocket";
+import { splitExecutorLogs } from "../lib/autodevLogFormat";
 
 interface SystemInfo {
   cwd: string;
@@ -9,12 +10,25 @@ interface SystemInfo {
   devLogFile: string | null;
   memoryEnabled: boolean;
   startedAt: number;
+  executorMode?: "auto" | "claude-code" | "gemini-cli" | "codex-cli";
+  parallelExecution?: boolean;
+  claudeModel?: string | null;
+  codexModel?: string | null;
+  geminiModel?: string | null;
 }
 
 interface AutoDevStatus {
   state: "waiting" | "picking" | "working" | "completing";
   paused?: boolean;
   workerConnected?: boolean;
+  executorMode?: "auto" | "claude-code" | "gemini-cli" | "codex-cli";
+  parallelExecution?: boolean;
+  currentExecutor?: "claude-code" | "gemini-cli" | "codex-cli" | null;
+  activeExecutors?: Array<"claude-code" | "gemini-cli" | "codex-cli">;
+  executorStates?: Partial<Record<"claude-code" | "gemini-cli" | "codex-cli", "idle" | "running" | "success" | "error">>;
+  currentAgentId?: string | null;
+  currentSkill?: string | null;
+  currentRouteReason?: string | null;
   projectUuid: string | null;
   projectTitle: string | null;
   currentTask: { uuid: string; title: string; notes?: string; checklist?: Array<{ title: string; completed: boolean }> } | null;
@@ -46,8 +60,11 @@ export default function AutoDev({ ws }: Props) {
   const [log, setLog] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [completions, setCompletions] = useState<Array<{ title: string; summary: string; expanded?: boolean }>>([]);
-  const logRef = useRef<HTMLPreElement>(null);
+  const claudeLogRef = useRef<HTMLPreElement>(null);
+  const codexLogRef = useRef<HTMLPreElement>(null);
+  const geminiLogRef = useRef<HTMLPreElement>(null);
   const [elapsed, setElapsed] = useState("");
+  const splitLogs = useMemo(() => splitExecutorLogs(log), [log]);
 
   // Fetch status + log on mount AND on WS reconnect (stale state recovery)
   useEffect(() => {
@@ -92,12 +109,18 @@ export default function AutoDev({ ws }: Props) {
     return () => unsubs.forEach((u) => u());
   }, [ws]);
 
-  // Auto-scroll log
+  // Auto-scroll executor logs
   useEffect(() => {
-    if (logRef.current) {
-      logRef.current.scrollTop = logRef.current.scrollHeight;
-    }
-  }, [log]);
+    if (claudeLogRef.current) claudeLogRef.current.scrollTop = claudeLogRef.current.scrollHeight;
+  }, [splitLogs.claude]);
+
+  useEffect(() => {
+    if (codexLogRef.current) codexLogRef.current.scrollTop = codexLogRef.current.scrollHeight;
+  }, [splitLogs.codex]);
+
+  useEffect(() => {
+    if (geminiLogRef.current) geminiLogRef.current.scrollTop = geminiLogRef.current.scrollHeight;
+  }, [splitLogs.gemini]);
 
   // Elapsed timer (uptime since gateway start)
   useEffect(() => {
@@ -133,6 +156,11 @@ export default function AutoDev({ ws }: Props) {
   const checklist = status.currentTask?.checklist;
   const checklistDone = checklist?.filter((c) => c.completed).length ?? 0;
   const sysInfo = status.systemInfo;
+  const executorStates = status.executorStates || {};
+  const parallelExecution = status.parallelExecution ?? sysInfo?.parallelExecution ?? false;
+  const isClaudeRunning = executorStates["claude-code"] === "running";
+  const isCodexRunning = executorStates["codex-cli"] === "running";
+  const isGeminiRunning = executorStates["gemini-cli"] === "running";
 
   return (
     <div className="autodev-page">
@@ -157,9 +185,40 @@ export default function AutoDev({ ws }: Props) {
       <div className="autodev-page-body">
         {/* Left: Log viewer */}
         <div className="autodev-log-viewer">
-          <pre ref={logRef}>
-            {log || (!loaded ? "" : "Initializing...")}
-          </pre>
+          <div className="autodev-log-split">
+            <section
+              className={`autodev-log-panel ${isClaudeRunning ? "is-active" : ""}`}
+              aria-label="Claude output"
+            >
+              <div className="autodev-log-panel-header">
+                <span>Claude</span>
+                {isClaudeRunning ? <Badge status="accent">Live</Badge> : null}
+              </div>
+              <pre ref={claudeLogRef}>{splitLogs.claude || (!loaded ? "" : "No Claude output yet.")}</pre>
+            </section>
+
+            <section
+              className={`autodev-log-panel ${isCodexRunning ? "is-active" : ""}`}
+              aria-label="Codex output"
+            >
+              <div className="autodev-log-panel-header">
+                <span>Codex</span>
+                {isCodexRunning ? <Badge status="accent">Live</Badge> : null}
+              </div>
+              <pre ref={codexLogRef}>{splitLogs.codex || (!loaded ? "" : "No Codex output yet.")}</pre>
+            </section>
+
+            <section
+              className={`autodev-log-panel ${isGeminiRunning ? "is-active" : ""}`}
+              aria-label="Gemini output"
+            >
+              <div className="autodev-log-panel-header">
+                <span>Gemini</span>
+                {isGeminiRunning ? <Badge status="accent">Live</Badge> : null}
+              </div>
+              <pre ref={geminiLogRef}>{splitLogs.gemini || (!loaded ? "" : "No Gemini output yet.")}</pre>
+            </section>
+          </div>
         </div>
 
         {/* Right: Sidebar */}
@@ -196,9 +255,44 @@ export default function AutoDev({ ws }: Props) {
               <span className="autodev-sidebar-dot" data-ok={sysInfo?.memoryEnabled ? "true" : "false"} />
             </div>
             <div className="autodev-sidebar-stat-row">
+              <span>Mode</span>
+              <span>{status.executorMode || sysInfo?.executorMode || "auto"}</span>
+            </div>
+            <div className="autodev-sidebar-stat-row">
+              <span>Parallel</span>
+              <span>{parallelExecution ? "on" : "off"}</span>
+            </div>
+            <div className="autodev-sidebar-stat-row">
+              <span>Executor</span>
+              <span>{status.currentExecutor || "n/a"}</span>
+            </div>
+            <div className="autodev-sidebar-stat-row">
+              <span>Claude</span>
+              <span>{executorStates["claude-code"] || "idle"}</span>
+            </div>
+            <div className="autodev-sidebar-stat-row">
+              <span>Codex</span>
+              <span>{executorStates["codex-cli"] || "idle"}</span>
+            </div>
+            <div className="autodev-sidebar-stat-row">
+              <span>Gemini</span>
+              <span>{executorStates["gemini-cli"] || "idle"}</span>
+            </div>
+            <div className="autodev-sidebar-stat-row">
+              <span>Agent</span>
+              <span>{status.currentAgentId || "n/a"}</span>
+            </div>
+            <div className="autodev-sidebar-stat-row">
+              <span>Skill</span>
+              <span>{status.currentSkill || "n/a"}</span>
+            </div>
+            <div className="autodev-sidebar-stat-row">
               <span>Context</span>
               <span>last 5 tasks</span>
             </div>
+            {status.currentRouteReason && (
+              <div className="autodev-sidebar-route-reason">{status.currentRouteReason}</div>
+            )}
           </div>
 
           {/* Current task */}
