@@ -5,6 +5,8 @@ export { Badge } from "./Badge";
 export { Button } from "./Button";
 export { Card, CardGrid } from "./Card";
 export { ChipGroup } from "./ChipGroup";
+export { ConfirmDialog } from "./ConfirmDialog";
+export type { ConfirmAction } from "./ConfirmDialog";
 export { Collapsible } from "./Collapsible";
 export { DataTable } from "./DataTable";
 export { EmptyState } from "./EmptyState";

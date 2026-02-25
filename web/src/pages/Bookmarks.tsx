@@ -14,7 +14,9 @@ import {
   EmptyState,
   SearchInput,
   Pagination,
+  ConfirmDialog,
 } from "../components/ui";
+import type { ConfirmAction } from "../components/ui";
 
 // ─── Types ───
 
@@ -219,6 +221,7 @@ export default function Bookmarks() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [moveTarget, setMoveTarget] = useState("");
   const [addForm, setAddForm] = useState({ title: "", url: "", folder_path: "/", tags: "" });
+  const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null);
 
   // Smart duplicates
   const [smartDupes, setSmartDupes] = useState<Array<{ group: Array<{ id: string; title: string; url: string; domain: string | null; folder_path: string }>; reason: string }>>([]);
@@ -309,9 +312,15 @@ export default function Bookmarks() {
     await Promise.all([fetchBookmarks(), fetchMeta()]);
   }, [addForm, fetchBookmarks, fetchMeta]);
 
-  const removeBookmark = useCallback(async (id: string) => {
-    await fetch(`/api/bookmarks/${id}`, { method: "DELETE" });
-    await Promise.all([fetchBookmarks(), fetchMeta()]);
+  const removeBookmark = useCallback((id: string, title?: string) => {
+    setConfirmAction({
+      title: "Delete Bookmark",
+      message: `Delete "${title || "this bookmark"}"?`,
+      onConfirm: async () => {
+        await fetch(`/api/bookmarks/${id}`, { method: "DELETE" });
+        await Promise.all([fetchBookmarks(), fetchMeta()]);
+      },
+    });
   }, [fetchBookmarks, fetchMeta]);
 
   const toggleReadLater = useCallback(async (id: string, current: string) => {
@@ -342,15 +351,21 @@ export default function Bookmarks() {
     await Promise.all([fetchBookmarks(), fetchMeta()]);
   }, [selectedIds, moveTarget, fetchBookmarks, fetchMeta]);
 
-  const bulkDeleteSelected = useCallback(async () => {
+  const bulkDeleteSelected = useCallback(() => {
     if (selectedIds.size === 0) return;
-    await fetch("/api/bookmarks/bulk-delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ids: [...selectedIds] }),
+    setConfirmAction({
+      title: "Delete Bookmarks",
+      message: `Delete ${selectedIds.size} selected bookmark(s)? This cannot be undone.`,
+      onConfirm: async () => {
+        await fetch("/api/bookmarks/bulk-delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: [...selectedIds] }),
+        });
+        setSelectedIds(new Set());
+        await Promise.all([fetchBookmarks(), fetchMeta()]);
+      },
     });
-    setSelectedIds(new Set());
-    await Promise.all([fetchBookmarks(), fetchMeta()]);
   }, [selectedIds, fetchBookmarks, fetchMeta]);
 
   const bulkReadLater = useCallback(async () => {
@@ -415,12 +430,21 @@ export default function Bookmarks() {
 
   const handleDeleteFolder = async (path: string) => {
     const name = path.split("/").pop() || path;
-    if (!confirm(`Delete folder "${name}" and all bookmarks inside it?`)) return;
-    await fetch(`/api/bookmarks/folders/${encodeURIComponent(path)}`, { method: "DELETE" });
-    if (folderFilter === path || folderFilter.startsWith(path + "/")) {
-      setFolderFilter("");
-    }
-    await Promise.all([fetchBookmarks(), fetchMeta()]);
+    setConfirmAction({
+      title: "Delete Folder",
+      message: `Delete folder "${name}" and all bookmarks inside it?`,
+      onConfirm: async () => {
+        await fetch("/api/bookmarks/delete-folder", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ folder_path: path }),
+        });
+        if (folderFilter === path || folderFilter.startsWith(path + "/")) {
+          setFolderFilter("");
+        }
+        await Promise.all([fetchBookmarks(), fetchMeta()]);
+      },
+    });
   };
 
   const runSmartDuplicates = async () => {
@@ -697,7 +721,7 @@ export default function Bookmarks() {
                       </button>
                       <button
                         className="bm-action-btn bm-action-danger"
-                        onClick={() => removeBookmark(bm.id)}
+                        onClick={() => removeBookmark(bm.id, bm.title)}
                         title="Delete"
                       >
                         \u2715
@@ -805,7 +829,11 @@ export default function Bookmarks() {
             </Stack>
           </Modal>
         )}
+
       </PageBody>
+
+      {/* ─── Confirm Dialog ─── */}
+      <ConfirmDialog action={confirmAction} onClose={() => setConfirmAction(null)} />
 
       {/* ─── Scoped Styles ─── */}
       <style>{`
