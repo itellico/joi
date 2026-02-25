@@ -8,6 +8,7 @@ import VoiceTab from "./settings/VoiceTab";
 import ModelsTab from "./settings/ModelsTab";
 import MemoryTab from "./settings/MemoryTab";
 import IntegrationsTab from "./settings/IntegrationsTab";
+import CrmTab from "./settings/CrmTab";
 
 export default function Settings() {
   const [settings, setSettings] = useState<SettingsData | null>(null);
@@ -349,6 +350,11 @@ export default function Settings() {
                   setLivekitKeys={setLivekitKeys}
                 />
               ),
+            },
+            {
+              value: "crm",
+              label: "CRM",
+              content: <CrmTab />,
             },
             {
               value: "voice",

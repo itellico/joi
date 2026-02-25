@@ -6676,7 +6676,7 @@ app.put("/api/quotes/:id", async (req, res) => {
     let idx = 1;
 
     const fields = [
-      "title", "status", "contact_id", "company_id", "valid_until",
+      "title", "status", "contact_id", "company_id", "issued_date", "valid_until",
       "intro_text", "closing_text", "notes",
       "sender_name", "sender_email", "sender_phone",
       "discount_percent", "vat_percent", "currency",
@@ -6779,6 +6779,33 @@ app.post("/api/quotes/:id/clone", async (req, res) => {
     );
 
     res.json({ id: newId, quote_number: quoteNumber, cloned: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
+  }
+});
+
+// POST /api/quotes/:id/reapply-template — re-apply template content JSONB to quote
+app.post("/api/quotes/:id/reapply-template", async (req, res) => {
+  try {
+    const quoteResult = await query<{ template_id: string | null; content: Record<string, unknown> }>(
+      "SELECT template_id, content FROM quotes WHERE id = $1", [req.params.id],
+    );
+    if (quoteResult.rows.length === 0) return res.status(404).json({ error: "Not found" });
+    const { template_id } = quoteResult.rows[0];
+    if (!template_id) return res.status(400).json({ error: "Quote has no template" });
+
+    const tplResult = await query<{ content: Record<string, unknown> }>(
+      "SELECT content FROM quote_templates WHERE id = $1", [template_id],
+    );
+    if (tplResult.rows.length === 0) return res.status(404).json({ error: "Template not found" });
+    const tplContent = tplResult.rows[0].content || {};
+
+    await query(
+      "UPDATE quotes SET content = $1, updated_at = NOW() WHERE id = $2",
+      [JSON.stringify(tplContent), req.params.id],
+    );
+    res.json({ updated: true, content: tplContent });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ error: message });

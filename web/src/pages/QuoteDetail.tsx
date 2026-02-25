@@ -27,6 +27,7 @@ interface Quote {
   contact_id: string | null;
   company_id: string | null;
   organization_id: string | null;
+  template_id: string | null;
   issued_date: string;
   valid_until: string | null;
   status: string;
@@ -240,6 +241,12 @@ export default function QuoteDetail() {
     if (data.id) navigate(`/quotes/${data.id}`);
   };
 
+  const handleReapplyTemplate = async () => {
+    if (!id || !quote?.template_id) return;
+    const res = await fetch(`/api/quotes/${id}/reapply-template`, { method: "POST" });
+    if (res.ok) fetchQuote();
+  };
+
   const searchContacts = (q: string) => {
     setContactSearch(q);
     if (contactSearchTimer.current) clearTimeout(contactSearchTimer.current);
@@ -326,12 +333,31 @@ export default function QuoteDetail() {
             >{s}</button>
           ))}
           <div style={{ flex: 1 }} />
-          {quote.valid_until && (
-            <MetaText size="sm">
-              Valid until: <strong>{formatDate(quote.valid_until)}</strong>
-              {new Date(quote.valid_until) < new Date() && <Badge status="error" className="ml-2">Expired</Badge>}
-            </MetaText>
-          )}
+          <div style={{ display: "flex", gap: 16, alignItems: "center", fontSize: "0.8rem" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ color: "var(--text-muted)" }}>Issued:</span>
+              <input
+                type="date"
+                defaultValue={quote.issued_date?.slice(0, 10) || ""}
+                onBlur={(e) => updateQuote({ issued_date: e.target.value })}
+                className="form-input"
+                style={{ padding: "2px 6px", fontSize: "0.8rem", width: 130 }}
+              />
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ color: "var(--text-muted)" }}>Valid until:</span>
+              <input
+                type="date"
+                defaultValue={quote.valid_until?.slice(0, 10) || ""}
+                onBlur={(e) => updateQuote({ valid_until: e.target.value })}
+                className="form-input"
+                style={{ padding: "2px 6px", fontSize: "0.8rem", width: 130 }}
+              />
+              {quote.valid_until && new Date(quote.valid_until) < new Date() && (
+                <Badge status="error">Expired</Badge>
+              )}
+            </label>
+          </div>
         </div>
 
         {/* ── Document editor ── */}
@@ -592,6 +618,13 @@ export default function QuoteDetail() {
               </label>
             ))}
           </div>
+          {quote.template_id && (
+            <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12, marginTop: 4 }}>
+              <Button variant="ghost" onClick={handleReapplyTemplate} style={{ fontSize: "0.8rem", color: "var(--warning)" }}>
+                Re-apply template content (overwrites text)
+              </Button>
+            </div>
+          )}
           <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
             <Button variant="ghost" onClick={() => setShowSettings(false)}>Close</Button>
           </div>
