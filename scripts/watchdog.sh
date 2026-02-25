@@ -229,15 +229,49 @@ check_autodev() {
 check_livekit() {
   # Process must exist AND its HTTP health server must respond "OK".
   # The LiveKit agents SDK exposes an HTTP health endpoint on a random port.
-  # Without this check, a zombie worker (alive but disconnected from LiveKit
-  # after an OrbStack restart) would appear healthy to pgrep.
-  local pid
-  pid=$(pgrep -f "agent.py dev" | head -1) || return 1
-  [ -n "$pid" ] || return 1
-  local port
-  port=$(lsof -anP -p "$pid" -i TCP -sTCP:LISTEN 2>/dev/null \
-    | awk '{print $9}' | grep -oE '[0-9]+$' | head -1)
-  [ -n "$port" ] && curl -sf -m 3 "http://localhost:${port}/" >/dev/null 2>&1
+  # The health port may be on a child process, so check the whole process tree.
+  # Also detect "process is unresponsive" in recent logs — the SDK health
+  # endpoint returns OK even when job processes are stuck.
+  local pids pid port
+  pids=$(pgrep -f "agent.py dev") || return 1
+  [ -n "$pids" ] || return 1
+
+  # Find the health port across all agent PIDs (parent + children)
+  port=""
+  for pid in $pids; do
+    port=$(lsof -anP -p "$pid" -i TCP -sTCP:LISTEN 2>/dev/null \
+      | awk '{print $9}' | grep -oE '[0-9]+$' | head -1)
+    [ -n "$port" ] && break
+    # Also check children of this PID
+    local child_pids
+    child_pids=$(pgrep -P "$pid" 2>/dev/null) || true
+    for cpid in $child_pids; do
+      port=$(lsof -anP -p "$cpid" -i TCP -sTCP:LISTEN 2>/dev/null \
+        | awk '{print $9}' | grep -oE '[0-9]+$' | head -1)
+      [ -n "$port" ] && break 2
+    done
+  done
+
+  [ -n "$port" ] || return 1
+  curl -sf -m 3 "http://localhost:${port}/" >/dev/null 2>&1 || return 1
+
+  # Check for stuck worker processes: if the log has "process is unresponsive"
+  # in the last 2 minutes, consider the agent unhealthy.
+  local lk_log="/tmp/joi-livekit-agent.log"
+  if [ -f "$lk_log" ]; then
+    local now cutoff_ts
+    now=$(date +%s)
+    cutoff_ts=$(( now - 120 ))
+    # Check last 50 lines for recent unresponsive warnings
+    if tail -50 "$lk_log" 2>/dev/null | grep -q "process is unresponsive"; then
+      local last_line_ts
+      last_line_ts=$(stat -f %m "$lk_log" 2>/dev/null || echo 0)
+      if [ "$last_line_ts" -ge "$cutoff_ts" ]; then
+        log "LiveKit agent health port OK but worker processes are unresponsive"
+        return 1
+      fi
+    fi
+  fi
 }
 
 gateway_pids() {
@@ -393,8 +427,14 @@ restart_autodev() {
 
 restart_livekit() {
   log "Restarting livekit..."
+  # Kill all existing agent processes (parent + children may be stuck)
+  local pids
+  pids=$(pgrep -f "agent.py dev" 2>/dev/null || true)
+  if [ -n "$pids" ]; then
+    graceful_stop_pids "LiveKit agent" "$pids"
+  fi
   cd "$PROJECT_ROOT"
-  nohup "$SCRIPTS_DIR/dev-worker.sh" >> /tmp/joi-livekit.log 2>&1 &
+  nohup "$SCRIPTS_DIR/dev-worker.sh" >> /tmp/joi-livekit-agent.log 2>&1 &
   disown
   lk_backoff=$(bump_backoff "$lk_backoff")
   lk_last_restart=$(date +%s)
