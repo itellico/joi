@@ -16,7 +16,8 @@ import {
   spawnSession, writeInput, resizeSession, killSession,
   listSessions, addListener, addExitListener, getScrollback, killAllSessions,
 } from "./pty/manager.js";
-import { runAgent, saveMessage, ensureConversation } from "./agent/runtime.js";
+import { runAgent, saveMessage, ensureConversation, type AgentRunResult } from "./agent/runtime.js";
+import { routeIntent, type RouteDecision } from "./agent/intent-router.js";
 import { runClaudeCode } from "./agent/claude-code.js";
 import { query, recordSuccess, recordFailure, reloadFromEnv } from "./db/client.js";
 import { checkOllama, pullModel, embed } from "./knowledge/embeddings.js";
@@ -91,6 +92,8 @@ import {
   getSoulGovernanceSummary,
   getSoulRollout,
   listSoulRollouts,
+  promoteSoulRollout,
+  rollbackSoulRollout,
   startSoulRollout,
   type SoulRollout,
   type SoulRolloutStatus,
@@ -937,21 +940,27 @@ function isCarrierGradeNatIpv4(address: string): boolean {
   return Number.isFinite(second) && second >= 64 && second <= 127;
 }
 
+function isTunnelInterface(name: string): boolean {
+  return /^(utun|tun|tap)/i.test(name);
+}
+
 function interfacePriority(name: string): number {
   if (/^en\d+$/i.test(name)) return 0;      // macOS physical interfaces (Wi-Fi/Ethernet)
   if (/^eth\d+$/i.test(name)) return 1;
   if (/^(wlan|wl)\d*/i.test(name)) return 1;
+  if (isTunnelInterface(name)) return 2;
   if (/^bridge/i.test(name)) return 5;
-  if (/^(utun|tun|tap)/i.test(name)) return 6;
   return 3;
 }
 
-function addressPriority(address: string): number {
-  if (address.startsWith("192.168.")) return 0;
-  if (address.startsWith("10.")) return 1;
-  if (isPrivateIpv4(address)) return 2;
-  if (isCarrierGradeNatIpv4(address)) return 4;
-  return 3;
+function addressPriority(address: string, interfaceName: string): number {
+  // Prefer Tailscale/overlay addresses on tunnel interfaces for road mode.
+  if (isCarrierGradeNatIpv4(address) && isTunnelInterface(interfaceName)) return 0;
+  if (address.startsWith("192.168.")) return 1;
+  if (address.startsWith("10.")) return 2;
+  if (isPrivateIpv4(address)) return 3;
+  if (isCarrierGradeNatIpv4(address)) return 5;
+  return 4;
 }
 
 function getLanIpv4Candidates(): string[] {
@@ -968,11 +977,11 @@ function getLanIpv4Candidates(): string[] {
   }
 
   results.sort((a, b) => {
+    const addrDiff = addressPriority(a.address, a.name) - addressPriority(b.address, b.name);
+    if (addrDiff !== 0) return addrDiff;
+
     const ifaceDiff = interfacePriority(a.name) - interfacePriority(b.name);
     if (ifaceDiff !== 0) return ifaceDiff;
-
-    const addrDiff = addressPriority(a.address) - addressPriority(b.address);
-    if (addrDiff !== 0) return addrDiff;
 
     const nameDiff = a.name.localeCompare(b.name);
     if (nameDiff !== 0) return nameDiff;
@@ -1410,13 +1419,34 @@ app.post("/api/voice/chat", async (req, res) => {
       pendingVoiceToolFillers.set(toolUseId, state);
     };
 
+    // Intent routing for voice path
+    let effectiveVoiceAgentId = agentId || "personal";
+    let voiceRouteDecision: RouteDecision | null = null;
+    const voiceRouteResult = await routeIntent(String(message || ""), effectiveVoiceAgentId);
+    if (voiceRouteResult.routed) {
+      voiceRouteDecision = voiceRouteResult;
+      effectiveVoiceAgentId = voiceRouteResult.agentId;
+      console.log(`[voice/chat] Intent router: ${agentId || "personal"} → ${effectiveVoiceAgentId} (reason=${voiceRouteResult.reason})`);
+    }
+
     console.log(
-      `[voice/chat] conv=${convId} model=${voiceModel} tools=${effectiveVoiceToolsEnabled} memory=${effectiveVoiceMemoryEnabled} history=${effectiveVoiceHistoryLimit} tool_intent=${hasToolIntent}`,
+      `[voice/chat] conv=${convId} agent=${effectiveVoiceAgentId} model=${voiceModel} tools=${effectiveVoiceToolsEnabled} memory=${effectiveVoiceMemoryEnabled} history=${effectiveVoiceHistoryLimit} tool_intent=${hasToolIntent}`,
     );
 
-    const result = await runAgent({
+    // Emit chat.routed event over WS if intent router selected a different agent
+    if (voiceRouteDecision) {
+      wsBroadcast("chat.routed", {
+        conversationId: convId,
+        agentId: voiceRouteDecision.agentId,
+        reason: voiceRouteDecision.reason,
+        confidence: voiceRouteDecision.confidence,
+        matchedPattern: voiceRouteDecision.matchedPattern,
+      });
+    }
+
+    const voiceRunOptions: Parameters<typeof runAgent>[0] = {
       conversationId: convId,
-      agentId: agentId || "personal",
+      agentId: effectiveVoiceAgentId,
       userMessage: message,
       config,
       model: voiceModel,
@@ -1472,7 +1502,16 @@ app.post("/api/voice/chat", async (req, res) => {
           result: resultData,
         });
       },
-    });
+    };
+
+    // Apply execution profile from voice route if applicable
+    if (voiceRouteDecision) {
+      const ep = voiceRouteDecision.executionProfile;
+      voiceRunOptions.includeMemoryContext = ep.includeMemoryContext;
+      voiceRunOptions.historyLimit = Math.min(ep.historyLimit, effectiveVoiceHistoryLimit);
+    }
+
+    const result = await runAgent(voiceRunOptions);
 
     clearPreToolProgressTimers();
     clearPendingVoiceToolFillers();
@@ -1490,6 +1529,10 @@ app.post("/api/voice/chat", async (req, res) => {
       costUsd: result.costUsd,
       latencyMs,
       timings: result.timings,
+      agentId: result.agentId,
+      routeReason: voiceRouteDecision?.reason,
+      routeConfidence: voiceRouteDecision?.confidence,
+      delegations: result.delegations,
     });
     if (!voiceClosed) {
       res.write(`data: ${JSON.stringify({ type: "done", messageId: result.messageId, content: cleanContent, model: result.model, usage: result.usage, costUsd: result.costUsd, latencyMs })}\n\n`);
@@ -2037,6 +2080,30 @@ function isProcessPatternRunning(pattern: string): boolean {
   }
 }
 
+function listPidsByPattern(pattern: string): number[] {
+  try {
+    const raw = execFileSync("pgrep", ["-f", pattern], {
+      encoding: "utf-8",
+    });
+    return raw
+      .split(/\s+/)
+      .map((entry) => Number(entry))
+      .filter((pid) => Number.isFinite(pid) && pid > 0);
+  } catch {
+    return [];
+  }
+}
+
+function listPidsByPatterns(patterns: string[]): number[] {
+  const seen = new Set<number>();
+  for (const pattern of patterns) {
+    for (const pid of listPidsByPattern(pattern)) {
+      seen.add(pid);
+    }
+  }
+  return Array.from(seen).sort((a, b) => a - b);
+}
+
 function isPidRunning(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -2158,6 +2225,44 @@ function startServiceDetached(service: StartableService): {
 app.get("/api/health", async (_req, res) => {
   const services: Record<string, { status: "green" | "orange" | "red"; detail?: string }> = {};
   const watchdogAutoRestartDefault = readWatchdogAutoRestartEnabled();
+  const debug: Record<string, unknown> = {
+    capturedAt: new Date().toISOString(),
+    gateway: {
+      pid: process.pid,
+      host: config.gateway.host,
+      port: config.gateway.port,
+      publicUrl: config.gateway.publicUrl || null,
+    },
+    runtime: {
+      autodevWorkerConnected: false,
+      autodevState: "unknown",
+      livekitConfigured: false,
+    },
+    processIds: {
+      watchdog: listPidsByPatterns(["scripts/watchdog.sh", "watchdog.sh"]),
+      autodev: listPidsByPatterns(["src/autodev/worker.ts", "scripts/dev-autodev.sh"]),
+      livekit: listPidsByPatterns(["infra/livekit-worker/run.sh", "livekit-worker"]),
+    },
+    watchdog: {
+      autoRestartEnabled: watchdogAutoRestartDefault,
+      pidFilePid: readWatchdogPid(),
+      statusFilePresent: false,
+      statusFileTimestamp: null,
+      statusFileAgeMs: null,
+      statusFileServices: null,
+    },
+    database: {
+      ok: false,
+      error: null as string | null,
+    },
+    memory: {
+      ok: false,
+      ollamaAvailable: false,
+      modelLoaded: false,
+      ollamaError: null as string | null,
+      mem0: null as unknown,
+    },
+  };
 
   // Gateway — always green if we're responding
   services.gateway = { status: "green", detail: "HTTP responsive" };
@@ -2171,14 +2276,17 @@ app.get("/api/health", async (_req, res) => {
     if (dbCheck.rows.length > 0) {
       recordSuccess();
       services.database = { status: "green", detail: "Connected" };
+      (debug.database as Record<string, unknown>).ok = true;
     } else {
       await recordFailure();
       services.database = { status: "red", detail: "No response" };
+      (debug.database as Record<string, unknown>).error = "No response";
     }
   } catch (dbErr) {
     await recordFailure();
     const msg = dbErr instanceof Error ? dbErr.message : String(dbErr);
     services.database = { status: "red", detail: msg.slice(0, 80) };
+    (debug.database as Record<string, unknown>).error = msg;
   }
 
   // AutoDev worker
@@ -2186,12 +2294,15 @@ app.get("/api/health", async (_req, res) => {
   services.autodev = adStatus.workerConnected
     ? { status: "green", detail: adStatus.state }
     : { status: "red", detail: "Worker disconnected" };
+  (debug.runtime as Record<string, unknown>).autodevWorkerConnected = adStatus.workerConnected;
+  (debug.runtime as Record<string, unknown>).autodevState = adStatus.state;
 
   // LiveKit
   const lkConfigured = !!(config.livekit.url && config.livekit.apiKey && config.livekit.apiSecret);
   services.livekit = lkConfigured
     ? { status: "orange", detail: "Configured, waiting for worker" }
     : { status: "orange", detail: "Not configured" };
+  (debug.runtime as Record<string, unknown>).livekitConfigured = lkConfigured;
 
   // Web + Watchdog (from watchdog status file)
   try {
@@ -2205,6 +2316,12 @@ app.get("/api/health", async (_req, res) => {
     const autoRestartEnabled = watchdogAutoRestartDefault;
     const ageMs = Date.now() - new Date(wd.timestamp).getTime();
     const fresh = ageMs < 90_000;
+    const watchdogDebug = debug.watchdog as Record<string, unknown>;
+    watchdogDebug.statusFilePresent = true;
+    watchdogDebug.statusFileTimestamp = wd.timestamp;
+    watchdogDebug.statusFileAgeMs = ageMs;
+    watchdogDebug.statusFileServices = wd.services;
+    watchdogDebug.watchdogPid = wd.watchdogPid;
 
     // Web status from watchdog
     const webSvc = wd.services.web;
@@ -2271,11 +2388,19 @@ app.get("/api/health", async (_req, res) => {
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Health check timeout")), 3000)),
     ]);
     const mem0 = getMem0RuntimeStatus(config);
+    const memoryDebug = debug.memory as Record<string, unknown>;
+    memoryDebug.mem0 = mem0;
+    memoryDebug.ollamaUrl = config.memory.ollamaUrl;
+    memoryDebug.ollamaAvailable = ollama.available;
+    memoryDebug.modelLoaded = ollama.modelLoaded;
+    memoryDebug.ollamaError = ollama.error || null;
     if (ollama.available && ollama.modelLoaded) {
       if (!mem0.configured) {
         services.memory = { status: "green", detail: "Ollama ready" };
+        memoryDebug.ok = true;
       } else if (mem0.active) {
         services.memory = { status: "green", detail: "Ollama + Mem0 ready" };
+        memoryDebug.ok = true;
       } else {
         services.memory = {
           status: "orange",
@@ -2289,9 +2414,10 @@ app.get("/api/health", async (_req, res) => {
     }
   } catch {
     services.memory = { status: "red", detail: "Timeout" };
+    (debug.memory as Record<string, unknown>).ollamaError = "Timeout";
   }
 
-  res.json({ services, uptime: process.uptime() });
+  res.json({ services, uptime: process.uptime(), debug });
 });
 
 // Admin — hot-reload DATABASE_URL from .env and reset the connection pool
@@ -4589,6 +4715,61 @@ app.post("/api/soul/rollouts/:rolloutId/evaluate", async (req, res) => {
     const isUserInputError = err instanceof Error
       && /(not found|not active|must|without)/i.test(err.message);
     res.status(isUserInputError ? 400 : 500).json({ error: message });
+  }
+});
+
+app.post("/api/soul/rollouts/:rolloutId/promote", async (req, res) => {
+  try {
+    const rolloutId = String(req.params.rolloutId || "").trim();
+    if (!rolloutId) {
+      return res.status(400).json({ error: "rolloutId is required" });
+    }
+    const reason = normalizeOptionalString(req.body?.reason) || "Manual promotion";
+    const rollout = await promoteSoulRollout(rolloutId, reason);
+    res.json({ ok: true, rollout });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to promote soul rollout.";
+    const isUserInputError = err instanceof Error && /(not found|not active)/i.test(err.message);
+    res.status(isUserInputError ? 400 : 500).json({ error: message });
+  }
+});
+
+app.post("/api/soul/rollouts/:rolloutId/rollback", async (req, res) => {
+  try {
+    const rolloutId = String(req.params.rolloutId || "").trim();
+    if (!rolloutId) {
+      return res.status(400).json({ error: "rolloutId is required" });
+    }
+    const reason = normalizeOptionalString(req.body?.reason) || "Manual rollback";
+    const rollout = await rollbackSoulRollout(rolloutId, reason);
+    res.json({ ok: true, rollout });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to rollback soul rollout.";
+    const isUserInputError = err instanceof Error && /(not found|not active)/i.test(err.message);
+    res.status(isUserInputError ? 400 : 500).json({ error: message });
+  }
+});
+
+app.post("/api/soul/rollouts/:rolloutId/cancel", async (req, res) => {
+  try {
+    const rolloutId = String(req.params.rolloutId || "").trim();
+    if (!rolloutId) {
+      return res.status(400).json({ error: "rolloutId is required" });
+    }
+    const rollout = await getSoulRollout(rolloutId);
+    if (!rollout) {
+      return res.status(404).json({ error: `Soul rollout "${rolloutId}" not found.` });
+    }
+    if (rollout.status !== "canary_active") {
+      return res.status(409).json({ error: `Soul rollout "${rolloutId}" is not active (status=${rollout.status}).` });
+    }
+    const reason = normalizeOptionalString(req.body?.reason) || "Manual cancellation";
+    await cancelActiveSoulRolloutForAgent(rollout.agent_id, reason);
+    const refreshed = await getSoulRollout(rolloutId);
+    res.json({ ok: true, rollout: refreshed });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to cancel soul rollout.";
+    res.status(500).json({ error: message });
   }
 });
 
@@ -7396,6 +7577,159 @@ app.post("/api/quality/prompt-versions/:id/activate", async (req, res) => {
   }
 });
 
+// ─── Cloud Sync API ───
+
+import {
+  listProviders, getProvider, createProvider, updateProvider, deleteProvider, checkProvider,
+  listPairs, getPair, createPair, updatePair, deletePair,
+  browse, executeSyncPair, listRuns, getSyncStats, listRcloneRemotes, isRcloneInstalled,
+  startSyncScheduler, stopSyncScheduler,
+} from "./sync/cloud-sync.js";
+
+app.get("/api/cloud-sync/stats", async (_req, res) => {
+  try {
+    const [stats, rcloneOk] = await Promise.all([getSyncStats(), isRcloneInstalled()]);
+    res.json({ ...stats, rclone_installed: rcloneOk });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get("/api/cloud-sync/providers", async (_req, res) => {
+  try {
+    const providers = await listProviders();
+    res.json({ providers });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/api/cloud-sync/providers", async (req, res) => {
+  try {
+    const provider = await createProvider(req.body);
+    res.json({ provider });
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
+  }
+});
+
+app.put("/api/cloud-sync/providers/:id", async (req, res) => {
+  try {
+    const provider = await updateProvider(req.params.id, req.body);
+    res.json({ provider });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.delete("/api/cloud-sync/providers/:id", async (req, res) => {
+  try {
+    await deleteProvider(req.params.id);
+    res.json({ deleted: true });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/api/cloud-sync/providers/:id/check", async (req, res) => {
+  try {
+    const provider = await getProvider(req.params.id);
+    if (!provider) { res.status(404).json({ error: "Provider not found" }); return; }
+    const result = await checkProvider(provider);
+    await updateProvider(req.params.id, {
+      status: result.ok ? "connected" : "error",
+      status_message: result.message,
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get("/api/cloud-sync/pairs", async (_req, res) => {
+  try {
+    const pairs = await listPairs();
+    res.json({ pairs });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/api/cloud-sync/pairs", async (req, res) => {
+  try {
+    const pair = await createPair(req.body);
+    res.json({ pair });
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
+  }
+});
+
+app.put("/api/cloud-sync/pairs/:id", async (req, res) => {
+  try {
+    const pair = await updatePair(req.params.id, req.body);
+    res.json({ pair });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.delete("/api/cloud-sync/pairs/:id", async (req, res) => {
+  try {
+    await deletePair(req.params.id);
+    res.json({ deleted: true });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/api/cloud-sync/pairs/:id/sync", async (req, res) => {
+  try {
+    const pair = await getPair(req.params.id);
+    if (!pair) { res.status(404).json({ error: "Pair not found" }); return; }
+    executeSyncPair(req.params.id)
+      .then((run) => broadcast("cloud-sync.completed", { pairId: req.params.id, run }))
+      .catch((err) => {
+        console.error("[CloudSync] Sync failed:", err);
+        broadcast("cloud-sync.error", { pairId: req.params.id, error: String(err) });
+      });
+    res.json({ triggered: true, pair_name: pair.name });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get("/api/cloud-sync/runs", async (req, res) => {
+  try {
+    const pairId = req.query.pair_id as string | undefined;
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    const runs = await listRuns(pairId, limit);
+    res.json({ runs });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get("/api/cloud-sync/browse", async (req, res) => {
+  try {
+    const providerId = req.query.provider as string;
+    const path = (req.query.path as string) || "";
+    if (!providerId) { res.status(400).json({ error: "provider query param required" }); return; }
+    const entries = await browse(providerId, path);
+    res.json({ entries, path });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get("/api/cloud-sync/remotes", async (_req, res) => {
+  try {
+    const [remotes, installed] = await Promise.all([listRcloneRemotes(), isRcloneInstalled()]);
+    res.json({ remotes, rclone_installed: installed });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 // WebSocket Server
 const wss = new WebSocketServer({ noServer: true });
 
@@ -7581,13 +7915,34 @@ wss.on("connection", (ws) => {
             }, msg.id));
           } else {
             // ── API mode (OpenRouter / Anthropic) ──
+            // Intent routing — try to route specialist queries to the right agent
+            let effectiveAgentId = agentId;
+            let routeDecision: RouteDecision | null = null;
+            const routeResult = await routeIntent(data.content, agentId);
+            if (routeResult.routed) {
+              routeDecision = routeResult;
+              effectiveAgentId = routeResult.agentId;
+              console.log(`[chat.send] Intent router: ${agentId} → ${effectiveAgentId} (reason=${routeResult.reason}, confidence=${routeResult.confidence})`);
+            }
+
             // Ensure conversation exists BEFORE runAgent so all events use the real ID
-            const convId = await ensureConversation(conversationId || undefined, agentId, !conversationId ? data.metadata : undefined);
+            const convId = await ensureConversation(conversationId || undefined, effectiveAgentId, !conversationId ? data.metadata : undefined);
+
+            // Emit chat.routed event if intent router selected a different agent
+            if (routeDecision) {
+              ws.send(frame("chat.routed", {
+                conversationId: convId,
+                agentId: routeDecision.agentId,
+                reason: routeDecision.reason,
+                confidence: routeDecision.confidence,
+                matchedPattern: routeDecision.matchedPattern,
+              }, msg.id));
+            }
 
             const apiStartMs = Date.now();
-            const result = await runAgent({
+            const runOptions: Parameters<typeof runAgent>[0] = {
               conversationId: convId,
-              agentId,
+              agentId: effectiveAgentId,
               userMessage: data.content,
               config,
               model: data.model,
@@ -7631,7 +7986,17 @@ wss.on("connection", (ws) => {
                   result: resultData,
                 }, msg.id));
               },
-            });
+            };
+
+            // Apply execution profile from router
+            if (routeDecision) {
+              const ep = routeDecision.executionProfile;
+              runOptions.includeSkillsPrompt = ep.includeSkillsPrompt;
+              runOptions.includeMemoryContext = ep.includeMemoryContext;
+              runOptions.historyLimit = ep.historyLimit;
+            }
+
+            const result = await runAgent(runOptions);
 
             ws.send(frame("chat.done", {
               conversationId: convId,
@@ -7645,6 +8010,17 @@ wss.on("connection", (ws) => {
               costUsd: result.costUsd,
               latencyMs: Date.now() - apiStartMs,
               timings: result.timings,
+              agentId: result.agentId,
+              routeReason: routeDecision?.reason,
+              routeConfidence: routeDecision?.confidence,
+              delegations: result.delegations,
+              cacheStats: result.usage.cacheReadTokens || result.usage.cacheWriteTokens ? {
+                cacheReadTokens: result.usage.cacheReadTokens || 0,
+                cacheWriteTokens: result.usage.cacheWriteTokens || 0,
+                cacheHitPercent: result.usage.inputTokens > 0
+                  ? Math.round(((result.usage.cacheReadTokens || 0) / result.usage.inputTokens) * 100)
+                  : 0,
+              } : undefined,
             }, msg.id));
           }
 
@@ -8293,6 +8669,11 @@ server.listen(port, host, () => {
   initChannelManager(config, broadcast).catch((err) =>
     console.warn("[Server] Failed to init channel manager:", err),
   );
+
+  // Start cloud sync scheduler
+  startSyncScheduler((pairId, run) => {
+    broadcast("cloud-sync.completed", { pairId, run });
+  });
 });
 
 // Graceful shutdown
@@ -8301,6 +8682,7 @@ process.on("SIGINT", async () => {
   await shutdownAllChannels();
   killAllSessions();
   stopScheduler();
+  stopSyncScheduler();
   stopWatching();
   wss.close();
   server.close();

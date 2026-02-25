@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type OpenAI from "openai";
 import type { JoiConfig } from "../config/schema.js";
 import { query } from "../db/client.js";
-import { buildSystemPrompt } from "./system-prompt.js";
+import { buildSystemPrompt, buildCachedSystemBlocks } from "./system-prompt.js";
 import { getToolDefinitions, executeTool, type ToolContext } from "./tools.js";
 import {
   getModelClient,
@@ -17,6 +17,8 @@ import { afterAgentRun, type ToolInteraction } from "../knowledge/hooks.js";
 import { maybeFlushContext } from "../knowledge/flush.js";
 import { loadConversationScope, resolveAllowedScopes } from "../access/scope.js";
 import { recordUsage, estimateCost } from "./usage-tracker.js";
+import { readSoulDocumentForAgent } from "./soul-documents.js";
+import { chooseSoulForConversation, persistConversationSoulSelection } from "./soul-rollouts.js";
 
 /** Strip <think>...</think> reasoning tags from model output (e.g., Qwen 3.5) */
 function stripThinkTags(text: string): string {
@@ -45,6 +47,66 @@ function shouldUseToolsForMessage(message: string): boolean {
   return true;
 }
 
+// ── Tool result minimization (Phase 3) ──
+// Reduces tool result context sent to LLM while preserving full results for storage.
+
+const TOOL_RESULT_SUMMARY_MAX_CHARS = 4000;
+const EMBY_SUMMARY_TOOLS = new Set(["emby_search", "emby_library", "emby_recently_watched", "emby_continue_watching", "emby_next_up", "emby_now_playing"]);
+
+/** Essential fields to keep per item in Emby envelope results */
+const EMBY_ITEM_ESSENTIAL_KEYS = ["id", "name", "type", "year", "communityRating"];
+
+function summarizeEmbyEnvelope(parsed: Record<string, unknown>): Record<string, unknown> {
+  const items = Array.isArray(parsed.items) ? parsed.items as Record<string, unknown>[] : [];
+  const summarizedItems = items.map((item) => {
+    const slim: Record<string, unknown> = {};
+    for (const key of EMBY_ITEM_ESSENTIAL_KEYS) {
+      if (item[key] !== undefined) slim[key] = item[key];
+    }
+    return slim;
+  });
+  return {
+    count: parsed.count,
+    returned: parsed.returned,
+    page: parsed.page,
+    hasMore: parsed.hasMore,
+    items: summarizedItems,
+  };
+}
+
+/**
+ * Summarize a tool result for LLM context. Returns the original if no summarization applies.
+ * Feature-gated by JOI_TOOL_RESULT_SUMMARY=1.
+ */
+export function summarizeToolResult(toolName: string, resultStr: string): string {
+  if (process.env.JOI_TOOL_RESULT_SUMMARY !== "1") return resultStr;
+
+  // Only summarize specific tools
+  if (!EMBY_SUMMARY_TOOLS.has(toolName)) {
+    // Hard cap fallback for any tool
+    if (resultStr.length > TOOL_RESULT_SUMMARY_MAX_CHARS) {
+      return resultStr.slice(0, TOOL_RESULT_SUMMARY_MAX_CHARS) + `\n[truncated ${resultStr.length - TOOL_RESULT_SUMMARY_MAX_CHARS} chars]`;
+    }
+    return resultStr;
+  }
+
+  try {
+    const parsed = JSON.parse(resultStr);
+    // Envelope shape: { count, items, ... }
+    if (parsed && typeof parsed === "object" && Array.isArray(parsed.items)) {
+      const summarized = summarizeEmbyEnvelope(parsed);
+      return JSON.stringify(summarized);
+    }
+  } catch {
+    // Not JSON or parse error — return as-is with hard cap
+  }
+
+  if (resultStr.length > TOOL_RESULT_SUMMARY_MAX_CHARS) {
+    return resultStr.slice(0, TOOL_RESULT_SUMMARY_MAX_CHARS) + `\n[truncated ${resultStr.length - TOOL_RESULT_SUMMARY_MAX_CHARS} chars]`;
+  }
+  return resultStr;
+}
+
 // ── OpenAI format converters (for non-Anthropic models on OpenRouter) ──
 
 /** Convert Anthropic tools to OpenAI function-calling format */
@@ -67,28 +129,30 @@ function messagesToOpenAI(
   const result: OpenAI.ChatCompletionMessageParam[] = [
     { role: "system", content: systemPrompt },
   ];
+  const toolResultToText = (content: unknown): string => (
+    typeof content === "string" ? content : JSON.stringify(content)
+  );
 
   for (const msg of messages) {
     if (msg.role === "user") {
       if (typeof msg.content === "string") {
         result.push({ role: "user", content: msg.content });
       } else if (Array.isArray(msg.content)) {
-        // May contain tool_result blocks or text
-        const toolResults = msg.content.filter(
-          (b): b is Anthropic.ToolResultBlockParam => b.type === "tool_result",
-        );
-        const textBlocks = msg.content.filter(
-          (b): b is Anthropic.TextBlockParam => b.type === "text",
-        );
-        for (const tr of toolResults) {
-          result.push({
-            role: "tool",
-            tool_call_id: tr.tool_use_id,
-            content: typeof tr.content === "string" ? tr.content : JSON.stringify(tr.content),
-          });
-        }
-        for (const tb of textBlocks) {
-          result.push({ role: "user", content: tb.text });
+        // May contain tool_result blocks or text. We intentionally flatten all
+        // structured tool history into plain user text because some providers
+        // reject strict tool-role sequencing when legacy conversation data is noisy.
+        for (const block of msg.content) {
+          if (block.type === "tool_result") {
+            result.push({
+              role: "user",
+              content: `Tool result (${block.tool_use_id}): ${toolResultToText(block.content)}`,
+            });
+            continue;
+          }
+
+          if (block.type === "text") {
+            result.push({ role: "user", content: block.text });
+          }
         }
       }
     } else if (msg.role === "assistant") {
@@ -96,26 +160,18 @@ function messagesToOpenAI(
         result.push({ role: "assistant", content: msg.content });
       } else if (Array.isArray(msg.content)) {
         const textParts: string[] = [];
-        const toolCalls: OpenAI.ChatCompletionMessageToolCall[] = [];
+        const toolNames: string[] = [];
         for (const block of msg.content) {
           if (block.type === "text") {
             textParts.push(block.text);
           } else if (block.type === "tool_use") {
-            toolCalls.push({
-              id: block.id,
-              type: "function",
-              function: {
-                name: block.name,
-                arguments: JSON.stringify(block.input),
-              },
-            });
+            toolNames.push(block.name);
           }
         }
         const assistantMsg: OpenAI.ChatCompletionAssistantMessageParam = {
           role: "assistant",
-          content: textParts.join("") || (toolCalls.length > 0 ? `[Called tools: ${toolCalls.map((tc) => "function" in tc ? tc.function.name : "tool").join(", ")}]` : null),
+          content: textParts.join("") || (toolNames.length > 0 ? `[Called tools: ${toolNames.join(", ")}]` : null),
         };
-        if (toolCalls.length > 0) assistantMsg.tool_calls = toolCalls;
         result.push(assistantMsg);
       }
     }
@@ -242,9 +298,24 @@ export interface AgentRunResult {
   provider: string;
   toolModel?: string;
   toolProvider?: string;
-  usage: { inputTokens: number; outputTokens: number };
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  };
   costUsd: number;
   timings: AgentTimings;
+  agentId?: string;
+  agentName?: string;
+  routeReason?: string;
+  routeConfidence?: number;
+  delegations?: Array<{
+    agentId: string;
+    task: string;
+    durationMs: number;
+    status: "success" | "error";
+  }>;
 }
 
 async function loadConversationHistory(
@@ -410,22 +481,24 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
 
   // Load agent config from DB
   const agentResult = await query<{
+    id: string;
     system_prompt: string | null;
     model: string;
     skills: string[] | null;
     config: Record<string, unknown> | null;
   }>(
-    "SELECT system_prompt, model, skills, config FROM agents WHERE id = $1",
+    "SELECT id, system_prompt, model, skills, config FROM agents WHERE id = $1",
     [agentId],
   );
 
   let agentRow = agentResult.rows[0];
   if (!agentRow) {
     console.error(`[runAgent] Agent "${agentId}" not found in database, falling back to "personal"`);
-    const fallback = await query<{ system_prompt: string | null; model: string; skills: string[] | null; config: Record<string, unknown> | null }>(
-      "SELECT system_prompt, model, skills, config FROM agents WHERE id = $1", ["personal"]);
+    const fallback = await query<{ id: string; system_prompt: string | null; model: string; skills: string[] | null; config: Record<string, unknown> | null }>(
+      "SELECT id, system_prompt, model, skills, config FROM agents WHERE id = $1", ["personal"]);
     agentRow = fallback.rows[0];
   }
+  const promptAgentId = agentRow?.id || agentId;
   // Client-requested model takes highest priority, then agent DB model
   const agentModelOverride = clientModel || agentRow?.model;
   const agentConfig = agentRow?.config || {};
@@ -531,12 +604,46 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
 
   // Skip skills prompt for lightweight turns (tools are disabled anyway)
   const effectiveIncludeSkills = disableToolsForTurn ? false : includeSkillsPrompt;
+  const fallbackSoulContent = readSoulDocumentForAgent(promptAgentId).content;
+  let selectedSoulContent = fallbackSoulContent;
+  try {
+    const soulSelection = await chooseSoulForConversation({
+      agentId: promptAgentId,
+      conversationId,
+      fallbackContent: fallbackSoulContent,
+    });
+    selectedSoulContent = soulSelection.selectedContent || fallbackSoulContent;
+    await persistConversationSoulSelection(conversationId, soulSelection);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[runAgent] Failed to resolve soul rollout for ${promptAgentId}: ${message}`);
+  }
 
-  const systemPrompt = buildSystemPrompt(agentRow?.system_prompt || undefined, {
+  const promptOptions = {
     includeSkillsPrompt: effectiveIncludeSkills,
     language: channelLanguage,
-  }) + memoryContext
+    agentId: promptAgentId,
+    soulDocument: selectedSoulContent,
+  };
+  const systemPrompt = buildSystemPrompt(agentRow?.system_prompt || undefined, promptOptions)
+    + memoryContext
     + (systemPromptSuffix ? "\n\n" + systemPromptSuffix : "");
+
+  // Build cached system blocks for Anthropic prompt caching (Phase 2)
+  const usePromptCache = process.env.JOI_PROMPT_CACHE === "1";
+  let cachedSystemBlocks: Anthropic.TextBlockParam[] | null = null;
+  if (usePromptCache && !disableToolsForTurn) {
+    const blocks = buildCachedSystemBlocks(agentRow?.system_prompt || undefined, promptOptions);
+    // Append memory + suffix to dynamic block
+    const dynamicSuffix = memoryContext + (systemPromptSuffix ? "\n\n" + systemPromptSuffix : "");
+    if (dynamicSuffix) {
+      blocks[blocks.length - 1] = {
+        ...blocks[blocks.length - 1],
+        text: blocks[blocks.length - 1].text + dynamicSuffix,
+      };
+    }
+    cachedSystemBlocks = blocks;
+  }
 
   timings.promptMs = Date.now() - tMark;
   tMark = Date.now();
@@ -559,8 +666,11 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   let fullContent = "";
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
+  let totalCacheReadTokens = 0;
+  let totalCacheWriteTokens = 0;
   let totalCostUsd = 0;
   const toolInteractions: ToolInteraction[] = [];
+  const delegations: Array<{ agentId: string; task: string; durationMs: number; status: "success" | "error" }> = [];
   let toolsWereCalled = false;
   let assistantMessageId: string | null = null;
 
@@ -608,10 +718,11 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       stopReason = result.stopReason;
     } else {
       // Use Anthropic SDK (direct or OpenRouter with anthropic/* models)
+      const useBlocks = cachedSystemBlocks && isAnthropicModel(model);
       const stream = client!.messages.stream({
         model,
         max_tokens: 8192,
-        system: systemPrompt,
+        system: useBlocks ? cachedSystemBlocks! : systemPrompt,
         messages,
         tools: tools.length > 0 ? tools : undefined,
         tool_choice: tools.length > 0 && forceToolsThisIteration ? { type: "any" } : undefined,
@@ -626,6 +737,14 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       const response = await stream.finalMessage();
       iterInputTokens = response.usage.input_tokens;
       iterOutputTokens = response.usage.output_tokens;
+      // Capture cache tokens from Anthropic response
+      const usage = response.usage as unknown as Record<string, unknown>;
+      if (typeof usage.cache_read_input_tokens === "number") {
+        totalCacheReadTokens += usage.cache_read_input_tokens as number;
+      }
+      if (typeof usage.cache_creation_input_tokens === "number") {
+        totalCacheWriteTokens += usage.cache_creation_input_tokens as number;
+      }
       stopReason = response.stop_reason || "end_turn";
 
       for (const block of response.content) {
@@ -701,33 +820,67 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       maxDepth: maxSpawnDepth,
       broadcast,
       spawnAgent: async (opts) => {
-        const childResult = await runAgent({
-          conversationId: opts.parentConversationId || "",
-          agentId: opts.agentId,
-          userMessage: opts.message,
-          config,
-          depth: depth + 1,
-          broadcast,
+        const spawnStartMs = Date.now();
+        broadcast?.("chat.agent_spawn", {
+          conversationId,
+          parentAgentId: agentId,
+          childAgentId: opts.agentId,
+          task: opts.message.slice(0, 200),
         });
-        return {
-          content: childResult.content,
-          model: childResult.model,
-          usage: childResult.usage,
-        };
+        try {
+          const childResult = await runAgent({
+            conversationId: opts.parentConversationId || "",
+            agentId: opts.agentId,
+            userMessage: opts.message,
+            config,
+            depth: depth + 1,
+            broadcast,
+          });
+          const spawnDurationMs = Date.now() - spawnStartMs;
+          delegations.push({ agentId: opts.agentId, task: opts.message.slice(0, 200), durationMs: spawnDurationMs, status: "success" });
+          broadcast?.("chat.agent_result", {
+            conversationId,
+            childAgentId: opts.agentId,
+            status: "success",
+            durationMs: spawnDurationMs,
+          });
+          return {
+            content: childResult.content,
+            model: childResult.model,
+            usage: childResult.usage,
+          };
+        } catch (err) {
+          const spawnDurationMs = Date.now() - spawnStartMs;
+          delegations.push({ agentId: opts.agentId, task: opts.message.slice(0, 200), durationMs: spawnDurationMs, status: "error" });
+          broadcast?.("chat.agent_result", {
+            conversationId,
+            childAgentId: opts.agentId,
+            status: "error",
+            durationMs: spawnDurationMs,
+          });
+          throw err;
+        }
       },
     };
 
+    // Collect full results (for DB) and summarized results (for LLM context)
+    const llmToolResults: Array<{ tool_use_id: string; content: string }> = [];
     for (const tc of toolCalls) {
       onToolUse?.(tc.name, tc.input, tc.id);
       const result = await executeTool(tc.name, tc.input, toolContext);
       const resultStr = typeof result === "string" ? result : JSON.stringify(result);
       toolResults.push({ tool_use_id: tc.id, content: resultStr });
       toolInteractions.push({ name: tc.name, input: tc.input, result: resultStr });
+      // Summarize for LLM context (feature-gated)
+      const llmResultStr = summarizeToolResult(tc.name, resultStr);
+      llmToolResults.push({ tool_use_id: tc.id, content: llmResultStr });
       onToolResult?.(tc.id, result);
     }
 
+    // Save full results to DB
     await saveMessage(conversationId, "tool", null, null, null, toolResults, null);
 
+    // Feed summarized results to LLM context
     messages = [...messages];
     const assistantContent: Anthropic.ContentBlock[] = [];
     if (assistantText) {
@@ -745,7 +898,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
 
     messages.push({
       role: "user",
-      content: toolResults.map((tr) => ({
+      content: llmToolResults.map((tr) => ({
         type: "tool_result" as const,
         tool_use_id: tr.tool_use_id,
         content: tr.content,
@@ -794,10 +947,11 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       finalInputTokens = result.inputTokens;
       finalOutputTokens = result.outputTokens;
     } else {
+      const useFinalBlocks = cachedSystemBlocks && isAnthropicModel(chatModel);
       const stream = chatClient!.messages.stream({
         model: chatModel,
         max_tokens: 8192,
-        system: systemPrompt,
+        system: useFinalBlocks ? cachedSystemBlocks! : systemPrompt,
         messages,
         // No tools — pure text response
       });
@@ -810,6 +964,14 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       const response = await stream.finalMessage();
       finalInputTokens = response.usage.input_tokens;
       finalOutputTokens = response.usage.output_tokens;
+      // Capture cache tokens from two-phase final response
+      const finalUsage = response.usage as unknown as Record<string, unknown>;
+      if (typeof finalUsage.cache_read_input_tokens === "number") {
+        totalCacheReadTokens += finalUsage.cache_read_input_tokens as number;
+      }
+      if (typeof finalUsage.cache_creation_input_tokens === "number") {
+        totalCacheWriteTokens += finalUsage.cache_creation_input_tokens as number;
+      }
     }
 
     totalInputTokens += finalInputTokens;
@@ -897,8 +1059,12 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     usage: {
       inputTokens: totalInputTokens,
       outputTokens: totalOutputTokens,
+      cacheReadTokens: totalCacheReadTokens || undefined,
+      cacheWriteTokens: totalCacheWriteTokens || undefined,
     },
     costUsd: totalCostUsd,
     timings,
+    agentId,
+    delegations: delegations.length > 0 ? delegations : undefined,
   };
 }

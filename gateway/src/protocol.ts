@@ -10,6 +10,9 @@ export type FrameType =
   | "chat.tool_use"     // Gateway → Client: tool call in progress
   | "chat.tool_result"  // Gateway → Client: tool call result
   | "chat.interrupt"    // Client → Gateway: voice interruption (truncate stored message)
+  | "chat.routed"       // Gateway → Client: intent router selected an agent
+  | "chat.agent_spawn"  // Gateway → Client: spawn_agent delegation started
+  | "chat.agent_result" // Gateway → Client: spawned agent completed
   | "session.list"      // Client → Gateway: list sessions
   | "session.load"      // Client → Gateway: load session history
   | "session.create"    // Client → Gateway: create new session
@@ -88,7 +91,47 @@ export interface ChatDoneData {
   usage?: {
     inputTokens: number;
     outputTokens: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
   };
+  agentId?: string;
+  agentName?: string;
+  routeReason?: string;
+  routeConfidence?: number;
+  delegations?: Array<{
+    agentId: string;
+    task: string;
+    durationMs: number;
+    status: "success" | "error";
+  }>;
+  cacheStats?: {
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+    cacheHitPercent: number;
+  };
+}
+
+export interface ChatRoutedData {
+  conversationId: string;
+  agentId: string;
+  agentName?: string;
+  reason: string;
+  confidence: number;
+  matchedPattern?: string;
+}
+
+export interface ChatAgentSpawnData {
+  conversationId: string;
+  parentAgentId: string;
+  childAgentId: string;
+  task: string;
+}
+
+export interface ChatAgentResultData {
+  conversationId: string;
+  childAgentId: string;
+  status: "success" | "error";
+  durationMs: number;
 }
 
 export interface ChatToolUseData {
@@ -172,6 +215,14 @@ export interface AutoDevStatusData {
   projectUuid: string | null;
   projectTitle: string | null;
   currentTask: { uuid: string; title: string } | null;
+  executorMode?: "auto" | "claude-code" | "gemini-cli" | "codex-cli";
+  parallelExecution?: boolean;
+  currentExecutor?: "claude-code" | "gemini-cli" | "codex-cli" | null;
+  activeExecutors?: Array<"claude-code" | "gemini-cli" | "codex-cli">;
+  executorStates?: Partial<Record<"claude-code" | "gemini-cli" | "codex-cli", "idle" | "running" | "success" | "error">>;
+  currentAgentId?: string | null;
+  currentSkill?: string | null;
+  currentRouteReason?: string | null;
   completedCount: number;
   queue: Array<{ uuid: string; title: string }>;
 }

@@ -22,6 +22,19 @@ export interface Attachment {
   status?: string;
 }
 
+export interface Delegation {
+  agentId: string;
+  task: string;
+  durationMs: number;
+  status: "success" | "error";
+}
+
+export interface CacheStats {
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  cacheHitPercent: number;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
@@ -36,6 +49,8 @@ export interface ChatMessage {
   usage?: {
     inputTokens: number;
     outputTokens: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
     voiceCache?: {
       cacheHits?: number;
       cacheMisses?: number;
@@ -61,6 +76,12 @@ export interface ChatMessage {
   isStreaming?: boolean;
   createdAt?: string;
   costUsd?: number;
+  // Agent routing/delegation metadata
+  agentId?: string;
+  routeReason?: string;
+  routeConfidence?: number;
+  delegations?: Delegation[];
+  cacheStats?: CacheStats;
 }
 
 interface UseChatOptions {
@@ -148,23 +169,15 @@ export function useChat({ send, on }: UseChatOptions) {
           toolProvider?: string;
           messageId: string;
           conversationId?: string;
-          usage?: {
-            inputTokens: number;
-            outputTokens: number;
-            voiceCache?: {
-              cacheHits?: number;
-              cacheMisses?: number;
-              cacheHitChars?: number;
-              cacheMissChars?: number;
-              cacheHitAudioBytes?: number;
-              cacheMissAudioBytes?: number;
-              segments?: number;
-              hitRate?: number;
-            };
-          };
+          usage?: ChatMessage["usage"];
           latencyMs?: number;
           costUsd?: number;
           timings?: ChatMessage["timings"];
+          agentId?: string;
+          routeReason?: string;
+          routeConfidence?: number;
+          delegations?: Delegation[];
+          cacheStats?: CacheStats;
         };
         const incomingConversationId = data.conversationId;
 
@@ -199,6 +212,11 @@ export function useChat({ send, on }: UseChatOptions) {
                 ttftMs,
                 timings: data.timings,
                 isStreaming: false,
+                agentId: data.agentId,
+                routeReason: data.routeReason,
+                routeConfidence: data.routeConfidence,
+                delegations: data.delegations,
+                cacheStats: data.cacheStats,
               },
             ];
           }
@@ -218,6 +236,11 @@ export function useChat({ send, on }: UseChatOptions) {
               ttftMs,
               timings: data.timings,
               isStreaming: false,
+              agentId: data.agentId,
+              routeReason: data.routeReason,
+              routeConfidence: data.routeConfidence,
+              delegations: data.delegations,
+              cacheStats: data.cacheStats,
             },
           ];
         });
@@ -270,6 +293,35 @@ export function useChat({ send, on }: UseChatOptions) {
           ];
         });
         setIsStreaming(true);
+      }),
+
+      on("chat.routed", (frame) => {
+        const data = frame.data as {
+          conversationId?: string;
+          agentId: string;
+          reason?: string;
+          confidence?: number;
+        };
+        const incomingConversationId = data.conversationId;
+        if (conversationId && incomingConversationId && incomingConversationId !== conversationId) {
+          return;
+        }
+        if (data.conversationId && !conversationId) {
+          setConversationId(data.conversationId as string);
+        }
+        // Set the agentId on the current streaming message
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last?.isStreaming) {
+            return [...prev.slice(0, -1), {
+              ...last,
+              agentId: data.agentId,
+              routeReason: data.reason,
+              routeConfidence: data.confidence,
+            }];
+          }
+          return prev;
+        });
       }),
 
       on("chat.tool_use", (frame) => {

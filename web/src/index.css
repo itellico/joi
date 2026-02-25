@@ -763,6 +763,43 @@ textarea:focus {
   gap: 2px;
 }
 
+.sidebar-health-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 2px;
+}
+
+.sidebar-health-title {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.sidebar-health-copy {
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.sidebar-health-copy:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.sidebar-health-copy.copied {
+  border-color: var(--success);
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 10%, var(--bg-tertiary));
+}
+
 .sidebar-health-row {
   display: flex;
   align-items: center;
@@ -7241,6 +7278,103 @@ select.t3-dialog-input {
   font-size: 9px;
   font-family: var(--font-mono);
   color: var(--text-muted);
+}
+
+/* Agent badge — shown when a routed agent handled the message */
+.assistant-agent-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  padding: 1px 6px;
+  border: 1px solid;
+  border-radius: 8px;
+  opacity: 0.85;
+  white-space: nowrap;
+}
+.assistant-agent-badge-icon {
+  font-size: 11px;
+}
+.assistant-agent-badge-name {
+  font-size: 9px;
+  letter-spacing: 0.2px;
+}
+
+/* Delegation accordion — shows spawned child-agent activity */
+.assistant-delegation-accordion {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+}
+.assistant-delegation-toggle {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+}
+.assistant-delegation-toggle:hover {
+  color: var(--text-secondary);
+}
+.assistant-delegation-chevron {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  border-left: 4px solid currentColor;
+  border-top: 3px solid transparent;
+  border-bottom: 3px solid transparent;
+  transition: transform 0.15s ease;
+}
+.assistant-delegation-chevron.open {
+  transform: rotate(90deg);
+}
+.assistant-delegation-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.assistant-delegation-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+.assistant-delegation-agent {
+  font-weight: 500;
+  white-space: nowrap;
+}
+.assistant-delegation-task {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  max-width: 200px;
+}
+.assistant-delegation-duration {
+  color: var(--text-muted);
+  font-size: 9px;
+}
+.assistant-delegation-status {
+  font-size: 9px;
+  font-weight: 500;
+}
+.assistant-delegation-status.success {
+  color: var(--success);
+}
+.assistant-delegation-status.error {
+  color: var(--error);
 }
 
 /* Compose area (shared between modal + sidebar) */

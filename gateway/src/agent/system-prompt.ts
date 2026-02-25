@@ -1,102 +1,50 @@
-import { readFileSync, readdirSync, existsSync, statSync, lstatSync } from "node:fs";
-import { resolve, dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { homedir } from "node:os";
+import type { TextBlockParam } from "@anthropic-ai/sdk/resources/messages.js";
+import { readGlobalSoulDocument, readSoulDocumentForAgent } from "./soul-documents.js";
+import { listExternalSkillCatalog } from "../skills/catalog.js";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-// Load soul.md from gateway root (two levels up from src/agent/)
-let soulDocument: string;
-try {
-  soulDocument = readFileSync(resolve(__dirname, "../../soul.md"), "utf-8");
-} catch {
-  // Fallback if soul.md is missing
-  soulDocument = "You are JOI, a personal AI assistant. Be helpful, concise, and proactive.";
-}
-
-// Skills prompt cache — avoids reading 51+ SKILL.md files from disk on every call
+// Skills prompt cache — avoids reading many SKILL.md files from disk on every call
 let _skillsCache: { text: string; builtAt: number } | null = null;
 const SKILLS_CACHE_TTL_MS = 60_000; // 60 seconds
 
-/**
- * Scan ~/.claude/skills/ for SKILL.md files and build a compact index.
- * Returns a prompt section listing available skills with name + description.
- * Handles symlinked skill directories (common pattern).
- * Results are cached for 60s to avoid repeated filesystem reads.
- */
+/** Build a compact index of installed Claude/Codex/Gemini skills for prompt-time routing. */
 export function buildSkillsPrompt(): string {
   if (_skillsCache && (Date.now() - _skillsCache.builtAt) < SKILLS_CACHE_TTL_MS) {
     return _skillsCache.text;
   }
-  const skillsDir = join(homedir(), ".claude", "skills");
-  if (!existsSync(skillsDir)) return "";
 
-  const entries: { name: string; description: string }[] = [];
-
-  try {
-    const dirs = readdirSync(skillsDir, { withFileTypes: true }).filter((d) => {
-      if (d.isDirectory()) return true;
-      if (d.isSymbolicLink()) {
-        try {
-          return statSync(join(skillsDir, d.name)).isDirectory();
-        } catch {
-          return false;
-        }
-      }
-      return false;
-    });
-
-    for (const d of dirs) {
-      const mdPath = join(skillsDir, d.name, "SKILL.md");
-      if (!existsSync(mdPath)) continue;
-
-      try {
-        const raw = readFileSync(mdPath, "utf-8");
-        let description = "";
-
-        // Extract description from YAML frontmatter
-        if (raw.startsWith("---\n")) {
-          const endIdx = raw.indexOf("\n---", 4);
-          if (endIdx !== -1) {
-            const fm = raw.slice(4, endIdx);
-            const descMatch = fm.match(/description:\s*(?:"([^"]+)"|'([^']+)'|(.+))/);
-            if (descMatch) {
-              description = (descMatch[1] || descMatch[2] || descMatch[3] || "").trim();
-            }
-          }
-        }
-
-        // If no frontmatter description, grab first non-heading line
-        if (!description) {
-          const lines = raw.split("\n");
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (trimmed && !trimmed.startsWith("#") && !trimmed.startsWith("---")) {
-              description = trimmed.slice(0, 120);
-              break;
-            }
-          }
-        }
-
-        entries.push({ name: d.name, description });
-      } catch {
-        // Skip unreadable skills
-      }
-    }
-  } catch {
-    return "";
-  }
-
+  const entries = listExternalSkillCatalog();
   if (entries.length === 0) return "";
 
-  const lines = entries
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .map((e) => `- **${e.name}**: ${e.description}`);
+  const sourceOrder = ["claude-code", "gemini", "codex", "codex-project", "codex-system"];
+  const sourceLabel: Record<string, string> = {
+    "claude-code": "Claude Code Skills",
+    gemini: "Gemini Skills",
+    codex: "Codex Skills (User)",
+    "codex-project": "Codex Skills (Project)",
+    "codex-system": "Codex Skills (System)",
+  };
+
+  const sections = sourceOrder
+    .map((source) => {
+      const group = entries
+        .filter((entry) => entry.source === source)
+        .sort((a, b) => a.name.localeCompare(b.name));
+      if (group.length === 0) return "";
+
+      const lines = group.map((entry) => {
+        const desc = (entry.description || "No description").slice(0, 180);
+        return `- **${entry.name}**: ${desc}`;
+      });
+      return `### ${sourceLabel[source] || source}\n${lines.join("\n")}`;
+    })
+    .filter(Boolean);
 
   const result = `\n\n## Available Skills (${entries.length})
-You have access to specialized skills from ~/.claude/skills/. When a task matches a skill, use the \`skill_read\` tool to load its full instructions, then follow them using your native tools.
+You have access to specialized skills from Claude, Gemini, and Codex skill folders. When a task matches a skill, use \`skill_read\` to load its full instructions, then execute with your native tools.
 
-${lines.join("\n")}`;
+If a skill name exists in multiple sources, provide \`source\` to \`skill_read\` to disambiguate.
+
+${sections.join("\n\n")}`;
 
   _skillsCache = { text: result, builtAt: Date.now() };
   return result;
@@ -105,15 +53,17 @@ ${lines.join("\n")}`;
 interface BuildSystemPromptOptions {
   includeSkillsPrompt?: boolean;
   language?: string;
+  agentId?: string;
+  soulDocument?: string;
 }
 
 /** Language instruction blocks keyed by language code. */
 const LANGUAGE_INSTRUCTIONS: Record<string, string> = {
   de: "\n\n## Language\nAlways respond in German (Deutsch). Use informal Du-form. Be natural and conversational.",
-  fr: "\n\n## Language\nAlways respond in French (Fran\u00E7ais). Be natural and conversational.",
-  es: "\n\n## Language\nAlways respond in Spanish (Espa\u00F1ol). Be natural and conversational.",
+  fr: "\n\n## Language\nAlways respond in French (Français). Be natural and conversational.",
+  es: "\n\n## Language\nAlways respond in Spanish (Español). Be natural and conversational.",
   it: "\n\n## Language\nAlways respond in Italian (Italiano). Be natural and conversational.",
-  pt: "\n\n## Language\nAlways respond in Portuguese (Portugu\u00EAs). Be natural and conversational.",
+  pt: "\n\n## Language\nAlways respond in Portuguese (Português). Be natural and conversational.",
 };
 
 /** Map language code → IETF locale for date/time formatting. */
@@ -126,11 +76,10 @@ const LANGUAGE_LOCALES: Record<string, string> = {
   pt: "pt-PT",
 };
 
-export function buildSystemPrompt(customPrompt?: string, options?: BuildSystemPromptOptions): string {
-  const lang = options?.language || "en";
-  const locale = LANGUAGE_LOCALES[lang] || "en-US";
-
+/** Stable timestamp — bucketized to 15 minutes for cache friendliness. */
+function stableTimestamp(locale: string): { dateStr: string; timeStr: string } {
   const now = new Date();
+  now.setMinutes(Math.floor(now.getMinutes() / 15) * 15, 0, 0);
   const dateStr = now.toLocaleDateString(locale, {
     weekday: "long",
     year: "numeric",
@@ -142,8 +91,96 @@ export function buildSystemPrompt(customPrompt?: string, options?: BuildSystemPr
     minute: "2-digit",
     timeZoneName: "short",
   });
+  return { dateStr, timeStr };
+}
 
-  const base = customPrompt || soulDocument;
+export interface SystemPromptParts {
+  /** Static block: soul doc + agent override + skills index (stable across turns) */
+  staticBlock: string;
+  /** Dynamic block: timestamp + per-turn suffix (changes each call) */
+  dynamicBlock: string;
+}
+
+/**
+ * Build system prompt as structured parts for caching support.
+ * Static block is stable across turns → can be cached.
+ * Dynamic block changes per call → not cached.
+ */
+export function buildSystemPromptParts(customPrompt?: string, options?: BuildSystemPromptOptions): SystemPromptParts {
+  const lang = options?.language || "en";
+  const locale = LANGUAGE_LOCALES[lang] || "en-US";
+
+  const soulDocument = typeof options?.soulDocument === "string" && options.soulDocument.trim().length > 0
+    ? options.soulDocument
+    : (options?.agentId
+      ? readSoulDocumentForAgent(options.agentId).content
+      : readGlobalSoulDocument().content);
+  const soulBase = soulDocument.trim();
+  const customOverride = customPrompt?.trim();
+  const base = customOverride
+    ? `${soulBase}\n\n## Agent Override\n${customOverride}`
+    : soulBase;
+  const includeSkillsPrompt = options?.includeSkillsPrompt ?? true;
+  const skillsPrompt = includeSkillsPrompt ? buildSkillsPrompt() : "";
+  const languageInstruction = lang !== "en" ? (LANGUAGE_INSTRUCTIONS[lang] || `\n\n## Language\nAlways respond in the language with code "${lang}".`) : "";
+
+  // Static: soul doc + skills + execution discipline + language
+  const staticBlock = `${base}${skillsPrompt}
+
+## Voice Style
+When responding in voice contexts, be natural and concise. Do not output bracketed emotion tags like [happy] or [thinking].
+
+## Execution Discipline
+- Before running tools for an action, announce the next step in one short sentence.
+- When Marcus provides multiple items or requests in one flow, keep an internal checklist and work through each item until complete.
+- If something is blocked, say exactly what is blocked and what input you need next.${languageInstruction}`;
+
+  // Dynamic: timestamp + platform
+  const { dateStr, timeStr } = stableTimestamp(locale);
+  const dynamicBlock = `\n\n## Current Context
+- Date: ${dateStr}
+- Time: ${timeStr}
+- Platform: macOS (Mac Mini)`;
+
+  return { staticBlock, dynamicBlock };
+}
+
+/**
+ * Build Anthropic-format system prompt with cache_control markers.
+ * Returns TextBlockParam[] with cache_control on the static block.
+ */
+export function buildCachedSystemBlocks(customPrompt?: string, options?: BuildSystemPromptOptions): TextBlockParam[] {
+  const { staticBlock, dynamicBlock } = buildSystemPromptParts(customPrompt, options);
+  return [
+    {
+      type: "text",
+      text: staticBlock,
+      cache_control: { type: "ephemeral" },
+    } as TextBlockParam,
+    {
+      type: "text",
+      text: dynamicBlock,
+    },
+  ];
+}
+
+/** Original string-based system prompt — backward compatible wrapper. */
+export function buildSystemPrompt(customPrompt?: string, options?: BuildSystemPromptOptions): string {
+  const lang = options?.language || "en";
+  const locale = LANGUAGE_LOCALES[lang] || "en-US";
+
+  const { dateStr, timeStr } = stableTimestamp(locale);
+
+  const soulDocument = typeof options?.soulDocument === "string" && options.soulDocument.trim().length > 0
+    ? options.soulDocument
+    : (options?.agentId
+      ? readSoulDocumentForAgent(options.agentId).content
+      : readGlobalSoulDocument().content);
+  const soulBase = soulDocument.trim();
+  const customOverride = customPrompt?.trim();
+  const base = customOverride
+    ? `${soulBase}\n\n## Agent Override\n${customOverride}`
+    : soulBase;
   const includeSkillsPrompt = options?.includeSkillsPrompt ?? true;
   const skillsPrompt = includeSkillsPrompt ? buildSkillsPrompt() : "";
   const languageInstruction = lang !== "en" ? (LANGUAGE_INSTRUCTIONS[lang] || `\n\n## Language\nAlways respond in the language with code "${lang}".`) : "";

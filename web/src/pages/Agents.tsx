@@ -1,17 +1,19 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import MarkdownField from "../components/MarkdownField";
 import { Badge, Button, Card, EmptyState, ListPage, MetaText, Modal, PageBody, PageHeader, Row, SectionLabel, Stack, StatusDot, Tabs, type UnifiedListColumn } from "../components/ui";
 import { getCapabilities, getAllCapabilities, CORE_TOOLS, CAPABILITY_TO_SKILLS, getToolCapability } from "../lib/agentCapabilities";
+import { AGENT_META } from "../lib/agentMeta";
 
 interface Agent {
   id: string;
   name: string;
   description: string | null;
   system_prompt: string | null;
-  model: string;
+  model: string | null;
   enabled: boolean;
   skills: string[] | null;
+  config?: Record<string, unknown> | null;
 }
 
 interface AgentStats {
@@ -48,26 +50,47 @@ interface Skill {
   enabled: boolean;
   agent_ids: string[];
   created_at: string;
+  kind?: "tool" | "instruction";
+  runtime?: "gateway" | "claude" | "codex" | "gemini";
+  scope?: "system" | "user" | "project";
 }
 
-const AGENT_META: Record<string, { icon: string; color: string; category: "combined" | "operations" | "system" }> = {
-  scout:    { icon: "🔭", color: "#3b82f6", category: "combined" },
-  radar:    { icon: "📡", color: "#8b5cf6", category: "combined" },
-  forge:    { icon: "🔥", color: "#f97316", category: "combined" },
-  pulse:    { icon: "📈", color: "#10b981", category: "combined" },
-  blitz:    { icon: "⚡", color: "#eab308", category: "combined" },
-  hawk:     { icon: "🦅", color: "#ef4444", category: "combined" },
-  bridge:   { icon: "🌉", color: "#06b6d4", category: "combined" },
-  media:    { icon: "🎬", color: "#e879f9", category: "combined" },
-  "skill-scout": { icon: "🧭", color: "#22d3ee", category: "system" },
-  "knowledge-sync": { icon: "📚", color: "#a78bfa", category: "system" },
-  "accounting-orchestrator": { icon: "📊", color: "#6366f1", category: "operations" },
-  "invoice-collector":       { icon: "📥", color: "#14b8a6", category: "operations" },
-  "invoice-processor":       { icon: "🔍", color: "#a855f7", category: "operations" },
-  "bmd-uploader":            { icon: "📤", color: "#f59e0b", category: "operations" },
-  "reconciliation":          { icon: "🔗", color: "#ec4899", category: "operations" },
-  personal: { icon: "✨", color: "#6366f1", category: "system" },
-};
+interface SoulValidation {
+  valid: boolean;
+  score: number;
+  wordCount: number;
+  presentSections: string[];
+  missingSections: string[];
+  issues: string[];
+}
+
+interface SoulVersion {
+  id: string;
+  agent_id: string;
+  content: string;
+  source: string;
+  author: string;
+  review_id: string | null;
+  quality_run_id: string | null;
+  quality_status: "not_run" | "passed" | "failed";
+  change_summary: string | null;
+  parent_version_id: string | null;
+  is_active: boolean;
+  activated_at: string | null;
+  created_at: string;
+}
+
+interface SoulRollout {
+  id: string;
+  status: "canary_active" | "promoted" | "rolled_back" | "cancelled";
+  traffic_percent: number;
+  minimum_sample_size: number;
+  metrics: Record<string, unknown>;
+  decision_reason: string | null;
+  started_at: string;
+}
+
+// AGENT_META is now imported from ../lib/agentMeta
 
 const CATEGORY_META: Record<string, { title: string; subtitle: string; icon: string }> = {
   combined:   { title: "Combined Agents",  subtitle: "Multi-skill agents that orchestrate across platforms", icon: "🤖" },
@@ -77,20 +100,38 @@ const CATEGORY_META: Record<string, { title: string; subtitle: string; icon: str
 
 const CATEGORY_ORDER = ["combined", "operations", "system"];
 const PAGE_VIEWS = ["agents", "matrix", "skills", "heartbeat"] as const;
+const EDIT_TABS = ["prompt", "skills", "stats", "soul"] as const;
 
 function isPageView(value: string | null): value is (typeof PAGE_VIEWS)[number] {
   return value !== null && (PAGE_VIEWS as readonly string[]).includes(value);
 }
 
-function getModelShort(model: string): string {
+function isEditTab(value: string | null): value is (typeof EDIT_TABS)[number] {
+  return value !== null && (EDIT_TABS as readonly string[]).includes(value);
+}
+
+function getModelShort(model: string | null | undefined): string {
+  if (!model || !model.trim()) return "Unknown";
   if (model.includes("opus"))   return "Opus";
   if (model.includes("sonnet")) return "Sonnet";
   if (model.includes("haiku"))  return "Haiku";
   return model.split("/").pop()?.split("-").slice(0, 2).join(" ") || model;
 }
 
+function getExecutorBadge(agent: Agent): string | null {
+  const cfg = agent.config;
+  if (!cfg || typeof cfg !== "object") return null;
+  const executor = (cfg as { executor?: unknown }).executor;
+  if (executor === "codex-cli") return "Codex CLI";
+  if (executor === "gemini-cli") return "Gemini CLI";
+  if (executor === "claude-code") return "Claude Code";
+  return null;
+}
+
 export default function Agents() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const searchParamsRef = useRef(searchParams);
+  searchParamsRef.current = searchParams;
   const [agents, setAgents] = useState<Agent[]>([]);
   const [status, setStatus] = useState<{
     hasAnthropicKey: boolean;
@@ -107,6 +148,16 @@ export default function Agents() {
   const [soulContent, setSoulContent] = useState<string>("");
   const [soulOpen, setSoulOpen] = useState(false);
   const [soulSaving, setSoulSaving] = useState(false);
+  const [soulValidation, setSoulValidation] = useState<SoulValidation | null>(null);
+  const [agentSoulContent, setAgentSoulContent] = useState<string>("");
+  const [agentSoulSaving, setAgentSoulSaving] = useState(false);
+  const [agentSoulLoading, setAgentSoulLoading] = useState(false);
+  const [agentSoulError, setAgentSoulError] = useState("");
+  const [agentSoulValidation, setAgentSoulValidation] = useState<SoulValidation | null>(null);
+  const [agentSoulVersions, setAgentSoulVersions] = useState<SoulVersion[]>([]);
+  const [agentSoulRollout, setAgentSoulRollout] = useState<SoulRollout | null>(null);
+  const [agentSoulVersionsLoading, setAgentSoulVersionsLoading] = useState(false);
+  const [agentSoulRollbackBusy, setAgentSoulRollbackBusy] = useState(false);
 
   // Edit modal state
   const [editingSkills, setEditingSkills] = useState<Set<string>>(new Set());
@@ -116,6 +167,7 @@ export default function Agents() {
   const [skillsSaving, setSkillsSaving] = useState(false);
   const [editTab, setEditTab] = useState("prompt");
   const [availableModels, setAvailableModels] = useState<AvailableModels | null>(null);
+  const closingModalRef = useRef(false);
 
   const fetchAgents = useCallback(() =>
     fetch("/api/agents").then((r) => r.json()).then((d) => setAgents(d.agents || [])), []);
@@ -131,6 +183,7 @@ export default function Agents() {
       setAgents(agentsData.agents || []);
       setStatus(statusData);
       setSoulContent(soulData.content || "");
+      setSoulValidation((soulData.validation || null) as SoulValidation | null);
       const utilRoute = (routesData.routes || []).find((r: { task: string }) => r.task === "utility");
       if (utilRoute) setUtilityModel(utilRoute.model);
       if (modelsData.available) setAvailableModels(modelsData.available);
@@ -138,18 +191,19 @@ export default function Agents() {
   }, []);
 
   useEffect(() => {
-    const next = new URLSearchParams(searchParams);
+    const current = searchParamsRef.current;
+    const next = new URLSearchParams(current);
     if (pageView === "agents") next.delete("view");
     else next.set("view", pageView);
 
-    if (next.toString() !== searchParams.toString()) {
+    if (next.toString() !== current.toString()) {
       setSearchParams(next, { replace: true });
     }
-  }, [pageView, searchParams, setSearchParams]);
+  }, [pageView, setSearchParams]);
 
-  const openEditModal = useCallback((agent: Agent) => {
+  const openEditModal = useCallback((agent: Agent, tab: (typeof EDIT_TABS)[number] = "prompt") => {
     setEditingAgent(agent);
-    setEditTab("prompt");
+    setEditTab(tab);
     setSkillsDirty(false);
     setSkillsSaving(false);
     setAgentStats(null);
@@ -162,6 +216,115 @@ export default function Agents() {
 
     fetch(`/api/reports/costs/agent/${agent.id}?days=30`).then((r) => r.json()).then(setAgentStats).catch(() => {});
   }, []);
+
+  const closeEditModal = useCallback(() => {
+    closingModalRef.current = true;
+    setEditingAgent(null);
+    const current = searchParamsRef.current;
+    const next = new URLSearchParams(current);
+    next.delete("agent");
+    next.delete("tab");
+    if (next.toString() !== current.toString()) {
+      setSearchParams(next, { replace: true });
+    }
+  }, [setSearchParams]);
+
+  useEffect(() => {
+    if (closingModalRef.current) {
+      closingModalRef.current = false;
+      return;
+    }
+    const requestedAgentId = searchParams.get("agent");
+    if (!requestedAgentId) return;
+    const agent = agents.find((item) => item.id === requestedAgentId);
+    if (!agent) return;
+
+    // Only open modal from URL if not already open for this agent
+    if (!editingAgent || editingAgent.id !== requestedAgentId) {
+      const tabParam = searchParams.get("tab");
+      const requestedTab = isEditTab(tabParam) ? tabParam : null;
+      openEditModal(agent, requestedTab || "prompt");
+    }
+  }, [agents, editingAgent, openEditModal, searchParams]);
+
+  useEffect(() => {
+    if (!editingAgent) return;
+    const current = searchParamsRef.current;
+    const next = new URLSearchParams(current);
+    next.set("agent", editingAgent.id);
+    if (editTab === "prompt") next.delete("tab");
+    else next.set("tab", editTab);
+    if (next.toString() !== current.toString()) {
+      setSearchParams(next, { replace: true });
+    }
+  }, [editingAgent, editTab, setSearchParams]);
+
+  useEffect(() => {
+    if (!editingAgent) return;
+    let active = true;
+    setAgentSoulLoading(true);
+    setAgentSoulVersionsLoading(true);
+    setAgentSoulSaving(false);
+    setAgentSoulRollbackBusy(false);
+    setAgentSoulError("");
+    setAgentSoulRollout(null);
+
+    fetch(`/api/soul/${encodeURIComponent(editingAgent.id)}`)
+      .then(async (soulResponse) => {
+        const soulPayload = await soulResponse.json().catch(() => ({} as {
+          error?: string;
+          content?: string;
+          validation?: SoulValidation;
+          activeRollout?: SoulRollout | null;
+        }));
+        if (!soulResponse.ok) {
+          throw new Error(soulPayload.error || "Failed to load agent soul document.");
+        }
+        if (!active) return;
+        setAgentSoulContent(soulPayload.content || "");
+        setAgentSoulValidation((soulPayload.validation || null) as SoulValidation | null);
+        setAgentSoulRollout((soulPayload.activeRollout || null) as SoulRollout | null);
+      })
+      .catch((error) => {
+        if (!active) return;
+        setAgentSoulContent("");
+        setAgentSoulValidation(null);
+        setAgentSoulRollout(null);
+        setAgentSoulError(error instanceof Error ? error.message : "Failed to load agent soul document.");
+      })
+      .finally(() => {
+        if (!active) return;
+        setAgentSoulLoading(false);
+      });
+
+    fetch(`/api/soul/${encodeURIComponent(editingAgent.id)}/versions?limit=30`)
+      .then(async (versionsResponse) => {
+        const versionsPayload = await versionsResponse.json().catch(() => ({} as {
+          error?: string;
+          versions?: SoulVersion[];
+          activeRollout?: SoulRollout | null;
+        }));
+        if (!versionsResponse.ok) {
+          throw new Error(versionsPayload.error || "Failed to load soul version history.");
+        }
+        if (!active) return;
+        setAgentSoulVersions(Array.isArray(versionsPayload.versions) ? versionsPayload.versions : []);
+        setAgentSoulRollout((versionsPayload.activeRollout || null) as SoulRollout | null);
+      })
+      .catch((error) => {
+        if (!active) return;
+        setAgentSoulVersions([]);
+        setAgentSoulError((prev) => prev || (error instanceof Error ? error.message : "Failed to load soul version history."));
+      })
+      .finally(() => {
+        if (!active) return;
+        setAgentSoulVersionsLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [editingAgent?.id]);
 
   const handleSavePrompt = async (agentId: string, value: string) => {
     await fetch(`/api/agents/${agentId}`, {
@@ -217,14 +380,98 @@ export default function Agents() {
   const handleSoulSave = async (value: string) => {
     setSoulSaving(true);
     try {
-      await fetch("/api/soul", {
+      const response = await fetch("/api/soul", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: value }),
       });
-      setSoulContent(value);
+      const payload = await response.json().catch(() => ({} as { error?: string; content?: string; validation?: SoulValidation }));
+      if (!response.ok) {
+        throw new Error(payload.error || "Failed to save global soul document.");
+      }
+      setSoulContent(payload.content || `${value.trim()}\n`);
+      setSoulValidation((payload.validation || null) as SoulValidation | null);
+    } catch (error) {
+      console.error("Failed to save global soul document:", error);
     } finally {
       setSoulSaving(false);
+    }
+  };
+
+  const handleSaveAgentSoul = async (agentId: string, value: string) => {
+    setAgentSoulSaving(true);
+    setAgentSoulError("");
+    try {
+      const response = await fetch(`/api/soul/${encodeURIComponent(agentId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: value }),
+      });
+      const payload = await response.json().catch(() => ({} as {
+        error?: string;
+        content?: string;
+        validation?: SoulValidation;
+      }));
+      if (!response.ok) {
+        throw new Error(payload.error || "Failed to save agent soul document.");
+      }
+      setAgentSoulContent(payload.content || value);
+      setAgentSoulValidation((payload.validation || null) as SoulValidation | null);
+
+      const versionsResponse = await fetch(`/api/soul/${encodeURIComponent(agentId)}/versions?limit=30`);
+      const versionsPayload = await versionsResponse.json().catch(() => ({} as {
+        versions?: SoulVersion[];
+        activeRollout?: SoulRollout | null;
+      }));
+      if (versionsResponse.ok && Array.isArray(versionsPayload.versions)) {
+        setAgentSoulVersions(versionsPayload.versions);
+      }
+      setAgentSoulRollout((versionsPayload.activeRollout || null) as SoulRollout | null);
+    } catch (error) {
+      setAgentSoulError(error instanceof Error ? error.message : "Failed to save agent soul document.");
+    } finally {
+      setAgentSoulSaving(false);
+    }
+  };
+
+  const handleRollbackAgentSoul = async (agentId: string, versionId: string) => {
+    setAgentSoulRollbackBusy(true);
+    setAgentSoulError("");
+    try {
+      const response = await fetch(`/api/soul/${encodeURIComponent(agentId)}/rollback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ versionId }),
+      });
+      const payload = await response.json().catch(() => ({} as {
+        error?: string;
+        version?: SoulVersion;
+        validation?: SoulValidation;
+      }));
+      if (!response.ok) {
+        throw new Error(payload.error || "Failed to rollback soul version.");
+      }
+
+      if (payload.version?.content) {
+        setAgentSoulContent(payload.version.content);
+      }
+      if (payload.validation) {
+        setAgentSoulValidation(payload.validation);
+      }
+
+      const versionsResponse = await fetch(`/api/soul/${encodeURIComponent(agentId)}/versions?limit=30`);
+      const versionsPayload = await versionsResponse.json().catch(() => ({} as {
+        versions?: SoulVersion[];
+        activeRollout?: SoulRollout | null;
+      }));
+      if (versionsResponse.ok && Array.isArray(versionsPayload.versions)) {
+        setAgentSoulVersions(versionsPayload.versions);
+      }
+      setAgentSoulRollout((versionsPayload.activeRollout || null) as SoulRollout | null);
+    } catch (error) {
+      setAgentSoulError(error instanceof Error ? error.message : "Failed to rollback soul version.");
+    } finally {
+      setAgentSoulRollbackBusy(false);
     }
   };
 
@@ -254,7 +501,7 @@ export default function Agents() {
         }
         actions={
           <button className="btn btn-secondary btn-sm" onClick={() => setSoulOpen(true)}>
-            {"💎"} Soul
+            {"💎"} Default Soul
           </button>
         }
       />
@@ -286,7 +533,7 @@ export default function Agents() {
             },
             {
               value: "skills",
-              label: "Skills",
+              label: "Catalog",
               content: <SkillsBrowser />,
             },
             {
@@ -299,7 +546,7 @@ export default function Agents() {
       </PageBody>
 
       {/* Soul Modal */}
-      <Modal open={soulOpen} onClose={() => setSoulOpen(false)} title="Soul Document" width={720}>
+      <Modal open={soulOpen} onClose={() => setSoulOpen(false)} title="Default Soul Document" width={720}>
         <div className="agent-edit-modal">
           <MarkdownField
             value={soulContent}
@@ -308,6 +555,7 @@ export default function Agents() {
             maxHeight="600px"
             placeholder="No soul document found"
           />
+          <SoulValidationPanel validation={soulValidation} />
         </div>
       </Modal>
 
@@ -317,7 +565,7 @@ export default function Agents() {
         return (
           <Modal
             open={!!editingAgent}
-            onClose={() => setEditingAgent(null)}
+            onClose={closeEditModal}
             title={`${agentMeta.icon} ${editingAgent.name}`}
             width={800}
           >
@@ -358,7 +606,7 @@ export default function Agents() {
                   },
                   {
                     value: "skills",
-                    label: "Skills",
+                    label: "Tools",
                     content: (
                       <SkillsTab
                         agent={editingAgent}
@@ -375,6 +623,26 @@ export default function Agents() {
                     value: "stats",
                     label: "Stats",
                     content: <StatsTab stats={agentStats} />,
+                  },
+                  {
+                    value: "soul",
+                    label: "Soul",
+                    content: (
+                      <SoulTab
+                        agent={editingAgent}
+                        content={agentSoulContent}
+                        loading={agentSoulLoading}
+                        saving={agentSoulSaving}
+                        rollbackBusy={agentSoulRollbackBusy}
+                        versionsLoading={agentSoulVersionsLoading}
+                        validation={agentSoulValidation}
+                        versions={agentSoulVersions}
+                        rollout={agentSoulRollout}
+                        error={agentSoulError}
+                        onSave={(value) => handleSaveAgentSoul(editingAgent.id, value)}
+                        onRollback={(versionId) => handleRollbackAgentSoul(editingAgent.id, versionId)}
+                      />
+                    ),
                   },
                 ]}
               />
@@ -426,16 +694,22 @@ function AgentsView({ agents, openEditModal }: {
       render: (agent) => (
         <code>{getModelShort(agent.model)}</code>
       ),
-      sortValue: (agent) => agent.model,
+      sortValue: (agent) => agent.model || "",
       width: 140,
     },
     {
       key: "skills",
-      header: "Skills",
+      header: "Capabilities",
       render: (agent) => {
         if (agent.skills === null) return <Badge status="accent" className="text-xs">All Tools</Badge>;
         const capabilities = getCapabilities(agent.skills || []);
-        if (capabilities.length === 0) return <MetaText size="xs">No capabilities</MetaText>;
+        const executorBadge = getExecutorBadge(agent);
+        if (capabilities.length === 0) {
+          if (executorBadge) {
+            return <Badge status="warning" className="text-xs">{executorBadge}</Badge>;
+          }
+          return <MetaText size="xs">No capabilities</MetaText>;
+        }
         return (
           <span className="text-secondary text-sm">
             {capabilities.slice(0, 2).join(" · ")}
@@ -480,13 +754,17 @@ function AgentsView({ agents, openEditModal }: {
     return agent.name.toLowerCase().includes(query)
       || (agent.description?.toLowerCase().includes(query) ?? false)
       || agent.id.toLowerCase().includes(query)
-      || agent.model.toLowerCase().includes(query);
+      || (agent.model?.toLowerCase().includes(query) ?? false);
   };
 
   const renderCard = (agent: Agent) => {
     const agentMeta = AGENT_META[agent.id] || { icon: "🤖", color: "#6366f1" };
     const isAllTools = agent.skills === null;
+    const executorBadge = getExecutorBadge(agent);
     const capabilities = isAllTools ? ["All Tools"] : getCapabilities(agent.skills || []);
+    const capabilityChips = (!isAllTools && capabilities.length === 0 && executorBadge)
+      ? [executorBadge]
+      : capabilities;
 
     return (
       <div
@@ -511,9 +789,9 @@ function AgentsView({ agents, openEditModal }: {
           {agent.description || "No description"}
         </p>
 
-        {capabilities.length > 0 && (
+        {capabilityChips.length > 0 && (
           <div className="agent-card-capabilities">
-            {capabilities.map((cap) => (
+            {capabilityChips.map((cap) => (
               <span key={cap} className={`agent-card-capability ${cap === "All Tools" ? "agent-card-capability-all" : ""}`}>{cap}</span>
             ))}
           </div>
@@ -521,7 +799,9 @@ function AgentsView({ agents, openEditModal }: {
 
         <div className="agent-card-footer">
           <span className="agent-card-skill-count">
-            {isAllTools ? "All tools" : `${(agent.skills || []).length} skill${(agent.skills || []).length !== 1 ? "s" : ""}`}
+            {isAllTools
+              ? "All tools"
+              : `${(agent.skills || []).length} tool${(agent.skills || []).length !== 1 ? "s" : ""}${executorBadge ? ` · ${executorBadge}` : ""}`}
           </span>
           <button
             className="agent-card-edit"
@@ -558,13 +838,14 @@ function AgentsView({ agents, openEditModal }: {
 /* ── Model Selector ── */
 
 function ModelSelector({ currentModel, availableModels, onSave }: {
-  currentModel: string;
+  currentModel: string | null;
   availableModels: AvailableModels | null;
   onSave: (model: string) => Promise<void>;
 }) {
   const [saving, setSaving] = useState(false);
+  const effectiveModel = (currentModel && currentModel.trim()) ? currentModel : "unknown/model";
 
-  if (!availableModels) return <span>{getModelShort(currentModel)}</span>;
+  if (!availableModels) return <span>{getModelShort(effectiveModel)}</span>;
 
   const allModels: { id: string; name: string; provider: string }[] = [
     ...availableModels.anthropic.map((m) => ({ ...m, provider: "Anthropic" })),
@@ -574,7 +855,7 @@ function ModelSelector({ currentModel, availableModels, onSave }: {
 
   const handleChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
     const model = e.target.value;
-    if (model === currentModel) return;
+    if (model === effectiveModel) return;
     setSaving(true);
     try {
       await onSave(model);
@@ -586,12 +867,12 @@ function ModelSelector({ currentModel, availableModels, onSave }: {
   return (
     <select
       className="agent-model-select"
-      value={currentModel}
+      value={effectiveModel}
       onChange={handleChange}
       disabled={saving}
     >
-      {!allModels.some((m) => m.id === currentModel) && (
-        <option value={currentModel}>{currentModel}</option>
+      {!allModels.some((m) => m.id === effectiveModel) && (
+        <option value={effectiveModel}>{effectiveModel}</option>
       )}
       {(["Anthropic", "OpenRouter", "Ollama"] as const).map((provider) => {
         const models = allModels.filter((m) => m.provider === provider);
@@ -756,13 +1037,31 @@ function PermissionMatrix({ agents, onAgentsChange }: {
 
 /* ── Skills Browser (absorbed from Skills.tsx) ── */
 
+interface SkillCatalogSummary {
+  total: number;
+  byKind: Record<string, number>;
+  bySource: Record<string, number>;
+  byRuntime: Record<string, number>;
+  byScope: Record<string, number>;
+}
+
 const SOURCE_BADGE: Record<string, { status: "success" | "warning" | "accent"; label: string }> = {
-  "claude-code": { status: "accent", label: "claude-code" },
   bundled: { status: "success", label: "gateway" },
+  "claude-code": { status: "accent", label: "claude" },
+  gemini: { status: "accent", label: "gemini" },
+  codex: { status: "warning", label: "codex" },
+  "codex-project": { status: "warning", label: "codex-project" },
+  "codex-system": { status: "warning", label: "codex-system" },
+};
+
+const KIND_BADGE: Record<string, { status: "success" | "warning" | "accent"; label: string }> = {
+  tool: { status: "success", label: "tool" },
+  instruction: { status: "accent", label: "skill" },
 };
 
 function SkillsBrowser() {
   const [skills, setSkills] = useState<Skill[]>([]);
+  const [summary, setSummary] = useState<SkillCatalogSummary | null>(null);
   const [loading, setLoading] = useState(true);
 
   const fetchSkills = useCallback(async () => {
@@ -771,6 +1070,7 @@ function SkillsBrowser() {
       const res = await fetch("/api/skills");
       const data = await res.json();
       setSkills(data.skills || []);
+      setSummary(data.summary || null);
     } catch (err) {
       console.error("Failed to load skills:", err);
     } finally {
@@ -789,9 +1089,16 @@ function SkillsBrowser() {
     fetchSkills();
   };
 
+  const tools = skills.filter((s) => (s.kind || (s.source === "bundled" ? "tool" : "instruction")) === "tool");
   const claudeCode = skills.filter((s) => s.source === "claude-code");
-  const bundled = skills.filter((s) => s.source === "bundled");
-  const custom = skills.filter((s) => s.source !== "bundled" && s.source !== "claude-code");
+  const geminiUser = skills.filter((s) => s.source === "gemini");
+  const codexUser = skills.filter((s) => s.source === "codex");
+  const codexProject = skills.filter((s) => s.source === "codex-project");
+  const codexSystem = skills.filter((s) => s.source === "codex-system");
+  const otherInstruction = skills.filter((s) => {
+    const isInstruction = (s.kind || (s.source === "bundled" ? "tool" : "instruction")) === "instruction";
+    return isInstruction && !["claude-code", "gemini", "codex", "codex-project", "codex-system"].includes(s.source);
+  });
 
   if (loading) {
     return <div style={{ padding: "20px 0" }}><MetaText>Loading...</MetaText></div>;
@@ -799,10 +1106,44 @@ function SkillsBrowser() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16, paddingTop: 8 }}>
-      {claudeCode.length > 0 && (
+      {summary && (
+        <Card>
+          <Row justify="between" align="start">
+            <div>
+              <MetaText size="xs">Catalog total</MetaText>
+              <div className="text-xl font-semibold">{summary.total}</div>
+            </div>
+            <Row gap={1}>
+              <Badge status="success">{summary.byKind.tool || 0} tools</Badge>
+              <Badge status="accent">{summary.byKind.instruction || 0} skills</Badge>
+              <Badge status="accent">{summary.byRuntime.gemini || 0} gemini</Badge>
+              <Badge status="warning">{summary.byRuntime.codex || 0} codex</Badge>
+              <Badge status="accent">{summary.byRuntime.claude || 0} claude</Badge>
+            </Row>
+          </Row>
+        </Card>
+      )}
+
+      {tools.length > 0 && (
         <>
           <SectionLabel>
-            Claude Code Skills
+            Gateway Tools
+            <MetaText size="xs" className="skills-label-hint">
+              agent-permission primitives
+            </MetaText>
+          </SectionLabel>
+          <Stack gap={2}>
+            {tools.map((skill) => (
+              <SkillCard key={skill.id} skill={skill} onToggle={handleToggle} />
+            ))}
+          </Stack>
+        </>
+      )}
+
+      {claudeCode.length > 0 && (
+        <>
+          <SectionLabel className={tools.length > 0 ? "mt-2" : ""}>
+            Claude Instruction Skills
             <MetaText size="xs" className="skills-label-hint">
               ~/.claude/skills/
             </MetaText>
@@ -815,29 +1156,77 @@ function SkillsBrowser() {
         </>
       )}
 
-      {bundled.length > 0 && (
+      {geminiUser.length > 0 && (
         <>
-          <SectionLabel className={claudeCode.length > 0 ? "mt-2" : ""}>
-            Gateway Tools
+          <SectionLabel className={claudeCode.length > 0 || tools.length > 0 ? "mt-2" : ""}>
+            Gemini Instruction Skills
             <MetaText size="xs" className="skills-label-hint">
-              {bundled.length} built-in
+              ~/.gemini/skills/
             </MetaText>
           </SectionLabel>
           <Stack gap={2}>
-            {bundled.map((skill) => (
+            {geminiUser.map((skill) => (
               <SkillCard key={skill.id} skill={skill} onToggle={handleToggle} />
             ))}
           </Stack>
         </>
       )}
 
-      {custom.length > 0 && (
+      {codexUser.length > 0 && (
         <>
-          <SectionLabel className="mt-2">
-            Custom Skills
+          <SectionLabel className={claudeCode.length > 0 || geminiUser.length > 0 || tools.length > 0 ? "mt-2" : ""}>
+            Codex User Skills
+            <MetaText size="xs" className="skills-label-hint">
+              ~/.codex/skills/
+            </MetaText>
           </SectionLabel>
           <Stack gap={2}>
-            {custom.map((skill) => (
+            {codexUser.map((skill) => (
+              <SkillCard key={skill.id} skill={skill} onToggle={handleToggle} />
+            ))}
+          </Stack>
+        </>
+      )}
+
+      {codexProject.length > 0 && (
+        <>
+          <SectionLabel className="mt-2">
+            Codex Project Skills
+            <MetaText size="xs" className="skills-label-hint">
+              ./.codex/skills/
+            </MetaText>
+          </SectionLabel>
+          <Stack gap={2}>
+            {codexProject.map((skill) => (
+              <SkillCard key={skill.id} skill={skill} onToggle={handleToggle} />
+            ))}
+          </Stack>
+        </>
+      )}
+
+      {codexSystem.length > 0 && (
+        <>
+          <SectionLabel className="mt-2">
+            Codex System Skills
+            <MetaText size="xs" className="skills-label-hint">
+              ~/.codex/skills/.system/
+            </MetaText>
+          </SectionLabel>
+          <Stack gap={2}>
+            {codexSystem.map((skill) => (
+              <SkillCard key={skill.id} skill={skill} onToggle={handleToggle} />
+            ))}
+          </Stack>
+        </>
+      )}
+
+      {otherInstruction.length > 0 && (
+        <>
+          <SectionLabel className="mt-2">
+            Other Instruction Skills
+          </SectionLabel>
+          <Stack gap={2}>
+            {otherInstruction.map((skill) => (
               <SkillCard key={skill.id} skill={skill} onToggle={handleToggle} />
             ))}
           </Stack>
@@ -847,7 +1236,7 @@ function SkillsBrowser() {
       {skills.length === 0 && (
         <EmptyState
           icon="🧩"
-          message="No skills registered. Run a database migration to seed default skills."
+          message="No tools or instruction skills found."
         />
       )}
     </div>
@@ -864,7 +1253,12 @@ function SkillCard({ skill, onToggle }: {
   const [contentError, setContentError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const hasMarkdown = skill.source === "claude-code" || (skill.path && skill.path.endsWith(".md"));
+  const kind = skill.kind || (skill.source === "bundled" ? "tool" : "instruction");
+  const hasMarkdown = kind === "instruction" || Boolean(skill.path && skill.path.endsWith(".md"));
+  const capability = kind === "tool" ? getToolCapability(skill.name) : undefined;
+  const sourceBadge = SOURCE_BADGE[skill.source] || { status: "warning" as const, label: skill.source };
+  const kindBadge = KIND_BADGE[kind] || { status: "warning" as const, label: kind };
+  const canToggle = kind === "tool" && skill.source === "bundled";
 
   const handleExpand = async () => {
     if (expanded) {
@@ -878,7 +1272,10 @@ function SkillCard({ skill, onToggle }: {
     setContentLoading(true);
     setContentError(null);
     try {
-      const res = await fetch(`/api/skills/${encodeURIComponent(skill.name)}/content`);
+      const params = new URLSearchParams();
+      if (skill.source) params.set("source", skill.source);
+      const suffix = params.toString() ? `?${params.toString()}` : "";
+      const res = await fetch(`/api/skills/${encodeURIComponent(skill.name)}/content${suffix}`);
       if (!res.ok) {
         const data = await res.json();
         setContentError(data.error || "Not found");
@@ -896,7 +1293,10 @@ function SkillCard({ skill, onToggle }: {
   const handleSaveContent = async (value: string) => {
     setSaving(true);
     try {
-      const res = await fetch(`/api/skills/${encodeURIComponent(skill.name)}/content`, {
+      const params = new URLSearchParams();
+      if (skill.source) params.set("source", skill.source);
+      const suffix = params.toString() ? `?${params.toString()}` : "";
+      const res = await fetch(`/api/skills/${encodeURIComponent(skill.name)}/content${suffix}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: value }),
@@ -917,15 +1317,15 @@ function SkillCard({ skill, onToggle }: {
     return data.improved || value;
   };
 
-  const badge = SOURCE_BADGE[skill.source] || { status: "warning" as const, label: skill.source };
-
   return (
     <Card dimmed={!skill.enabled}>
       <Row justify="between">
         <div className="flex-1 min-w-0">
           <Row gap={2} className="mb-1">
             <code className="text-md font-semibold">{skill.name}</code>
-            <Badge status={badge.status}>{badge.label}</Badge>
+            <Badge status={kindBadge.status}>{kindBadge.label}</Badge>
+            <Badge status={sourceBadge.status}>{sourceBadge.label}</Badge>
+            {capability && <Badge status="warning">{capability}</Badge>}
             {!skill.enabled && <Badge status="error">Disabled</Badge>}
           </Row>
           {skill.description && (
@@ -944,7 +1344,7 @@ function SkillCard({ skill, onToggle }: {
               {expanded ? "Hide" : "Edit"}
             </Button>
           )}
-          {skill.source === "bundled" && (
+          {canToggle && (
             <Button
               size="sm"
               onClick={() => onToggle(skill.id, skill.enabled)}
@@ -1008,9 +1408,156 @@ function PromptTab({ agent, utilityModel, onSave, onImprove }: {
         </>
       ) : (
         <div className="agent-prompt-fallback">
-          No custom prompt &mdash; uses <strong>soul.md</strong> default
+          No custom prompt &mdash; uses this agent&apos;s soul document fallback
         </div>
       )}
+    </div>
+  );
+}
+
+function SoulValidationPanel({ validation }: {
+  validation: SoulValidation | null;
+}) {
+  if (!validation) return null;
+
+  const scorePercent = Math.round((validation.score || 0) * 100);
+  return (
+    <Card className="agent-soul-validation-card">
+      <Row gap={2} wrap className="mb-2">
+        <Badge status={validation.valid ? "success" : "error"}>
+          {validation.valid ? "Spec Compliant" : "Spec Issues"}
+        </Badge>
+        <Badge status="muted">Score {scorePercent}%</Badge>
+        <Badge status="muted">{validation.wordCount} words</Badge>
+      </Row>
+      {validation.missingSections.length > 0 && (
+        <MetaText size="xs" className="block">
+          Missing sections: {validation.missingSections.join(", ")}
+        </MetaText>
+      )}
+      {validation.issues.length > 0 && (
+        <ul className="agent-soul-issue-list">
+          {validation.issues.map((issue, index) => (
+            <li key={`${issue}-${index}`}>{issue}</li>
+          ))}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
+function SoulTab({ agent, content, loading, saving, rollbackBusy, versionsLoading, validation, versions, rollout, error, onSave, onRollback }: {
+  agent: Agent;
+  content: string;
+  loading: boolean;
+  saving: boolean;
+  rollbackBusy: boolean;
+  versionsLoading: boolean;
+  validation: SoulValidation | null;
+  versions: SoulVersion[];
+  rollout: SoulRollout | null;
+  error: string;
+  onSave: (value: string) => Promise<void>;
+  onRollback: (versionId: string) => Promise<void>;
+}) {
+  const rolloutMetrics = rollout && typeof rollout.metrics === "object" && rollout.metrics
+    ? rollout.metrics as Record<string, unknown>
+    : null;
+  const rolloutSampleSize = rolloutMetrics && typeof rolloutMetrics.sampleSize === "number"
+    ? rolloutMetrics.sampleSize
+    : null;
+
+  if (loading) {
+    return (
+      <div className="agent-prompt-section">
+        <MetaText size="xs">Loading soul document...</MetaText>
+      </div>
+    );
+  }
+
+  return (
+    <div className="agent-prompt-section">
+      <MarkdownField
+        value={content}
+        onSave={onSave}
+        saving={saving}
+        maxHeight="400px"
+        placeholder={`No soul document found for ${agent.name}`}
+      />
+      <SoulValidationPanel validation={validation} />
+      {rollout && (
+        <Card className="agent-soul-version-card">
+          <SectionLabel className="mb-2">Active Canary</SectionLabel>
+          <Row gap={2} wrap className="mb-2">
+            <Badge status="accent">Canary Active</Badge>
+            <Badge status="muted">Traffic {rollout.traffic_percent}%</Badge>
+            <Badge status="muted">
+              Samples {rolloutSampleSize ?? 0}/{rollout.minimum_sample_size}
+            </Badge>
+          </Row>
+          <MetaText size="xs" className="block">
+            Started {new Date(rollout.started_at).toLocaleString()} · rollout {rollout.id.slice(0, 8)}
+          </MetaText>
+          {rollout.decision_reason && (
+            <MetaText size="xs" className="block mt-1">
+              {rollout.decision_reason}
+            </MetaText>
+          )}
+        </Card>
+      )}
+      <div className="agent-improve-meta">
+        This soul document is used when no custom prompt is set for this agent.
+      </div>
+      <Card className="agent-soul-version-card">
+        <SectionLabel className="mb-2">Version History</SectionLabel>
+        {versionsLoading ? (
+          <MetaText size="xs">Loading version history...</MetaText>
+        ) : versions.length === 0 ? (
+          <MetaText size="xs">No soul versions found yet.</MetaText>
+        ) : (
+          <div className="agent-soul-version-list">
+            {versions.map((version) => (
+              <div key={version.id} className="agent-soul-version-item">
+                <Row gap={2} wrap>
+                  <Badge status={version.is_active ? "success" : "muted"}>
+                    {version.is_active ? "Active" : "Historical"}
+                  </Badge>
+                  <Badge status={version.quality_status === "passed" ? "success" : version.quality_status === "failed" ? "error" : "muted"}>
+                    QA {version.quality_status}
+                  </Badge>
+                  <MetaText size="xs">
+                    {version.source} by {version.author} · {new Date(version.created_at).toLocaleString()}
+                  </MetaText>
+                  <span className="flex-1" />
+                  {!version.is_active && (
+                    <Button
+                      size="sm"
+                      disabled={rollbackBusy || saving}
+                      onClick={() => {
+                        if (!window.confirm("Rollback to this soul version?")) return;
+                        void onRollback(version.id);
+                      }}
+                    >
+                      {rollbackBusy ? "Rolling back..." : "Rollback"}
+                    </Button>
+                  )}
+                </Row>
+                <MetaText size="xs" className="block mt-1">
+                  id {version.id.slice(0, 8)}
+                  {version.review_id ? ` · review ${version.review_id.slice(0, 8)}` : ""}
+                  {version.quality_run_id ? ` · qa run ${version.quality_run_id.slice(0, 8)}` : ""}
+                </MetaText>
+                {version.change_summary && (
+                  <MetaText size="xs" className="block mt-1">
+                    {version.change_summary}
+                  </MetaText>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+      {error && <MetaText size="xs">{error}</MetaText>}
     </div>
   );
 }
@@ -1025,6 +1572,7 @@ function SkillsTab({ agent, editingSkills, setEditingSkills, skillsDirty, setSki
   onSave: () => Promise<void>;
 }) {
   const isAllTools = agent.skills === null;
+  const executorBadge = getExecutorBadge(agent);
 
   const groups: Record<string, string[]> = {};
   for (const [cap, tools] of Object.entries(CAPABILITY_TO_SKILLS)) {
@@ -1064,12 +1612,13 @@ function SkillsTab({ agent, editingSkills, setEditingSkills, skillsDirty, setSki
     <div className="skills-editor">
       {isAllTools && !skillsDirty && (
         <div className="skills-editor-notice">
-          This agent has access to all tools. Toggling any skill off switches to explicit mode.
+          This agent has access to all tools. Toggling any tool off switches to explicit mode.
         </div>
       )}
 
       <div className="skills-editor-info">
         Core tools (memory, scheduling, system) are always available and not shown here.
+        {executorBadge && ` Executor lane: ${executorBadge}.`}
       </div>
 
       {groupOrder.map((cap) => {
@@ -1105,9 +1654,9 @@ function SkillsTab({ agent, editingSkills, setEditingSkills, skillsDirty, setSki
 
       {skillsDirty && (
         <div className="skills-save-bar">
-          <span>{editingSkills.size} skills selected</span>
+          <span>{editingSkills.size} tools selected</span>
           <button className="btn btn-primary btn-sm" onClick={onSave} disabled={skillsSaving}>
-            {skillsSaving ? "Saving..." : "Save Skills"}
+            {skillsSaving ? "Saving..." : "Save Tools"}
           </button>
         </div>
       )}

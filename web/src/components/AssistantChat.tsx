@@ -2,6 +2,7 @@ import { useRef, useEffect, useState, useCallback } from "react";
 import { useChat, type ChatMessage, type ToolCall } from "../hooks/useChat";
 import type { ConnectionStatus, Frame } from "../hooks/useWebSocket";
 import { useVoiceSession, type VoiceTranscript } from "../hooks/useVoiceSession";
+import { getAgentMeta, formatAgentName } from "../lib/agentMeta";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import JoiOrb from "./JoiOrb";
@@ -564,7 +565,9 @@ function AssistantMessageBubble({ message }: { message: ChatMessage }) {
   const hasTextContent = message.content.trim().length > 0;
   const hasToolCalls = Boolean(message.toolCalls?.length);
   const hasPlannedSteps = Boolean(message.plannedSteps?.length);
+  const hasDelegations = Boolean(message.delegations?.length);
   const inlineToolBadges = hasToolCalls && !hasTextContent;
+  const showAgentBadge = message.agentId && message.agentId !== "personal";
 
   return (
     <div className="assistant-msg assistant">
@@ -579,6 +582,9 @@ function AssistantMessageBubble({ message }: { message: ChatMessage }) {
           animated={Boolean(message.isStreaming)}
           ariaLabel="JOI"
         />
+        {showAgentBadge && (
+          <AgentBadge agentId={message.agentId!} />
+        )}
         {message.isStreaming && message.streamStartedAt && (
           <ElapsedTimer startedAt={message.streamStartedAt} />
         )}
@@ -610,6 +616,9 @@ function AssistantMessageBubble({ message }: { message: ChatMessage }) {
       )}
       {(hasToolCalls || hasPlannedSteps) && (
         <AssistantToolChecklist toolCalls={message.toolCalls || []} plannedSteps={message.plannedSteps} />
+      )}
+      {hasDelegations && (
+        <DelegationAccordion delegations={message.delegations!} />
       )}
       {!message.isStreaming && (hasTextContent || hasToolCalls) && (
         <AssistantMsgMeta message={message} />
@@ -726,10 +735,16 @@ function AssistantMsgMeta({ message }: { message: ChatMessage }) {
       ? `$${message.costUsd.toFixed(3)}`
       : `$${message.costUsd.toFixed(4)}`);
   }
+  if (message.cacheStats && message.cacheStats.cacheHitPercent > 0) {
+    parts.push(`cache ${message.cacheStats.cacheHitPercent}%`);
+  }
   if (message.model) {
     // Show short model name
     const short = message.model.replace(/^(claude-|gpt-|llama-)/, "").replace(/-\d{8}$/, "");
     parts.push(short);
+  }
+  if (message.agentId && message.agentId !== "personal") {
+    parts.push(`via ${formatAgentName(message.agentId)}`);
   }
 
   if (parts.length === 0) return null;
@@ -773,5 +788,58 @@ function AssistantToolBadge({ tc }: { tc: ToolCall }) {
       {durationLabel && <span className="assistant-tool-duration">{durationLabel}</span>}
       {isPending && !isError && <span className="assistant-tool-spinner" />}
     </span>
+  );
+}
+
+function AgentBadge({ agentId }: { agentId: string }) {
+  const meta = getAgentMeta(agentId);
+  return (
+    <span
+      className="assistant-agent-badge"
+      style={{ borderColor: meta.color, color: meta.color }}
+      title={`Handled by ${formatAgentName(agentId)}`}
+    >
+      <span className="assistant-agent-badge-icon">{meta.icon}</span>
+      <span className="assistant-agent-badge-name">{formatAgentName(agentId)}</span>
+    </span>
+  );
+}
+
+function DelegationAccordion({ delegations }: { delegations: Array<{ agentId: string; task: string; durationMs: number; status: "success" | "error" }> }) {
+  const [open, setOpen] = useState(false);
+  if (delegations.length === 0) return null;
+
+  const allSuccess = delegations.every((d) => d.status === "success");
+  const title = `${delegations.length} delegation${delegations.length > 1 ? "s" : ""} ${allSuccess ? "completed" : "finished"}`;
+
+  return (
+    <div className="assistant-delegation-accordion">
+      <button
+        className="assistant-delegation-toggle"
+        onClick={() => setOpen(!open)}
+      >
+        <span className={`assistant-delegation-chevron${open ? " open" : ""}`} />
+        <span className="assistant-delegation-title">{title}</span>
+      </button>
+      {open && (
+        <ul className="assistant-delegation-list">
+          {delegations.map((d, i) => {
+            const meta = getAgentMeta(d.agentId);
+            return (
+              <li key={i} className={`assistant-delegation-item ${d.status}`}>
+                <span className="assistant-delegation-agent" style={{ color: meta.color }}>
+                  {meta.icon} {formatAgentName(d.agentId)}
+                </span>
+                <span className="assistant-delegation-task">{d.task}</span>
+                <span className="assistant-delegation-duration">{formatDuration(d.durationMs)}</span>
+                <span className={`assistant-delegation-status ${d.status}`}>
+                  {d.status === "success" ? "done" : "failed"}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
   );
 }
