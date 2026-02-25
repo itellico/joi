@@ -131,30 +131,42 @@ function FolderTreeItem({
   selected,
   expandedPaths,
   hasSelection,
+  dragOver,
   onSelect,
   onToggle,
   onDelete,
+  onDrop,
+  onDragOver,
+  onDragLeave,
 }: {
   node: TreeNode;
   depth: number;
   selected: string;
   expandedPaths: Set<string>;
   hasSelection: boolean;
+  dragOver: string;
   onSelect: (path: string) => void;
   onToggle: (path: string) => void;
   onDelete: (path: string) => void;
+  onDrop: (path: string) => void;
+  onDragOver: (path: string) => void;
+  onDragLeave: () => void;
 }) {
   const isExpanded = expandedPaths.has(node.path);
   const isSelected = selected === node.path;
   const hasChildren = node.children.length > 0;
   const total = countTotal(node);
+  const isDragTarget = dragOver === node.path;
 
   return (
     <>
       <div
-        className={`bm-tree-item${isSelected ? " bm-tree-selected" : ""}${hasSelection ? " bm-tree-drop-target" : ""}`}
+        className={`bm-tree-item${isSelected ? " bm-tree-selected" : ""}${hasSelection ? " bm-tree-drop-target" : ""}${isDragTarget ? " bm-tree-drag-over" : ""}`}
         style={{ paddingLeft: 8 + depth * 16 }}
         onClick={() => onSelect(node.path)}
+        onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); onDragOver(node.path); }}
+        onDragLeave={(e) => { e.stopPropagation(); onDragLeave(); }}
+        onDrop={(e) => { e.preventDefault(); e.stopPropagation(); onDrop(node.path); }}
       >
         {hasChildren ? (
           <span
@@ -166,9 +178,9 @@ function FolderTreeItem({
         ) : (
           <span className="bm-tree-toggle" style={{ visibility: "hidden" }}>{"\u25B8"}</span>
         )}
-        <span className="bm-tree-icon">{hasChildren ? (isExpanded ? "\uD83D\uDCC2" : "\uD83D\uDCC1") : "\uD83D\uDCC1"}</span>
+        <span className="bm-tree-icon">{hasChildren ? (isExpanded ? "📂" : "📁") : "📁"}</span>
         <span className="bm-tree-name truncate">{node.name}</span>
-        {hasSelection && <span className="bm-tree-move-hint">move here</span>}
+        {(hasSelection || isDragTarget) && <span className="bm-tree-move-hint" style={isDragTarget ? { opacity: 1 } : undefined}>move here</span>}
         <span className="bm-tree-count">{total}</span>
         <button
           className="bm-tree-delete"
@@ -186,9 +198,13 @@ function FolderTreeItem({
           selected={selected}
           expandedPaths={expandedPaths}
           hasSelection={hasSelection}
+          dragOver={dragOver}
           onSelect={onSelect}
           onToggle={onToggle}
           onDelete={onDelete}
+          onDrop={onDrop}
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
         />
       ))}
     </>
@@ -222,6 +238,10 @@ export default function Bookmarks() {
   const [moveTarget, setMoveTarget] = useState("");
   const [addForm, setAddForm] = useState({ title: "", url: "", folder_path: "/", tags: "" });
   const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null);
+
+  // Drag & drop
+  const [dragOver, setDragOver] = useState("");
+  const [dragIds, setDragIds] = useState<string[]>([]);
 
   // Smart duplicates
   const [smartDupes, setSmartDupes] = useState<Array<{ group: Array<{ id: string; title: string; url: string; domain: string | null; folder_path: string }>; reason: string }>>([]);
@@ -395,6 +415,33 @@ export default function Bookmarks() {
     }
   };
 
+  // ─── Drag & Drop ───
+
+  const handleDragStart = (e: React.DragEvent, bmId: string) => {
+    // If dragging a selected item, drag all selected; otherwise just this one
+    const ids = selectedIds.has(bmId) ? [...selectedIds] : [bmId];
+    setDragIds(ids);
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", ids.join(","));
+  };
+
+  const handleFolderDrop = async (folderPath: string) => {
+    const ids = dragIds.length > 0 ? dragIds : [...selectedIds];
+    if (ids.length === 0) return;
+    setDragOver("");
+    setDragIds([]);
+    await fetch("/api/bookmarks/move", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids, folder_path: folderPath }),
+    });
+    setSelectedIds(new Set());
+    // Navigate to target folder so moved items are visible
+    setFolderFilter(folderPath);
+    setOffset(0);
+    await Promise.all([fetchBookmarks(), fetchMeta()]);
+  };
+
   const toggleExpand = (path: string) => {
     setExpandedPaths((prev) => {
       const next = new Set(prev);
@@ -412,6 +459,9 @@ export default function Bookmarks() {
         body: JSON.stringify({ ids: [...selectedIds], folder_path: path }),
       });
       setSelectedIds(new Set());
+      // Navigate to the target folder so moved items are visible
+      setFolderFilter(path);
+      setOffset(0);
       await Promise.all([fetchBookmarks(), fetchMeta()]);
       return;
     }
@@ -560,9 +610,13 @@ export default function Bookmarks() {
                   selected={folderFilter}
                   expandedPaths={expandedPaths}
                   hasSelection={selectedIds.size > 0}
+                  dragOver={dragOver}
                   onSelect={selectFolder}
                   onToggle={toggleExpand}
                   onDelete={handleDeleteFolder}
+                  onDrop={handleFolderDrop}
+                  onDragOver={setDragOver}
+                  onDragLeave={() => setDragOver("")}
                 />
               ))}
             </div>
@@ -686,6 +740,9 @@ export default function Bookmarks() {
                   <div
                     key={bm.id}
                     className={`bm-item${selectedIds.has(bm.id) ? " bm-item-selected" : ""}`}
+                    draggable
+                    onDragStart={(e) => handleDragStart(e, bm.id)}
+                    onDragEnd={() => { setDragOver(""); setDragIds([]); }}
                   >
                     <input
                       type="checkbox"
@@ -811,11 +868,11 @@ export default function Bookmarks() {
                           </a>
                           <span className="bm-dupe-folder">{bm.folder_path}</span>
                           <button
-                            className="bm-action-btn bm-action-danger"
+                            className="bm-dupe-delete"
                             onClick={() => removeSmartDupe(bm.id)}
                             title="Delete this bookmark"
                           >
-                            {"\u2715"}
+                            Delete
                           </button>
                         </div>
                       ))}
@@ -1081,12 +1138,18 @@ export default function Bookmarks() {
           background: var(--bg-tertiary);
         }
         .bm-tree-drop-target {
-          border: 1px dashed var(--accent);
+          border: 1px dashed transparent;
           border-radius: 4px;
           margin: 1px 4px;
         }
         .bm-tree-drop-target:hover {
+          border-color: var(--accent);
           background: var(--accent-subtle) !important;
+        }
+        .bm-tree-drag-over {
+          border-color: var(--accent) !important;
+          background: var(--accent-subtle) !important;
+          color: var(--accent) !important;
         }
         .bm-tree-move-hint {
           font-size: 9px;
@@ -1096,6 +1159,15 @@ export default function Bookmarks() {
         }
         .bm-tree-drop-target:hover .bm-tree-move-hint {
           opacity: 1;
+        }
+
+        /* ── Draggable items ── */
+        .bm-item[draggable="true"] {
+          cursor: grab;
+        }
+        .bm-item[draggable="true"]:active {
+          cursor: grabbing;
+          opacity: 0.5;
         }
 
         /* ── Smart duplicates ── */
@@ -1136,6 +1208,21 @@ export default function Bookmarks() {
           overflow: hidden;
           text-overflow: ellipsis;
           flex-shrink: 0;
+        }
+        .bm-dupe-delete {
+          background: none;
+          border: 1px solid var(--error);
+          color: var(--error);
+          cursor: pointer;
+          padding: 2px 8px;
+          border-radius: 4px;
+          font-size: 11px;
+          flex-shrink: 0;
+          white-space: nowrap;
+        }
+        .bm-dupe-delete:hover {
+          background: var(--error);
+          color: white;
         }
       `}</style>
     </>
