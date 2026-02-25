@@ -720,8 +720,26 @@ textarea:focus {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--text-muted);
-  padding: 10px 10px 3px 18px;
+  padding: 10px 10px 3px 10px;
   user-select: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transition: color 0.15s;
+}
+
+.sidebar-section:hover {
+  color: var(--text-secondary);
+}
+
+.sidebar-section-chevron {
+  font-size: 11px;
+  line-height: 1;
+  transition: transform 0.15s;
+  width: 8px;
+  text-align: center;
+  flex-shrink: 0;
 }
 
 .sidebar-nav a {

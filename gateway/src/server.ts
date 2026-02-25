@@ -6541,34 +6541,120 @@ app.get("/api/quotes/:id", async (req, res) => {
 app.post("/api/quotes", async (req, res) => {
   try {
     const {
-      title, contact_id, company_id, valid_until,
+      title, contact_id, company_id, organization_id, template_id, valid_until,
       intro_text, closing_text, terms, notes, tags,
       sender_name, sender_email, vat_percent,
     } = req.body;
 
-    // Generate quote number
+    // Resolve organization — use provided, or default
+    let orgId = organization_id || null;
+    if (!orgId) {
+      const defaultOrg = await query<{ id: string }>(
+        "SELECT id FROM organizations WHERE is_default = true LIMIT 1",
+      );
+      if (defaultOrg.rows.length > 0) orgId = defaultOrg.rows[0].id;
+    }
+
+    // Resolve prefix from org short_name
+    let prefix = "ANG";
+    if (orgId) {
+      const orgResult = await query<{ short_name: string }>(
+        "SELECT short_name FROM organizations WHERE id = $1", [orgId],
+      );
+      if (orgResult.rows.length > 0 && orgResult.rows[0].short_name) {
+        prefix = orgResult.rows[0].short_name.toUpperCase();
+      }
+    }
+
     const seqResult = await query<{ nextval: string }>("SELECT nextval('quote_number_seq')");
-    const quoteNumber = `ANG-${seqResult.rows[0].nextval}`;
+    const quoteNumber = `${prefix}-${seqResult.rows[0].nextval}`;
+
+    // Load template defaults if provided
+    let finalIntro = intro_text || null;
+    let finalClosing = closing_text || null;
+    let finalTerms = terms ? JSON.stringify(terms) : "{}";
+    let finalVat = vat_percent ?? 20;
+    let finalValidDays = 14;
+    let defaultItems: Array<Record<string, unknown>> = [];
+
+    if (template_id) {
+      const tpl = await query<Record<string, unknown>>(
+        `SELECT t.*, o.default_intro_text, o.default_closing_text
+         FROM quote_templates t
+         LEFT JOIN organizations o ON o.id = t.organization_id
+         WHERE t.id = $1`,
+        [template_id],
+      );
+      if (tpl.rows.length > 0) {
+        const t = tpl.rows[0];
+        if (!finalIntro) finalIntro = (t.intro_text as string) || (t.default_intro_text as string) || null;
+        if (!finalClosing) finalClosing = (t.closing_text as string) || (t.default_closing_text as string) || null;
+        if (!terms) finalTerms = JSON.stringify(t.terms || {});
+        finalVat = vat_percent ?? (Number(t.default_vat_percent) || 20);
+        finalValidDays = (t.default_valid_days as number) || 14;
+        if (Array.isArray(t.default_items) && (t.default_items as unknown[]).length > 0) {
+          defaultItems = t.default_items as Array<Record<string, unknown>>;
+        }
+        if (!orgId) orgId = t.organization_id as string;
+      }
+    }
+
+    const validUntilDate = valid_until || new Date(Date.now() + finalValidDays * 86400000).toISOString().slice(0, 10);
 
     const result = await query<{ id: string }>(
       `INSERT INTO quotes (
-        quote_number, title, contact_id, company_id, valid_until,
-        intro_text, closing_text, terms, notes, tags,
+        quote_number, title, contact_id, company_id, organization_id, template_id,
+        valid_until, intro_text, closing_text, terms, notes, tags,
         sender_name, sender_email, vat_percent
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
       RETURNING id`,
       [
         quoteNumber, title || "Neues Angebot",
-        contact_id || null, company_id || null,
-        valid_until || new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10),
-        intro_text || null, closing_text || null,
-        terms ? JSON.stringify(terms) : "{}",
+        contact_id || null, company_id || null, orgId, template_id || null,
+        validUntilDate, finalIntro, finalClosing, finalTerms,
         notes || null, tags || [],
-        sender_name || null, sender_email || null, vat_percent ?? 20,
+        sender_name || null, sender_email || null, finalVat,
       ],
     );
 
-    res.json({ id: result.rows[0].id, quote_number: quoteNumber, created: true });
+    const quoteId = result.rows[0].id;
+
+    // Insert default items from template
+    for (let i = 0; i < defaultItems.length; i++) {
+      const item = defaultItems[i];
+      const qty = Number(item.quantity) || 1;
+      const price = Number(item.unit_price) || 0;
+      const disc = Number(item.discount_percent) || 0;
+      const lineTotal = qty * price * (1 - disc / 100);
+      await query(
+        `INSERT INTO quote_items (
+          quote_id, sort_order, section, article, description, detail, cycle,
+          quantity, unit, unit_price, discount_percent, line_total
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+        [
+          quoteId, i,
+          item.section || null, item.article || null, item.description || "",
+          item.detail || null, item.cycle || null,
+          qty, item.unit || "Stück", price, disc, lineTotal,
+        ],
+      );
+    }
+
+    // Recalculate totals if items were added
+    if (defaultItems.length > 0) {
+      const itemsSum = await query<{ total: string }>(
+        "SELECT COALESCE(SUM(line_total), 0) AS total FROM quote_items WHERE quote_id = $1", [quoteId],
+      );
+      const subtotal = parseFloat(itemsSum.rows[0].total);
+      const net = subtotal;
+      const vat = net * finalVat / 100;
+      await query(
+        `UPDATE quotes SET subtotal=$2, net_total=$3, vat_amount=$4, gross_total=$5, updated_at=NOW() WHERE id=$1`,
+        [quoteId, subtotal, net, vat, net + vat],
+      );
+    }
+
+    res.json({ id: quoteId, quote_number: quoteNumber, created: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ error: message });

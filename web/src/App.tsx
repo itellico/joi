@@ -29,8 +29,32 @@ import CloudSync from "./pages/CloudSync";
 import Bookmarks from "./pages/Bookmarks";
 import Quotes from "./pages/Quotes";
 import QuoteDetail from "./pages/QuoteDetail";
+import Organizations from "./pages/Organizations";
 import AssistantChat from "./components/AssistantChat";
 import JoiOrb from "./components/JoiOrb";
+
+// Collapsible sidebar section
+function NavSection({ label, children, defaultOpen = true }: { label: string; children: React.ReactNode; defaultOpen?: boolean }) {
+  const storageKey = `sidebar-section:${label}`;
+  const [open, setOpen] = useState(() => {
+    const stored = localStorage.getItem(storageKey);
+    return stored !== null ? stored === "1" : defaultOpen;
+  });
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    localStorage.setItem(storageKey, next ? "1" : "0");
+  };
+  return (
+    <>
+      <div className="sidebar-section" onClick={toggle}>
+        <span className="sidebar-section-chevron" style={{ transform: open ? "rotate(90deg)" : "rotate(0deg)" }}>›</span>
+        {label}
+      </div>
+      {open && children}
+    </>
+  );
+}
 
 type ChatMode = "api" | "claude-code";
 
@@ -163,35 +187,41 @@ function App() {
           <NavLink to="/" end>Dashboard</NavLink>
           <NavLink to="/chat">Chats</NavLink>
 
-          <div className="sidebar-section">CRM</div>
-          <NavLink to="/contacts">Contacts</NavLink>
-          <NavLink to="/quotes">Quotes</NavLink>
+          <NavSection label="CRM">
+            <NavLink to="/contacts">Contacts</NavLink>
+            <NavLink to="/quotes">Quotes</NavLink>
+            <NavLink to="/organizations">Organizations</NavLink>
+          </NavSection>
 
-          <div className="sidebar-section">AI</div>
-          <NavLink to="/agents">Agents</NavLink>
-          <NavLink to="/agent-social">Agent Social</NavLink>
-          <NavLink to="/knowledge">Knowledge</NavLink>
-          <NavLink to="/store">Store</NavLink>
+          <NavSection label="AI">
+            <NavLink to="/agents">Agents</NavLink>
+            <NavLink to="/agent-social">Agent Social</NavLink>
+            <NavLink to="/knowledge">Knowledge</NavLink>
+            <NavLink to="/store">Store</NavLink>
+          </NavSection>
 
-          <div className="sidebar-section">Workspace</div>
-          <NavLink to="/okrs">OKRs</NavLink>
-          <NavLink to="/tasks">Tasks</NavLink>
-          <NavLink to="/bookmarks">Bookmarks</NavLink>
-          <NavLink to="/media">Media</NavLink>
-          <NavLink to="/reports">Reports</NavLink>
+          <NavSection label="Workspace">
+            <NavLink to="/okrs">OKRs</NavLink>
+            <NavLink to="/tasks">Tasks</NavLink>
+            <NavLink to="/bookmarks">Bookmarks</NavLink>
+            <NavLink to="/media">Media</NavLink>
+            <NavLink to="/reports">Reports</NavLink>
+          </NavSection>
 
-          <div className="sidebar-section">DevOps</div>
-          <NavLink to="/autodev">AutoDev</NavLink>
-          <NavLink to="/quality">Quality</NavLink>
-          <NavLink to="/cron">Cron</NavLink>
-          <NavLink to="/reviews">Reviews</NavLink>
-          <NavLink to="/terminal">Terminal</NavLink>
-          <NavLink to="/logs">Logs</NavLink>
+          <NavSection label="DevOps" defaultOpen={false}>
+            <NavLink to="/autodev">AutoDev</NavLink>
+            <NavLink to="/quality">Quality</NavLink>
+            <NavLink to="/cron">Cron</NavLink>
+            <NavLink to="/reviews">Reviews</NavLink>
+            <NavLink to="/terminal">Terminal</NavLink>
+            <NavLink to="/logs">Logs</NavLink>
+          </NavSection>
 
-          <div className="sidebar-section">System</div>
-          <NavLink to="/integrations">Integrations</NavLink>
-          <NavLink to="/cloud-sync">Cloud Sync</NavLink>
-          <NavLink to="/settings">Settings</NavLink>
+          <NavSection label="System" defaultOpen={false}>
+            <NavLink to="/integrations">Integrations</NavLink>
+            <NavLink to="/cloud-sync">Cloud Sync</NavLink>
+            <NavLink to="/settings">Settings</NavLink>
+          </NavSection>
         </nav>
 
         <button
@@ -340,6 +370,7 @@ function App() {
           <Route path="/contacts/:id" element={<ContactDetail />} />
           <Route path="/quotes" element={<Quotes />} />
           <Route path="/quotes/:id" element={<QuoteDetail />} />
+          <Route path="/organizations" element={<Organizations />} />
           <Route path="/agents" element={<Agents />} />
           <Route path="/agent-social" element={<AgentSocial />} />
           <Route path="/knowledge" element={<Knowledge />} />
