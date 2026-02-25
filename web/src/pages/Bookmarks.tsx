@@ -368,6 +368,9 @@ export default function Bookmarks() {
     });
     setSelectedIds(new Set());
     setShowMoveModal(false);
+    // Navigate to target folder so moved items are visible
+    setFolderFilter(moveTarget);
+    setOffset(0);
     await Promise.all([fetchBookmarks(), fetchMeta()]);
   }, [selectedIds, moveTarget, fetchBookmarks, fetchMeta]);
 
