@@ -42,6 +42,9 @@ mobile/macos/.symlinks/
 mobile/macos/Flutter/ephemeral/
 *.g.dart
 
+# Python
+.venv/
+
 # Docker volumes
 pgdata/
 ollama_data/
