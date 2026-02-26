@@ -1,5 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type { JoiConfig } from "../config/schema.js";
+import type { AgentExecutionMode } from "./execution-mode.js";
 import { query } from "../db/client.js";
 import { searchMemories } from "../knowledge/searcher.js";
 import {
@@ -52,6 +53,7 @@ export interface ToolContext {
   config: JoiConfig;
   conversationId: string;
   agentId: string;
+  executionMode?: AgentExecutionMode;
   agentConfig?: Record<string, unknown>;
   scope?: string;
   scopeMetadata?: Record<string, unknown>;
@@ -1727,11 +1729,122 @@ export function getToolDefinitions(allowedSkills?: string[] | null): Anthropic.T
   return allTools.filter((t) => CORE_TOOLS.has(t.name) || allowed.has(t.name));
 }
 
+const SHADOW_SAFE_READ_TOOLS = new Set([
+  "current_datetime",
+  "query_gateway_logs",
+  "skill_read",
+  "skill_audit",
+  "skill_scan_joi",
+  "skill_scan_claude_code",
+  "skill_scan_official",
+  "skill_scan_agents",
+  "youtube_transcribe",
+  "audio_transcribe",
+]);
+
+const SHADOW_BLOCKED_MUTATION_TOOLS = new Set([
+  "memory_store",
+  "memory_manage",
+  "schedule_create",
+  "schedule_manage",
+  "run_claude_code",
+  "review_request",
+  "agent_heartbeat",
+  "agent_task_create",
+  "agent_task_update",
+  "spawn_agent",
+  "contacts_update_extra",
+  "channel_send",
+  "calendar_create_event",
+  "calendar_update_event",
+  "calendar_delete_event",
+  "gmail_send",
+  "gmail_mark_processed",
+  "drive_upload",
+  "invoice_save",
+  "invoice_classify",
+  "transaction_import",
+  "transaction_match",
+  "reconciliation_run",
+  "obsidian_write",
+  "okr_sync_things3",
+  "okr_checkin",
+  "jellyseerr_create_request",
+  "jellyseerr_cancel_request",
+  "quotes_create",
+  "quotes_update",
+  "quotes_add_item",
+  "quotes_update_item",
+  "quotes_remove_item",
+  "quotes_recalculate",
+  "quotes_generate_pdf",
+  "gemini_avatar_generate",
+  "gemini_avatar_generate_all",
+  "avatar_style_set",
+  "ssh_exec",
+  "store_create_collection",
+  "store_create_object",
+  "store_update_object",
+  "store_delete_object",
+  "store_relate",
+  "notion_create",
+  "notion_update",
+  "notion_comment",
+  "tasks_create",
+  "tasks_complete",
+  "tasks_update",
+  "tasks_move",
+  "tasks_create_project",
+]);
+
+function isReadOnlyInShadowMode(name: string): boolean {
+  if (SHADOW_SAFE_READ_TOOLS.has(name)) return true;
+  if (SHADOW_BLOCKED_MUTATION_TOOLS.has(name)) return false;
+
+  if (/_((create|update|delete|remove|send|write|manage|move|complete|uncomplete|toggle|sync|import|upload|save|store|set|recalculate|generate|run|request|comment|relate|mark|apply))$/i.test(name)) {
+    return false;
+  }
+  if (/_(create|update|delete|remove|send|write|store|set|sync|upload|import)_/i.test(name)) {
+    return false;
+  }
+
+  if (/(^|_)(search|list|get|read|query|status|scan|check|show|overview|report|score|servers|library|recent|recently|activity|continue|next|now|details|availability|summary|progress|groups|members|interactions|datetime|tree|migrations|transcribe|trending|available|requests|collections)(_|$)/i.test(name)) {
+    return true;
+  }
+
+  return false;
+}
+
+function summarizeInputForSimulation(input: unknown): string {
+  if (input == null) return "";
+  const raw = typeof input === "string" ? input : JSON.stringify(input);
+  if (!raw) return "";
+  if (raw.length <= 220) return raw;
+  return `${raw.slice(0, 220)}... [truncated ${raw.length - 220} chars]`;
+}
+
 export async function executeTool(
   name: string,
   input: unknown,
   ctx: ToolContext,
 ): Promise<unknown> {
+  const executionMode = ctx.executionMode || "live";
+  if (executionMode !== "live") {
+    const canExecute = executionMode === "shadow" && isReadOnlyInShadowMode(name);
+    if (!canExecute) {
+      return {
+        simulated: true,
+        execution_mode: executionMode,
+        tool: name,
+        blocked: true,
+        reason: executionMode === "dry_run"
+          ? "Tool execution skipped in dry_run mode."
+          : "Mutating or unsafe tool blocked in shadow mode.",
+        input_preview: summarizeInputForSimulation(input),
+      };
+    }
+  }
+
   const handler = toolRegistry.get(name);
   if (!handler) {
     return { error: `Unknown tool: ${name}` };

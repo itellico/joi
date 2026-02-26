@@ -56,14 +56,16 @@ pnpm --filter gateway db:migrate 2>&1 || echo "⚠️  Migrations skipped (may a
 pkill -f "tsx watch.*src/server.ts" 2>/dev/null || true
 pkill -f "tsx src/server.ts" 2>/dev/null || true
 
+GATEWAY_PORT_VALUE="${GATEWAY_PORT:-3100}"
+
 for _ in 1 2 3 4 5; do
-  if ! lsof -ti:3100 >/dev/null 2>&1; then
+  if ! lsof -ti:"$GATEWAY_PORT_VALUE" >/dev/null 2>&1; then
     break
   fi
   sleep 0.5
 done
 
-lsof -ti:3100 | xargs kill -9 2>/dev/null || true
+lsof -ti:"$GATEWAY_PORT_VALUE" | xargs kill -9 2>/dev/null || true
 sleep 0.5
 
 echo "🚀 Starting gateway..."

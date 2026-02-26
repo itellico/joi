@@ -5,7 +5,9 @@ set -euo pipefail
 SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPTS_DIR")"
 
-"$SCRIPTS_DIR/wait-for.sh" "127.0.0.1" "3100" "Gateway" 120
+GATEWAY_WAIT_PORT="${GATEWAY_PORT:-${JOI_SIM_GATEWAY_PORT:-3100}}"
+
+"$SCRIPTS_DIR/wait-for.sh" "127.0.0.1" "$GATEWAY_WAIT_PORT" "Gateway" 120
 
 # Kill stale vite processes
 lsof -ti:5173 | xargs kill -9 2>/dev/null || true

@@ -1,6 +1,8 @@
 // JOI Gateway WebSocket Protocol
 // Simplified from OpenClaw's frame system
 
+import type { AgentExecutionMode, AgentLatencyProfile } from "./agent/execution-mode.js";
+
 export type FrameType =
   | "chat.send"         // Client → Gateway: send user message
   | "chat.stream"       // Gateway → Client: streaming token
@@ -67,6 +69,8 @@ export interface ChatSendData {
   model?: string;  // Client-requested model override (e.g. "claude-sonnet-4-20250514" or "anthropic/claude-sonnet-4")
   mode?: "api" | "claude-code";  // api = OpenRouter/Anthropic, claude-code = CLI
   proactive?: boolean;  // True when AI initiates conversation after idle period
+  executionMode?: AgentExecutionMode;
+  latencyProfile?: AgentLatencyProfile;
   attachments?: Array<{
     type: string;
     url?: string;
@@ -88,6 +92,7 @@ export interface ChatDoneData {
   messageId: string;
   content: string;
   model: string;
+  executionMode?: AgentExecutionMode;
   usage?: {
     inputTokens: number;
     outputTokens: number;

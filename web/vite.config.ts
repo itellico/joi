@@ -1,8 +1,8 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-const gatewayHttp = "http://127.0.0.1:3100";
-const gatewayWs = "ws://127.0.0.1:3100";
+const gatewayHttp = process.env.VITE_GATEWAY_ORIGIN || "http://127.0.0.1:3100";
+const gatewayWs = gatewayHttp.replace(/^http/i, "ws");
 
 export default defineConfig({
   plugins: [react()],

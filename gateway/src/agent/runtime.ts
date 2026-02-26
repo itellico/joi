@@ -17,17 +17,67 @@ import { afterAgentRun, type ToolInteraction } from "../knowledge/hooks.js";
 import { maybeFlushContext } from "../knowledge/flush.js";
 import { loadConversationScope, resolveAllowedScopes } from "../access/scope.js";
 import { recordUsage, estimateCost } from "./usage-tracker.js";
+import { logError, logWarn } from "../logging.js";
 import { readSoulDocumentForAgent } from "./soul-documents.js";
 import { chooseSoulForConversation, persistConversationSoulSelection } from "./soul-rollouts.js";
+import {
+  maybeSimulateLatency,
+  normalizeExecutionMode,
+  type AgentExecutionMode,
+  type AgentLatencyProfile,
+} from "./execution-mode.js";
 
 /** Strip <think>...</think> reasoning tags from model output (e.g., Qwen 3.5) */
 function stripThinkTags(text: string): string {
   return text.replace(/<think>[\s\S]*?<\/think>\s*/g, "").trim();
 }
 
-const LIGHTWEIGHT_CHAT_MAX_CHARS = 80;
-const LIGHTWEIGHT_CHAT_REGEX = /^(hi|hello|hey|yo|thanks|thank you|ok|okay|cool|nice|test|ping|dd|why are you so slow)\b/i;
-const TOOL_INTENT_REGEX = /\b(show|list|find|search|look up|lookup|check|run|execute|sync|update|create|delete|send|email|message|call|schedule|remind|task|todo|job|contact|calendar|note|memory|knowledge|log|report|status|health|settings|agent|autodev|review|analy[sz]e|summari[sz]e|write|read|open|fetch)\b/i;
+function summarizeProviderError(err: unknown): string {
+  if (!err || typeof err !== "object") {
+    return typeof err === "string" ? err : "Unknown provider error";
+  }
+
+  const rec = err as Record<string, unknown>;
+  const parts: string[] = [];
+
+  if (typeof rec.status === "number") {
+    parts.push(`status=${rec.status}`);
+  }
+  if (typeof rec.message === "string" && rec.message.trim().length > 0) {
+    parts.push(rec.message.trim());
+  }
+
+  const providerError = rec.error;
+  if (providerError && typeof providerError === "object") {
+    const providerRec = providerError as Record<string, unknown>;
+    const providerCode = typeof providerRec.code === "string" ? providerRec.code : null;
+    const providerMessage = typeof providerRec.message === "string" ? providerRec.message : null;
+    if (providerCode || providerMessage) {
+      parts.push(`provider=${[providerCode, providerMessage].filter(Boolean).join(": ")}`);
+    } else {
+      try {
+        const serialized = JSON.stringify(providerRec);
+        if (serialized) parts.push(`provider=${serialized.slice(0, 280)}`);
+      } catch {
+        // ignore serialization errors
+      }
+    }
+  }
+
+  const responseObj = rec.response;
+  if (responseObj && typeof responseObj === "object") {
+    const body = (responseObj as Record<string, unknown>).body;
+    if (typeof body === "string" && body.trim().length > 0) {
+      parts.push(`body=${body.trim().slice(0, 280)}`);
+    }
+  }
+
+  if (parts.length === 0) return "Unknown provider error";
+  return parts.join(" | ");
+}
+
+// Tool gating is now handled by the LLM intent classifier in intent-classifier.ts.
+// The caller passes enableTools based on the classification result.
 const HISTORY_CONTENT_MAX_CHARS = 1400;
 const HISTORY_TOOL_RESULT_MAX_CHARS = 1800;
 
@@ -37,14 +87,43 @@ function compactHistoryText(text: string | null | undefined, maxChars: number): 
   return `${source.slice(0, maxChars)}\n\n[truncated ${source.length - maxChars} chars]`;
 }
 
-function shouldUseToolsForMessage(message: string): boolean {
-  const trimmed = message.trim();
-  if (!trimmed) return false;
-  if (trimmed.length > LIGHTWEIGHT_CHAT_MAX_CHARS) return true;
-  // Only disable tools for known-lightweight greetings/acks.
-  // Everything else (including questions like "who is my son?") needs tools + memory.
-  if (LIGHTWEIGHT_CHAT_REGEX.test(trimmed)) return false;
-  return true;
+const OPENAI_TOOL_MAX = Math.max(
+  8,
+  Number.parseInt(process.env.JOI_OPENAI_TOOL_MAX || "120", 10) || 120,
+);
+
+function extractIntentTokens(message: string): string[] {
+  const matches = message.toLowerCase().match(/[a-z0-9_]{3,}/g) || [];
+  return [...new Set(matches)];
+}
+
+function relevanceScoreForTool(tool: Anthropic.Tool, tokens: string[]): number {
+  if (tokens.length === 0) return 0;
+  const name = tool.name.toLowerCase();
+  const description = (tool.description || "").toLowerCase();
+  let score = 0;
+  for (const token of tokens) {
+    if (name === token) score += 100;
+    else if (name.includes(token)) score += 30;
+    if (description.includes(token)) score += 6;
+  }
+  return score;
+}
+
+function trimToolsForOpenAI(tools: Anthropic.Tool[], message: string, maxTools: number): Anthropic.Tool[] {
+  if (tools.length <= maxTools) return tools;
+  const tokens = extractIntentTokens(message);
+  const ranked = tools
+    .map((tool, index) => ({
+      tool,
+      index,
+      score: relevanceScoreForTool(tool, tokens),
+    }))
+    .sort((a, b) => (b.score - a.score) || (a.index - b.index));
+  return ranked
+    .slice(0, maxTools)
+    .sort((a, b) => a.index - b.index)
+    .map((entry) => entry.tool);
 }
 
 // ── Tool result minimization (Phase 3) ──
@@ -121,7 +200,9 @@ function toolsToOpenAI(tools: Anthropic.Tool[]): OpenAI.ChatCompletionTool[] {
   }));
 }
 
-/** Convert Anthropic message history to OpenAI chat messages */
+/** Convert Anthropic message history to OpenAI chat messages.
+ *  Uses proper OpenAI tool_calls / tool role messages so the model
+ *  understands tool interactions as structured data (not text to reproduce). */
 function messagesToOpenAI(
   systemPrompt: string,
   messages: Anthropic.MessageParam[],
@@ -138,21 +219,30 @@ function messagesToOpenAI(
       if (typeof msg.content === "string") {
         result.push({ role: "user", content: msg.content });
       } else if (Array.isArray(msg.content)) {
-        // May contain tool_result blocks or text. We intentionally flatten all
-        // structured tool history into plain user text because some providers
-        // reject strict tool-role sequencing when legacy conversation data is noisy.
+        // Separate text blocks from tool_result blocks
+        const textParts: string[] = [];
+        const toolResults: Array<{ tool_use_id: string; content: string }> = [];
         for (const block of msg.content) {
           if (block.type === "tool_result") {
-            result.push({
-              role: "user",
-              content: `Tool result (${block.tool_use_id}): ${toolResultToText(block.content)}`,
+            toolResults.push({
+              tool_use_id: (block as { tool_use_id: string }).tool_use_id,
+              content: toolResultToText((block as { content: unknown }).content),
             });
-            continue;
+          } else if (block.type === "text") {
+            textParts.push((block as { text: string }).text);
           }
-
-          if (block.type === "text") {
-            result.push({ role: "user", content: block.text });
-          }
+        }
+        // Emit tool results as proper OpenAI "tool" role messages
+        for (const tr of toolResults) {
+          result.push({
+            role: "tool" as const,
+            tool_call_id: tr.tool_use_id,
+            content: tr.content,
+          } as OpenAI.ChatCompletionToolMessageParam);
+        }
+        // Emit any remaining text as user messages
+        if (textParts.length > 0) {
+          result.push({ role: "user", content: textParts.join("\n") });
         }
       }
     } else if (msg.role === "assistant") {
@@ -160,18 +250,29 @@ function messagesToOpenAI(
         result.push({ role: "assistant", content: msg.content });
       } else if (Array.isArray(msg.content)) {
         const textParts: string[] = [];
-        const toolNames: string[] = [];
+        const toolCalls: OpenAI.ChatCompletionMessageToolCall[] = [];
         for (const block of msg.content) {
           if (block.type === "text") {
-            textParts.push(block.text);
+            textParts.push((block as Anthropic.TextBlock).text);
           } else if (block.type === "tool_use") {
-            toolNames.push(block.name);
+            const tu = block as Anthropic.ToolUseBlock;
+            toolCalls.push({
+              id: tu.id,
+              type: "function",
+              function: {
+                name: tu.name,
+                arguments: JSON.stringify(tu.input),
+              },
+            });
           }
         }
         const assistantMsg: OpenAI.ChatCompletionAssistantMessageParam = {
           role: "assistant",
-          content: textParts.join("") || (toolNames.length > 0 ? `[Called tools: ${toolNames.join(", ")}]` : null),
+          content: textParts.join("") || null,
         };
+        if (toolCalls.length > 0) {
+          assistantMsg.tool_calls = toolCalls;
+        }
         result.push(assistantMsg);
       }
     }
@@ -199,15 +300,28 @@ async function openaiStream(
   const openaiMessages = messagesToOpenAI(systemPrompt, messages);
   const openaiTools = tools.length > 0 ? toolsToOpenAI(tools) : undefined;
 
-  const stream = await client.chat.completions.create({
-    model,
-    max_tokens: 8192,
-    messages: openaiMessages,
-    tools: openaiTools,
-    tool_choice: openaiTools && forceToolUse ? "required" : undefined,
-    stream: true,
-    stream_options: { include_usage: true },
-  });
+  let stream: Awaited<ReturnType<OpenAI["chat"]["completions"]["create"]>>;
+  try {
+    stream = await client.chat.completions.create({
+      model,
+      max_tokens: 8192,
+      messages: openaiMessages,
+      tools: openaiTools,
+      tool_choice: openaiTools && forceToolUse ? "required" : undefined,
+      stream: true,
+      stream_options: { include_usage: true },
+    });
+  } catch (err) {
+    const detail = summarizeProviderError(err);
+    const message = `[openaiStream] Provider call failed model=${model}: ${detail}`;
+    console.error(message);
+    logError("agent", message, {
+      model,
+      forceToolUse,
+      toolCount: tools.length,
+    });
+    throw new Error(`Provider call failed for ${model}: ${detail}`);
+  }
 
   let text = "";
   // Accumulate tool call deltas by index
@@ -282,6 +396,9 @@ export interface AgentRunOptions {
   includeMemoryContext?: boolean; // Skip global memory context for faster turns
   includeSkillsPrompt?: boolean; // Exclude long skills index from system prompt on latency-sensitive routes
   forceToolUse?: boolean; // Force at least one tool call before answering (best for voice action intents)
+  executionMode?: AgentExecutionMode; // live = full side effects, shadow = read-mostly, dry_run = simulated tools
+  persistMessages?: boolean; // Default true in live/shadow, false in dry_run
+  latencyProfile?: AgentLatencyProfile; // Optional latency simulation profile for test runs
   broadcast?: (type: string, data: unknown) => void;
   onStream?: (delta: string) => void;
   onToolPlan?: (toolCalls: Array<{ id: string; name: string; input: unknown }>) => void;
@@ -444,6 +561,9 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     includeMemoryContext = true,
     includeSkillsPrompt = true,
     forceToolUse = false,
+    executionMode: rawExecutionMode = "live",
+    persistMessages: rawPersistMessages,
+    latencyProfile,
     depth = 0,
     systemPromptSuffix,
     broadcast,
@@ -452,13 +572,18 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     onToolUse,
     onToolResult,
   } = options;
+  const executionMode = normalizeExecutionMode(rawExecutionMode, "live");
+  const persistMessages = rawPersistMessages ?? executionMode !== "dry_run";
+  const shouldPersistMessages = persistMessages && executionMode !== "dry_run";
   const runStartedAt = Date.now();
   const timings = { setupMs: 0, memoryMs: 0, promptMs: 0, historyMs: 0, llmMs: 0, totalMs: 0 };
   let tMark = runStartedAt;
 
   console.log(`[runAgent] START agentId=${agentId}, hasOnStream=${!!onStream}, userMessage=${JSON.stringify(userMessage.slice(0, 100))}`);
 
-  const conversationId = await ensureConversation(inputConvId, agentId);
+  const conversationId = shouldPersistMessages
+    ? await ensureConversation(inputConvId, agentId)
+    : (inputConvId && inputConvId.trim() ? inputConvId : crypto.randomUUID());
   console.log(`[runAgent] conversationId=${conversationId}`);
 
   // Load channel language (conversation → channel_id → language)
@@ -485,7 +610,9 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   } catch { /* non-critical */ }
 
   // Save user message
-  await saveMessage(conversationId, "user", userMessage, null, null, null, null);
+  if (shouldPersistMessages) {
+    await saveMessage(conversationId, "user", userMessage, null, null, null, null);
+  }
 
   // Load agent config from DB
   const agentResult = await query<{
@@ -537,21 +664,11 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   });
 
   // Get tool definitions (filtered by agent skills, or all if skills is null).
-  // For short personal-chat turns, skip the tool layer to avoid an unnecessary
-  // two-phase roundtrip (tool model + chat model) and large tool-schema prompts.
-  const smartToolGatingEnabled = process.env.JOI_SMART_TOOL_GATING !== "0";
-  const disableToolsForTurn =
-    smartToolGatingEnabled &&
-    enableTools &&
-    !forceToolUse &&
-    depth === 0 &&
-    agentId === "personal" &&
-    !shouldUseToolsForMessage(userMessage);
-
+  // Tool gating is now handled by the LLM intent classifier (caller passes enableTools).
   const agentSkills = agentRow?.skills ?? null;
-  const tools = enableTools && !disableToolsForTurn ? getToolDefinitions(agentSkills) : [];
-  if (disableToolsForTurn) {
-    console.log("[runAgent] Smart tool gating: disabled tools + memory + skills, reduced history for lightweight personal turn");
+  let tools = enableTools ? getToolDefinitions(agentSkills) : [];
+  if (!enableTools) {
+    console.log("[runAgent] Tools disabled by intent classifier for this turn");
   }
 
   // Two-phase model routing:
@@ -570,6 +687,21 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   // Start with tool model for orchestration (or chat model if same)
   const activeRoute = isTwoPhase ? toolRoute : chatRoute;
   let { client, openaiClient, model, provider } = activeRoute;
+  if (openaiClient && tools.length > OPENAI_TOOL_MAX) {
+    const originalCount = tools.length;
+    tools = trimToolsForOpenAI(tools, userMessage, OPENAI_TOOL_MAX);
+    logWarn(
+      "agent",
+      `[runAgent] Trimmed tools for OpenAI-compatible model ${model}: ${originalCount} -> ${tools.length}`,
+      {
+        model,
+        provider,
+        originalCount,
+        trimmedCount: tools.length,
+        forceToolUse,
+      },
+    );
+  }
   console.log(`[runAgent] Using provider=${provider}, model=${model}, isTwoPhase=${isTwoPhase}, hasAnthropicClient=${!!client}, hasOpenAIClient=${!!openaiClient}`);
 
   timings.setupMs = Date.now() - tMark;
@@ -578,7 +710,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   // Load memory context for system prompt
   // Skip memory for lightweight turns (tools already disabled, memory won't help)
   let memoryContext = "";
-  if (includeMemoryContext && !disableToolsForTurn) {
+  if (includeMemoryContext && enableTools) {
     try {
       const ctx = await loadSessionContextScoped(config, {
         tenantScope: allowGlobalDataAccess ? undefined : conversationScope,
@@ -613,7 +745,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   tMark = Date.now();
 
   // Skip skills prompt for lightweight turns (tools are disabled anyway)
-  const effectiveIncludeSkills = disableToolsForTurn ? false : includeSkillsPrompt;
+  const effectiveIncludeSkills = !enableTools ? false : includeSkillsPrompt;
   const fallbackSoulContent = readSoulDocumentForAgent(promptAgentId).content;
   let selectedSoulContent = fallbackSoulContent;
   try {
@@ -623,7 +755,9 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       fallbackContent: fallbackSoulContent,
     });
     selectedSoulContent = soulSelection.selectedContent || fallbackSoulContent;
-    await persistConversationSoulSelection(conversationId, soulSelection);
+    if (shouldPersistMessages) {
+      await persistConversationSoulSelection(conversationId, soulSelection);
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.warn(`[runAgent] Failed to resolve soul rollout for ${promptAgentId}: ${message}`);
@@ -642,7 +776,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   // Build cached system blocks for Anthropic prompt caching (Phase 2)
   const usePromptCache = process.env.JOI_PROMPT_CACHE === "1";
   let cachedSystemBlocks: Anthropic.TextBlockParam[] | null = null;
-  if (usePromptCache && !disableToolsForTurn) {
+  if (usePromptCache && enableTools) {
     const blocks = buildCachedSystemBlocks(agentRow?.system_prompt || undefined, promptOptions);
     // Append memory + suffix to dynamic block
     const dynamicSuffix = memoryContext + (systemPromptSuffix ? "\n\n" + systemPromptSuffix : "");
@@ -668,11 +802,11 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   tMark = Date.now();
 
   // Load history (reduce for lightweight turns — full history is unnecessary)
-  const effectiveHistoryLimit = disableToolsForTurn ? 10 : historyLimit;
+  const effectiveHistoryLimit = !enableTools ? 10 : historyLimit;
   const history = await loadConversationHistory(conversationId, effectiveHistoryLimit);
 
   // Pre-compaction memory flush (fire-and-forget)
-  if (config.memory.autoLearn) {
+  if (config.memory.autoLearn && shouldPersistMessages && executionMode === "live") {
     maybeFlushContext(conversationId, config)
       .catch((err) => console.warn("[Flush] Pre-compaction flush failed:", err));
   }
@@ -781,15 +915,17 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
 
     // Record usage and accumulate cost
     totalCostUsd += estimateCost(provider as ModelProvider, model, iterInputTokens, iterOutputTokens);
-    recordUsage({
-      provider,
-      model,
-      task: isTwoPhase ? (toolTask === "voice" ? "voice" : "tool") : (chatTask === "voice" ? "voice" : "chat"),
-      inputTokens: iterInputTokens,
-      outputTokens: iterOutputTokens,
-      conversationId,
-      agentId,
-    }).catch(() => {});
+    if (executionMode === "live") {
+      recordUsage({
+        provider,
+        model,
+        task: isTwoPhase ? (toolTask === "voice" ? "voice" : "tool") : (chatTask === "voice" ? "voice" : "chat"),
+        inputTokens: iterInputTokens,
+        outputTokens: iterOutputTokens,
+        conversationId,
+        agentId,
+      }).catch(() => {});
+    }
 
     if (stopReason !== "tool_use" || toolCalls.length === 0) {
       // No more tool calls
@@ -800,15 +936,20 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       } else {
         // Single-phase: save the response normally
         const cleanedText = stripThinkTags(assistantText);
-        assistantMessageId = await saveMessage(
-          conversationId, "assistant", cleanedText || null, model,
-          null, null,
-          {
-            inputTokens: iterInputTokens,
-            outputTokens: iterOutputTokens,
-            latencyMs: Date.now() - runStartedAt,
-          },
-        );
+        await maybeSimulateLatency(latencyProfile, "response");
+        if (shouldPersistMessages) {
+          assistantMessageId = await saveMessage(
+            conversationId, "assistant", cleanedText || null, model,
+            null, null,
+            {
+              inputTokens: iterInputTokens,
+              outputTokens: iterOutputTokens,
+              latencyMs: Date.now() - runStartedAt,
+            },
+          );
+        } else if (!assistantMessageId) {
+          assistantMessageId = crypto.randomUUID();
+        }
         fullContent += cleanedText;
       }
       break;
@@ -817,11 +958,15 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     // Tools were called — save assistant message (includes tool_use blocks)
     onToolPlan?.(toolCalls);
     toolsWereCalled = true;
-    assistantMessageId = await saveMessage(
-      conversationId, "assistant", assistantText || null, model,
-      toolCalls, null,
-      { inputTokens: iterInputTokens, outputTokens: iterOutputTokens },
-    );
+    if (shouldPersistMessages) {
+      assistantMessageId = await saveMessage(
+        conversationId, "assistant", assistantText || null, model,
+        toolCalls, null,
+        { inputTokens: iterInputTokens, outputTokens: iterOutputTokens },
+      );
+    } else if (!assistantMessageId) {
+      assistantMessageId = crypto.randomUUID();
+    }
     fullContent += assistantText;
 
     const toolResults: Array<{ tool_use_id: string; content: string }> = [];
@@ -830,6 +975,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       conversationId,
       agentId,
       agentConfig,
+      executionMode,
       scope: conversationScope,
       scopeMetadata: conversationScopeMetadata,
       allowedScopes,
@@ -859,6 +1005,9 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
             userMessage: opts.message,
             config,
             depth: depth + 1,
+            executionMode,
+            persistMessages: shouldPersistMessages,
+            latencyProfile,
             broadcast,
           });
           const spawnDurationMs = Date.now() - spawnStartMs;
@@ -910,6 +1059,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     const llmToolResults: Array<{ tool_use_id: string; content: string }> = [];
     for (const tc of toolCalls) {
       onToolUse?.(tc.name, tc.input, tc.id);
+      await maybeSimulateLatency(latencyProfile, "tool");
       const result = await executeTool(tc.name, tc.input, toolContext);
       const resultStr = typeof result === "string" ? result : JSON.stringify(result);
       toolResults.push({ tool_use_id: tc.id, content: resultStr });
@@ -929,7 +1079,9 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     }
 
     // Save full results to DB
-    await saveMessage(conversationId, "tool", null, null, null, toolResults, null);
+    if (shouldPersistMessages) {
+      await saveMessage(conversationId, "tool", null, null, null, toolResults, null);
+    }
 
     // Feed summarized results to LLM context
     messages = [...messages];
@@ -1032,29 +1184,36 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     finalText = stripThinkTags(finalText);
     fullContent = finalText; // Replace with chat model's response
 
-    recordUsage({
-      provider: chatProvider,
-      model: chatModel,
-      task: chatTask === "voice" ? "voice" : "chat",
-      inputTokens: finalInputTokens,
-      outputTokens: finalOutputTokens,
-      conversationId,
-      agentId,
-    }).catch(() => {});
-
-    assistantMessageId = await saveMessage(
-      conversationId,
-      "assistant",
-      finalText,
-      chatModel,
-      null,
-      null,
-      {
+    if (executionMode === "live") {
+      recordUsage({
+        provider: chatProvider,
+        model: chatModel,
+        task: chatTask === "voice" ? "voice" : "chat",
         inputTokens: finalInputTokens,
         outputTokens: finalOutputTokens,
-        latencyMs: Date.now() - runStartedAt,
-      },
-    );
+        conversationId,
+        agentId,
+      }).catch(() => {});
+    }
+
+    await maybeSimulateLatency(latencyProfile, "response");
+    if (shouldPersistMessages) {
+      assistantMessageId = await saveMessage(
+        conversationId,
+        "assistant",
+        finalText,
+        chatModel,
+        null,
+        null,
+        {
+          inputTokens: finalInputTokens,
+          outputTokens: finalOutputTokens,
+          latencyMs: Date.now() - runStartedAt,
+        },
+      );
+    } else if (!assistantMessageId) {
+      assistantMessageId = crypto.randomUUID();
+    }
 
     // Return the chat model info (the one that generated the final response)
     model = chatModel;
@@ -1062,27 +1221,29 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   }
 
   // Update conversation title
-  const msgCount = await query<{ count: string }>(
-    "SELECT count(*) FROM messages WHERE conversation_id = $1",
-    [conversationId],
-  );
-  if (Number(msgCount.rows[0].count) <= 3) {
-    const title = userMessage.length > 50
-      ? userMessage.substring(0, 50) + "..."
-      : userMessage;
-    await query(
-      "UPDATE conversations SET title = $1, updated_at = NOW() WHERE id = $2",
-      [title, conversationId],
-    );
-  } else {
-    await query(
-      "UPDATE conversations SET updated_at = NOW() WHERE id = $1",
+  if (shouldPersistMessages) {
+    const msgCount = await query<{ count: string }>(
+      "SELECT count(*) FROM messages WHERE conversation_id = $1",
       [conversationId],
     );
+    if (Number(msgCount.rows[0].count) <= 3) {
+      const title = userMessage.length > 50
+        ? userMessage.substring(0, 50) + "..."
+        : userMessage;
+      await query(
+        "UPDATE conversations SET title = $1, updated_at = NOW() WHERE id = $2",
+        [title, conversationId],
+      );
+    } else {
+      await query(
+        "UPDATE conversations SET updated_at = NOW() WHERE id = $1",
+        [conversationId],
+      );
+    }
   }
 
   // Auto-learn from this conversation (fire-and-forget)
-  if (config.memory.autoLearn) {
+  if (config.memory.autoLearn && shouldPersistMessages && executionMode === "live") {
     afterAgentRun({
       conversationId,
       agentId,

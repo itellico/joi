@@ -10,6 +10,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import type { JoiConfig } from "../config/schema.js";
 import { query } from "../db/client.js";
+import { logWarn } from "../logging.js";
 import { ollamaChat } from "./ollama-llm.js";
 import { recordUsage } from "./usage-tracker.js";
 
@@ -20,6 +21,7 @@ export type ModelTask =
   | "tool"           // Tool-calling agentic loop (can be cheaper)
   | "utility"        // Fact extraction, classification, consolidation (cheap + fast)
   | "triage"         // Inbox triage: classify inbound messages (cheap + fast)
+  | "classifier"     // Intent classification: determines tools/routing/domain (ultra-cheap + fast)
   | "embedding";     // Vector embeddings (Ollama, local)
 
 // Provider types
@@ -64,6 +66,17 @@ function isUnreliableForToolCalling(model: string): boolean {
 
 // Reliable cheap model for tool calling when the chat model can't do it
 const RELIABLE_TOOL_MODEL: ModelRoute = { model: "openai/gpt-4o-mini", provider: "openrouter" };
+
+function logToolRouteSubstitution(sourceModel: string, reason: "db_tool_route" | "fallback_to_chat_route"): void {
+  const message =
+    `[ModelRouter] Tool route ${sourceModel} is unreliable for function calling; using ${RELIABLE_TOOL_MODEL.model} instead`;
+  console.warn(message);
+  logWarn("agent", message, {
+    sourceModel,
+    substitutedModel: RELIABLE_TOOL_MODEL.model,
+    reason,
+  });
+}
 
 // Models available via each provider
 export const AVAILABLE_MODELS = {
@@ -199,8 +212,10 @@ export async function resolveModel(config: JoiConfig, task: ModelTask, override?
       // Guard: if a model unreliable for tool calling is set as the tool route,
       // override with a reliable model to prevent code-block output instead of tool_calls.
       if (task === "tool" && dbRoute.provider === "openrouter" && isUnreliableForToolCalling(dbRoute.model)) {
-        console.warn(`[ModelRouter] Tool route ${dbRoute.model} is unreliable for function calling, using ${RELIABLE_TOOL_MODEL.model} instead`);
-        if (config.auth.openrouterApiKey) return RELIABLE_TOOL_MODEL;
+        if (config.auth.openrouterApiKey) {
+          logToolRouteSubstitution(dbRoute.model, "db_tool_route");
+          return RELIABLE_TOOL_MODEL;
+        }
       }
 
       // Verify the provider key is available, fall back if not
@@ -261,7 +276,10 @@ export async function resolveModel(config: JoiConfig, task: ModelTask, override?
     // known-reliable model to force two-phase routing.
     const chatRoute = await resolveModel(config, "chat", override);
     if (chatRoute.provider === "openrouter" && isUnreliableForToolCalling(chatRoute.model)) {
-      if (config.auth.openrouterApiKey) return RELIABLE_TOOL_MODEL;
+      if (config.auth.openrouterApiKey) {
+        logToolRouteSubstitution(chatRoute.model, "fallback_to_chat_route");
+        return RELIABLE_TOOL_MODEL;
+      }
     }
     return chatRoute;
   }
@@ -273,6 +291,13 @@ export async function resolveModel(config: JoiConfig, task: ModelTask, override?
 
   if (task === "utility") {
     if (config.auth.openrouterApiKey) return { model: "anthropic/claude-3-haiku", provider: "openrouter" };
+    if (config.auth.anthropicApiKey) return { model: "claude-haiku-3-20240307", provider: "anthropic" };
+    return { model: "qwen3", provider: "ollama" };
+  }
+
+  if (task === "classifier") {
+    // Ultra-cheap/fast model for intent classification
+    if (config.auth.openrouterApiKey) return { model: "openai/gpt-4.1-nano", provider: "openrouter" };
     if (config.auth.anthropicApiKey) return { model: "claude-haiku-3-20240307", provider: "anthropic" };
     return { model: "qwen3", provider: "ollama" };
   }

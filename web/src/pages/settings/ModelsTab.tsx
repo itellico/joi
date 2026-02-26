@@ -6,6 +6,7 @@ const taskDescriptions: Record<string, string> = {
   tool: "Tool orchestration (fast/cheap model for actions)",
   utility: "Fact extraction, classification (cheap)",
   triage: "Inbox triage: classify inbound messages",
+  classifier: "Intent classifier: determines tools & routing (ultra-cheap)",
   embedding: "Vector embeddings (local Ollama)",
 };
 

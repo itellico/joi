@@ -18,6 +18,7 @@ import {
   UnifiedList,
   type UnifiedListColumn,
 } from "../components/ui";
+import { useChat, type ChatMessage } from "../hooks/useChat";
 
 // ─── Types ───
 
@@ -70,12 +71,17 @@ interface TestCase {
   category: string;
 }
 
+interface FlatCase extends TestCase {
+  suite_name: string;
+}
+
 interface TestRun {
   id: string;
   suite_id: string;
   suite_name: string;
   status: string;
   triggered_by: string;
+  model_config: Record<string, unknown> | null;
   total_cases: number;
   passed: number;
   failed: number;
@@ -163,7 +169,8 @@ interface SoulGovernanceSummary {
 
 interface WsHandle {
   status: string;
-  on: (type: string, handler: (frame: { data?: unknown }) => void) => () => void;
+  send?: (type: string, data?: unknown, id?: string) => void;
+  on: (type: string, handler: (frame: { type: string; id?: string; data?: unknown; error?: string }) => void) => () => void;
 }
 
 // ─── Form state ───
@@ -208,6 +215,23 @@ function pct(n: number | null): string {
   return n !== null ? `${(n * 100).toFixed(0)}%` : "\u2014";
 }
 
+function formatDuration(ms: number): string {
+  return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+function formatToolName(name: string): string {
+  const normalized = name.trim().toLowerCase();
+  if (normalized === "contacts_search") return "Contact search";
+  return normalized
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (ch) => ch.toUpperCase());
+}
+
+function tokenCount(message: ChatMessage): number | null {
+  if (!message.usage) return null;
+  return message.usage.inputTokens + message.usage.outputTokens;
+}
+
 /** Split comma-separated string to trimmed array, filtering empties */
 function csvToArr(s: string): string[] {
   return s.split(",").map((x) => x.trim()).filter(Boolean);
@@ -238,6 +262,49 @@ function asNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function parseRunExecutionMode(run: TestRun): "live" | "shadow" | "dry_run" {
+  const cfg = asRecord(run.model_config);
+  const mode = cfg?.executionMode;
+  if (mode === "shadow" || mode === "dry_run" || mode === "live") return mode;
+  return "live";
+}
+
+function parseRunCaseTimeout(run: TestRun): number | null {
+  const cfg = asRecord(run.model_config);
+  return asNumber(cfg?.caseTimeoutMs ?? null);
+}
+
+function parseRunLatencyProfile(run: TestRun): Record<string, number> | null {
+  const cfg = asRecord(run.model_config);
+  const latency = asRecord(cfg?.latencyProfile ?? null);
+  if (!latency) return null;
+  const parsed: Record<string, number> = {};
+  for (const [key, value] of Object.entries(latency)) {
+    const num = asNumber(value);
+    if (num !== null) parsed[key] = num;
+  }
+  return Object.keys(parsed).length > 0 ? parsed : null;
+}
+
+function modeBadgeStatus(mode: "live" | "shadow" | "dry_run"): "success" | "warning" | "accent" {
+  if (mode === "live") return "warning";
+  if (mode === "shadow") return "accent";
+  return "success";
+}
+
+function latencyProfileFromPreset(
+  preset: "none" | "light" | "realistic" | "stress",
+): Record<string, number> | null {
+  if (preset === "none") return null;
+  if (preset === "light") {
+    return { toolMinMs: 80, toolMaxMs: 250, responseMinMs: 120, responseMaxMs: 380, jitterMs: 40 };
+  }
+  if (preset === "realistic") {
+    return { toolMinMs: 180, toolMaxMs: 900, responseMinMs: 300, responseMaxMs: 1400, jitterMs: 200 };
+  }
+  return { toolMinMs: 500, toolMaxMs: 2200, responseMinMs: 1200, responseMaxMs: 4200, jitterMs: 650 };
+}
+
 function rolloutMetricNumber(rollout: SoulRollout, path: string[]): number | null {
   let cursor: unknown = rollout.metrics;
   for (const segment of path) {
@@ -251,8 +318,9 @@ function rolloutMetricNumber(rollout: SoulRollout, path: string[]): number | nul
 // ─── Component ───
 
 export default function QualityCenter({ ws }: { ws?: WsHandle }) {
-  const [tab, setTab] = useState("suites");
+  const [tab, setTab] = useState("cases");
   const [suites, setSuites] = useState<Suite[]>([]);
+  const [allCases, setAllCases] = useState<FlatCase[]>([]);
   const [runs, setRuns] = useState<TestRun[]>([]);
   const [issues, setIssues] = useState<Issue[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
@@ -260,6 +328,10 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
   const [expandedSuite, setExpandedSuite] = useState<string | null>(null);
   const [runningIds, setRunningIds] = useState<Set<string>>(new Set());
   const [runProgress, setRunProgress] = useState<Record<string, { runId: string; suiteId: string; total: number; completed: number; currentCase: string; results: Array<{ caseName: string; status: string }> }>>({});
+  const [runExecutionMode, setRunExecutionMode] = useState<"live" | "shadow" | "dry_run">("shadow");
+  const [runLatencyPreset, setRunLatencyPreset] = useState<"none" | "light" | "realistic" | "stress">("realistic");
+  const [runTimeoutMs, setRunTimeoutMs] = useState("90000");
+  const [runKeepArtifacts, setRunKeepArtifacts] = useState(false);
   const [issueFilter, setIssueFilter] = useState<string>("open");
   const [search, setSearch] = useState("");
   const [selectedIssue, setSelectedIssue] = useState<Issue | null>(null);
@@ -278,11 +350,42 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
   const [caseForSuiteId, setCaseForSuiteId] = useState<string | null>(null);
   const [caseForm, setCaseForm] = useState({ ...emptyCaseForm });
 
+  // Live Chat Lab (always open in page)
+  const [liveInput, setLiveInput] = useState("");
+  const [liveCaptureSuiteId, setLiveCaptureSuiteId] = useState("");
+  const [liveCaptureSavingId, setLiveCaptureSavingId] = useState<string | null>(null);
+  const [liveCaptureError, setLiveCaptureError] = useState<string | null>(null);
+  const [liveCaptureSuccess, setLiveCaptureSuccess] = useState<string | null>(null);
+  const [liveCapturedMessageIds, setLiveCapturedMessageIds] = useState<Set<string>>(new Set());
+
+  const liveWsSend = useCallback((type: string, data?: unknown, id?: string) => {
+    ws?.send?.(type, data, id);
+  }, [ws]);
+  const liveWsOn = useCallback((type: string, handler: (frame: { type: string; id?: string; data?: unknown; error?: string }) => void) => {
+    if (!ws) return () => {};
+    return ws.on(type, handler);
+  }, [ws]);
+  const {
+    messages: liveMessages,
+    isStreaming: liveStreaming,
+    conversationId: liveConversationId,
+    sendMessage: sendLiveMessageRaw,
+    newConversation: newLiveConversation,
+  } = useChat({
+    send: liveWsSend,
+    on: liveWsOn,
+  });
+
   // ─── Data Loading ───
 
   const loadSuites = useCallback(async () => {
     const res = await fetch("/api/quality/suites");
     if (res.ok) setSuites(await res.json());
+  }, []);
+
+  const loadAllCases = useCallback(async () => {
+    const res = await fetch("/api/quality/cases");
+    if (res.ok) setAllCases(await res.json());
   }, []);
 
   const loadRuns = useCallback(async () => {
@@ -322,8 +425,8 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
   }, []);
 
   const loadAll = useCallback(() => {
-    loadSuites(); loadRuns(); loadIssues(); loadStats(); loadSoulGovernance();
-  }, [loadSuites, loadRuns, loadIssues, loadStats, loadSoulGovernance]);
+    loadSuites(); loadAllCases(); loadRuns(); loadIssues(); loadStats(); loadSoulGovernance();
+  }, [loadSuites, loadAllCases, loadRuns, loadIssues, loadStats, loadSoulGovernance]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
   useEffect(() => { loadIssues(); }, [loadIssues]);
@@ -406,6 +509,7 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
     }
     setShowSuiteModal(false);
     loadSuites();
+    loadAllCases();
     loadStats();
   };
 
@@ -413,6 +517,7 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
     await fetch(`/api/quality/suites/${id}`, { method: "DELETE" });
     if (expandedSuite === id) setExpandedSuite(null);
     loadSuites();
+    loadAllCases();
     loadStats();
   };
 
@@ -459,6 +564,7 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
     // Refresh expanded suite
     if (caseForSuiteId) loadSuiteDetail(caseForSuiteId, true);
     loadSuites();
+    loadAllCases();
     loadStats();
   };
 
@@ -466,6 +572,7 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
     await fetch(`/api/quality/cases/${id}`, { method: "DELETE" });
     if (expandedSuite) loadSuiteDetail(expandedSuite, true);
     loadSuites();
+    loadAllCases();
     loadStats();
   };
 
@@ -473,8 +580,29 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
 
   const runSuite = async (suiteId: string) => {
     setRunningIds((prev) => new Set([...prev, suiteId]));
-    await fetch(`/api/quality/suites/${suiteId}/run`, { method: "POST" });
-    loadRuns();
+    const latencyProfile = latencyProfileFromPreset(runLatencyPreset);
+    const timeout = Number.parseInt(runTimeoutMs, 10);
+    try {
+      const res = await fetch(`/api/quality/suites/${suiteId}/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          executionMode: runExecutionMode,
+          ...(Number.isFinite(timeout) && timeout > 0 ? { caseTimeoutMs: timeout } : {}),
+          ...(latencyProfile ? { latencyProfile } : {}),
+          ...(runKeepArtifacts ? { keepConversationArtifacts: true } : {}),
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to start suite run");
+    } catch {
+      setRunningIds((prev) => {
+        const next = new Set(prev);
+        next.delete(suiteId);
+        return next;
+      });
+    } finally {
+      loadRuns();
+    }
   };
 
   const loadRunDetail = async (runId: string) => {
@@ -547,6 +675,156 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
     }
   };
 
+  const sendLiveChatMessage = () => {
+    if (!liveInput.trim() || liveStreaming || ws?.status !== "connected") return;
+    const latencyProfile = latencyProfileFromPreset(runLatencyPreset);
+    sendLiveMessageRaw(liveInput.trim(), "api", "personal", {
+      executionMode: runExecutionMode,
+      ...(latencyProfile ? { latencyProfile } : {}),
+      source: "quality-live-chat",
+    });
+    setLiveInput("");
+  };
+
+  const captureLiveResult = useCallback(async (
+    assistantMessage: ChatMessage,
+    previousUserInput: string,
+    options?: {
+      status?: "passed" | "failed" | "errored";
+      reason?: string;
+      silent?: boolean;
+    },
+  ) => {
+    const status = options?.status || "passed";
+    const reason = options?.reason?.trim() || "Captured issue from live chat simulation";
+    const inputMessage = previousUserInput.trim() || "Captured from live chat";
+    const baseCaseName = inputMessage.replace(/\s+/g, " ").slice(0, 72);
+    const failureReasons = status === "passed" ? [] : [reason];
+    const latencyProfile = latencyProfileFromPreset(runLatencyPreset);
+
+    setLiveCaptureSavingId(assistantMessage.id);
+    if (!options?.silent) {
+      setLiveCaptureError(null);
+      setLiveCaptureSuccess(null);
+    }
+
+    try {
+      const res = await fetch("/api/quality/live-captures", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          suiteId: liveCaptureSuiteId || null,
+          caseName: baseCaseName ? `Live Chat: ${baseCaseName}` : "Live Chat Capture",
+          inputMessage,
+          status,
+          failureReasons,
+          expectedTools: (assistantMessage.toolCalls || []).map((tc) => tc.name).filter(Boolean),
+          assistant: {
+            content: assistantMessage.content || "",
+            toolCalls: assistantMessage.toolCalls || [],
+            latencyMs: assistantMessage.latencyMs ?? null,
+            ttftMs: assistantMessage.ttftMs ?? null,
+            timings: assistantMessage.timings ?? null,
+            model: assistantMessage.model ?? null,
+            provider: assistantMessage.provider ?? null,
+            costUsd: assistantMessage.costUsd ?? 0,
+            usage: assistantMessage.usage ?? null,
+            routeReason: assistantMessage.routeReason ?? null,
+            routeConfidence: assistantMessage.routeConfidence ?? null,
+            agentId: assistantMessage.agentId ?? null,
+            agentName: assistantMessage.agentName ?? null,
+            delegations: assistantMessage.delegations ?? [],
+            executionMode: runExecutionMode,
+            latencyProfile,
+            conversationId: liveConversationId,
+          },
+        }),
+      });
+      const payload = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(payload?.error || "Failed to save live capture");
+
+      setLiveCapturedMessageIds((prev) => {
+        const next = new Set(prev);
+        next.add(assistantMessage.id);
+        return next;
+      });
+      await Promise.all([loadRuns(), loadStats(), loadIssues(), loadSuites()]);
+      if (!options?.silent) {
+        setLiveCaptureSuccess(`Saved run ${payload?.run?.id?.slice(0, 8) || "ok"}`);
+      }
+    } catch (err) {
+      if (!options?.silent) {
+        const message = err instanceof Error ? err.message : "Failed to save live capture";
+        setLiveCaptureError(message);
+      }
+    } finally {
+      setLiveCaptureSavingId(null);
+    }
+  }, [
+    liveCaptureSuiteId,
+    runExecutionMode,
+    runLatencyPreset,
+    liveConversationId,
+    loadRuns,
+    loadStats,
+    loadIssues,
+    loadSuites,
+  ]);
+
+  const onLiveInputKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      sendLiveChatMessage();
+    }
+  };
+
+  const previousUserMessageForIndex = useCallback((messageIndex: number): string => {
+    for (let i = messageIndex - 1; i >= 0; i--) {
+      if (liveMessages[i]?.role === "user") {
+        return liveMessages[i].content || "";
+      }
+    }
+    return "";
+  }, [liveMessages]);
+
+  useEffect(() => {
+    if (liveCaptureSuiteId) return;
+    const liveSuite = suites.find((s) => s.name.toLowerCase() === "live chat captures");
+    if (liveSuite) {
+      setLiveCaptureSuiteId(liveSuite.id);
+      return;
+    }
+    const coreSuite = suites.find((s) => s.name.toLowerCase() === "core agent behavior");
+    if (coreSuite) {
+      setLiveCaptureSuiteId(coreSuite.id);
+    }
+  }, [liveCaptureSuiteId, suites]);
+
+  useEffect(() => {
+    if (liveCaptureSavingId) return;
+    const nextIndex = liveMessages.findIndex((message) =>
+      message.role === "assistant"
+      && !message.isStreaming
+      && !liveCapturedMessageIds.has(message.id));
+    if (nextIndex < 0) return;
+
+    const assistantMessage = liveMessages[nextIndex];
+    const previousUserInput = previousUserMessageForIndex(nextIndex);
+    const hasToolError = (assistantMessage.toolCalls || []).some((tool) => tool.error);
+
+    void captureLiveResult(assistantMessage, previousUserInput, {
+      status: hasToolError ? "failed" : "passed",
+      reason: hasToolError ? "Tool call failed during live simulation" : "",
+      silent: true,
+    });
+  }, [
+    liveMessages,
+    liveCaptureSavingId,
+    liveCapturedMessageIds,
+    previousUserMessageForIndex,
+    captureLiveResult,
+  ]);
+
   // ─── Filtered Data ───
 
   const filteredSuites = useMemo(() => {
@@ -554,6 +832,16 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
     const q = search.toLowerCase();
     return suites.filter((s) => s.name.toLowerCase().includes(q) || s.tags.some((t) => t.toLowerCase().includes(q)));
   }, [suites, search]);
+
+  const filteredAllCases = useMemo(() => {
+    if (!search) return allCases;
+    const q = search.toLowerCase();
+    return allCases.filter((c) =>
+      c.name.toLowerCase().includes(q)
+      || c.suite_name.toLowerCase().includes(q)
+      || c.category.toLowerCase().includes(q),
+    );
+  }, [allCases, search]);
 
   const filteredRuns = useMemo(() => {
     if (!search) return runs;
@@ -630,8 +918,56 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
     },
   ];
 
+  const allCaseColumns: UnifiedListColumn<FlatCase>[] = [
+    { key: "name", header: "Case", render: (c) => <strong>{c.name}</strong>, sortValue: (c) => c.name },
+    { key: "suite", header: "Suite", width: 220, render: (c) => <MetaText>{c.suite_name}</MetaText>, sortValue: (c) => c.suite_name },
+    {
+      key: "category",
+      header: "Category",
+      width: 130,
+      render: (c) => <Badge status={c.category === "single-turn" ? "muted" : "accent"}>{c.category}</Badge>,
+      sortValue: (c) => c.category,
+    },
+    {
+      key: "latency",
+      header: "Latency",
+      width: 100,
+      render: (c) => c.max_latency_ms ? <MetaText>{c.max_latency_ms}ms</MetaText> : <MetaText>—</MetaText>,
+      sortValue: (c) => c.max_latency_ms || 0,
+    },
+    {
+      key: "enabled",
+      header: "Status",
+      width: 90,
+      render: (c) => <Badge status={c.enabled ? "success" : "muted"}>{c.enabled ? "on" : "off"}</Badge>,
+      sortValue: (c) => (c.enabled ? 1 : 0),
+    },
+    {
+      key: "actions",
+      header: "",
+      width: 160,
+      align: "right",
+      render: (c) => (
+        <Row gap={4}>
+          <Button size="sm" variant="ghost" onClick={(e: React.MouseEvent) => { e.stopPropagation(); openEditCase(c); }}>Edit</Button>
+          <Button size="sm" variant="danger" onClick={(e: React.MouseEvent) => { e.stopPropagation(); if (confirm(`Delete case "${c.name}"?`)) deleteCase(c.id); }}>Del</Button>
+        </Row>
+      ),
+    },
+  ];
+
   const runColumns: UnifiedListColumn<TestRun>[] = [
     { key: "suite", header: "Suite", render: (r) => <strong>{r.suite_name}</strong>, sortValue: (r) => r.suite_name },
+    {
+      key: "mode",
+      header: "Mode",
+      width: 120,
+      render: (r) => {
+        const mode = parseRunExecutionMode(r);
+        return <Badge status={modeBadgeStatus(mode)}>{mode}</Badge>;
+      },
+      sortValue: (r) => parseRunExecutionMode(r),
+    },
     {
       key: "status", header: "Status", width: 140,
       render: (r) => {
@@ -841,10 +1177,256 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
           </Row>
         )}
 
+        <Card>
+          <Stack gap={6}>
+            <strong>Simulation Defaults</strong>
+            <MetaText>
+              Simple mode: chat simulation runs with safe `shadow` execution and `realistic` latency.
+            </MetaText>
+            <details>
+              <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--text-secondary)" }}>
+                Advanced controls
+              </summary>
+              <Row gap={12} style={{ flexWrap: "wrap", alignItems: "end", marginTop: 8 }}>
+                <FormField label="Execution Mode">
+                  <select value={runExecutionMode} onChange={(e) => setRunExecutionMode(e.target.value as "live" | "shadow" | "dry_run")}>
+                    <option value="shadow">shadow (safe read-only)</option>
+                    <option value="dry_run">dry_run (simulated tools)</option>
+                    <option value="live">live (real side effects)</option>
+                  </select>
+                </FormField>
+                <FormField label="Latency Profile">
+                  <select value={runLatencyPreset} onChange={(e) => setRunLatencyPreset(e.target.value as "none" | "light" | "realistic" | "stress")}>
+                    <option value="none">none</option>
+                    <option value="light">light</option>
+                    <option value="realistic">realistic</option>
+                    <option value="stress">stress</option>
+                  </select>
+                </FormField>
+                <FormField label="Case Timeout (ms)">
+                  <input type="number" min={1000} step={500} value={runTimeoutMs} onChange={(e) => setRunTimeoutMs(e.target.value)} />
+                </FormField>
+                <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 13 }}>
+                  <input
+                    type="checkbox"
+                    checked={runKeepArtifacts}
+                    onChange={(e) => setRunKeepArtifacts(e.target.checked)}
+                  />
+                  Keep QA conversations
+                </label>
+              </Row>
+            </details>
+          </Stack>
+        </Card>
+
+        <Card>
+          <Stack gap={8}>
+            <Row justify="between" style={{ flexWrap: "wrap", alignItems: "center" }}>
+              <div>
+                <strong>Live Chat Lab</strong>
+                <MetaText style={{ display: "block" }}>
+                  Simulate real chat here, inspect debug inline, and save assistant outputs as QA test results.
+                </MetaText>
+              </div>
+              <Row gap={6}>
+                <Badge status={ws?.status === "connected" ? "success" : "warning"}>
+                  WS {ws?.status || "disconnected"}
+                </Badge>
+                {liveConversationId && <Badge status="muted">conv {liveConversationId.slice(0, 8)}</Badge>}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    newLiveConversation();
+                    setLiveCapturedMessageIds(new Set());
+                    setLiveCaptureError(null);
+                    setLiveCaptureSuccess(null);
+                  }}
+                  disabled={liveStreaming}
+                >
+                  New Chat
+                </Button>
+              </Row>
+            </Row>
+
+            <MetaText>
+              Every assistant response is auto-saved to test results. If a response is bad, click <strong>Flag issue</strong>.
+            </MetaText>
+
+            {liveCaptureError && <MetaText style={{ color: "var(--red)" }}>{liveCaptureError}</MetaText>}
+            {liveCaptureSuccess && <MetaText style={{ color: "var(--green)" }}>{liveCaptureSuccess}</MetaText>}
+
+            <div
+              style={{
+                border: "1px solid var(--border)",
+                borderRadius: 10,
+                background: "var(--bg-secondary)",
+                maxHeight: 440,
+                overflowY: "auto",
+                padding: 10,
+              }}
+            >
+              <Stack gap={8}>
+                {liveMessages.length === 0 && (
+                  <EmptyState message="No simulated chat yet. Send a message below to start." />
+                )}
+                {liveMessages.map((message, index) => {
+                  const tools = Array.isArray(message.toolCalls) ? message.toolCalls : [];
+                  const totalTokens = tokenCount(message);
+                  const captureBusy = liveCaptureSavingId === message.id;
+                  const alreadyCaptured = liveCapturedMessageIds.has(message.id);
+                  const isAssistantDone = message.role === "assistant" && !message.isStreaming;
+
+                  return (
+                    <Card
+                      key={message.id}
+                      style={{
+                        padding: 10,
+                        borderLeft: `3px solid ${message.role === "assistant" ? "var(--blue)" : message.role === "user" ? "var(--orange)" : "var(--border)"}`,
+                      }}
+                    >
+                      <Stack gap={6}>
+                        <Row justify="between" style={{ flexWrap: "wrap" }}>
+                          <Row gap={6} style={{ flexWrap: "wrap" }}>
+                            <Badge status={message.role === "assistant" ? "accent" : message.role === "user" ? "warning" : "muted"}>
+                              {message.role}
+                            </Badge>
+                            {message.isStreaming && <Badge status="accent">streaming</Badge>}
+                            {alreadyCaptured && <Badge status="success">saved</Badge>}
+                            {message.agentName && <Badge status="muted">{message.agentName}</Badge>}
+                            {message.model && <Badge status="muted">{message.model}</Badge>}
+                            {message.latencyMs !== undefined && <MetaText>{formatDuration(message.latencyMs)}</MetaText>}
+                            {message.ttftMs !== undefined && <MetaText>TTFT {formatDuration(message.ttftMs)}</MetaText>}
+                            {totalTokens !== null && <MetaText>{totalTokens} tokens</MetaText>}
+                            {typeof message.costUsd === "number" && message.costUsd > 0 && (
+                              <MetaText>${message.costUsd.toFixed(4)}</MetaText>
+                            )}
+                          </Row>
+                          {isAssistantDone && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => captureLiveResult(
+                                message,
+                                previousUserMessageForIndex(index),
+                                {
+                                  status: "failed",
+                                  reason: "Flagged issue from live simulation",
+                                },
+                              )}
+                              disabled={captureBusy}
+                            >
+                              {captureBusy ? "Saving..." : "Flag issue"}
+                            </Button>
+                          )}
+                        </Row>
+
+                        {message.content && (
+                          <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.45, fontSize: 13 }}>
+                            {message.content}
+                          </div>
+                        )}
+
+                        {(message.routeReason || message.routeConfidence !== undefined || (message.delegations?.length || 0) > 0) && (
+                          <Row gap={6} style={{ flexWrap: "wrap" }}>
+                            {message.routeReason && <Badge status="info">route: {message.routeReason}</Badge>}
+                            {typeof message.routeConfidence === "number" && (
+                              <Badge status="info">conf {(message.routeConfidence * 100).toFixed(0)}%</Badge>
+                            )}
+                            {(message.delegations || []).map((delegation, delegationIndex) => (
+                              <Badge
+                                key={`${message.id}:delegation:${delegationIndex}`}
+                                status={delegation.status === "success" ? "success" : delegation.status === "error" ? "error" : "muted"}
+                              >
+                                {delegation.agentName || delegation.agentId} {delegation.status}
+                              </Badge>
+                            ))}
+                          </Row>
+                        )}
+
+                        {tools.length > 0 && (
+                          <details>
+                            <summary style={{ cursor: "pointer", fontSize: 12, color: "var(--text-secondary)" }}>
+                              Tools ({tools.length})
+                            </summary>
+                            <Stack gap={4} style={{ marginTop: 6 }}>
+                              {tools.map((tool) => (
+                                <div
+                                  key={`${message.id}:${tool.id}`}
+                                  style={{ padding: 8, borderRadius: 6, background: "var(--bg-primary)", border: "1px solid var(--border)" }}
+                                >
+                                  <Row gap={6} style={{ flexWrap: "wrap", marginBottom: 4 }}>
+                                    <Badge status={tool.error ? "error" : "info"}>{formatToolName(tool.name)}</Badge>
+                                    {tool.durationMs !== undefined && <MetaText>{formatDuration(tool.durationMs)}</MetaText>}
+                                  </Row>
+                                  <pre
+                                    style={{
+                                      margin: 0,
+                                      maxHeight: 140,
+                                      overflow: "auto",
+                                      fontSize: 11,
+                                      whiteSpace: "pre-wrap",
+                                    }}
+                                  >
+                                    {JSON.stringify({ input: tool.input, result: tool.result }, null, 2).slice(0, 1800)}
+                                  </pre>
+                                </div>
+                              ))}
+                            </Stack>
+                          </details>
+                        )}
+                      </Stack>
+                    </Card>
+                  );
+                })}
+              </Stack>
+            </div>
+
+            <Row gap={8} style={{ alignItems: "flex-end" }}>
+              <textarea
+                rows={3}
+                value={liveInput}
+                onChange={(e) => setLiveInput(e.target.value)}
+                onKeyDown={onLiveInputKeyDown}
+                placeholder="Type test prompt. Enter sends, Shift+Enter newline."
+                style={{ flex: 1 }}
+              />
+              <Stack gap={4}>
+                <Button
+                  variant="primary"
+                  onClick={sendLiveChatMessage}
+                  disabled={!liveInput.trim() || liveStreaming || ws?.status !== "connected"}
+                >
+                  {liveStreaming ? "Streaming..." : "Send"}
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setTab("runs")}>
+                  Open Runs
+                </Button>
+              </Stack>
+            </Row>
+          </Stack>
+        </Card>
+
         <Tabs
           value={tab}
           onValueChange={setTab}
           tabs={[
+            {
+              label: "All Cases",
+              value: "cases",
+              content: (
+                <Stack gap={12}>
+                  <UnifiedList<FlatCase>
+                    items={filteredAllCases}
+                    columns={allCaseColumns}
+                    rowKey={(c) => c.id}
+                    onRowClick={(c) => openEditCase(c)}
+                    emptyMessage="No test cases found."
+                    defaultSort={{ key: "suite" }}
+                  />
+                </Stack>
+              ),
+            },
             {
               label: "Test Suites",
               value: "suites",
@@ -872,9 +1454,22 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
                             <Button size="sm" variant="danger" onClick={() => { if (confirm(`Delete suite "${suite.name}" and all its cases?`)) deleteSuite(suite.id); }}>Delete Suite</Button>
                           </Row>
                           {suite.cases.length === 0 && <MetaText>No test cases yet. Click "Add Case" to create one.</MetaText>}
+                          {suite.cases.length > 0 && <MetaText>Tip: click a case row to open it.</MetaText>}
                           {suite.cases.map((c) => (
                             <div key={c.id} style={{ borderBottom: "1px solid var(--border)", padding: "8px 0" }}>
-                              <Row gap={8} style={{ alignItems: "center" }}>
+                              <Row
+                                gap={8}
+                                style={{ alignItems: "center", cursor: "pointer" }}
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => openEditCase(c)}
+                                onKeyDown={(e: React.KeyboardEvent<HTMLDivElement>) => {
+                                  if (e.key === "Enter" || e.key === " ") {
+                                    e.preventDefault();
+                                    openEditCase(c);
+                                  }
+                                }}
+                              >
                                 <div style={{ flex: 1, minWidth: 0 }}>
                                   <strong>{c.name}</strong>
                                   {c.turns
@@ -885,8 +1480,8 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
                                 {c.category !== "single-turn" && <Badge status="accent">{c.category}</Badge>}
                                 {c.max_latency_ms && <MetaText>&lt;{c.max_latency_ms}ms</MetaText>}
                                 <Badge status={c.enabled ? "success" : "muted"}>{c.enabled ? "on" : "off"}</Badge>
-                                <Button size="sm" variant="ghost" onClick={() => openEditCase(c)}>Edit</Button>
-                                <Button size="sm" variant="danger" onClick={() => { if (confirm(`Delete case "${c.name}"?`)) deleteCase(c.id); }}>Del</Button>
+                                <Button size="sm" variant="ghost" onClick={(e: React.MouseEvent) => { e.stopPropagation(); openEditCase(c); }}>Edit</Button>
+                                <Button size="sm" variant="danger" onClick={(e: React.MouseEvent) => { e.stopPropagation(); if (confirm(`Delete case "${c.name}"?`)) deleteCase(c.id); }}>Del</Button>
                               </Row>
 
                               {/* Description */}
@@ -954,104 +1549,124 @@ export default function QualityCenter({ ws }: { ws?: WsHandle }) {
                   {selectedRun && (
                     <Card style={{ marginTop: 8 }}>
                       <Stack gap={8}>
-                        <Row gap={8}>
+                        <Row gap={8} style={{ alignItems: "center", flexWrap: "wrap" }}>
                           <strong>{selectedRun.suite_name} — Run Detail</strong>
                           {statusBadge(selectedRun.status)}
+                          {(() => {
+                            const mode = parseRunExecutionMode(selectedRun);
+                            return <Badge status={modeBadgeStatus(mode)}>{mode}</Badge>;
+                          })()}
+                          {(() => {
+                            const timeout = parseRunCaseTimeout(selectedRun);
+                            return timeout ? <MetaText>timeout {timeout}ms</MetaText> : null;
+                          })()}
+                          {parseRunLatencyProfile(selectedRun) && <MetaText>latency profile on</MetaText>}
                           <Button size="sm" variant="ghost" onClick={() => setSelectedRun(null)}>Close</Button>
                         </Row>
 
-                        {selectedRun.results?.map((r) => (
-                          <Card key={r.id} style={{ padding: 12 }}>
-                            <Row gap={8} style={{ marginBottom: 6 }}>
-                              {statusBadge(r.status)}
-                              <strong>{r.case_name}</strong>
-                              <MetaText>"{r.input_message}"</MetaText>
-                              {r.latency_ms && <MetaText>{r.latency_ms}ms</MetaText>}
-                              {r.model && <Badge status="muted">{r.model}</Badge>}
-                              {r.flow_coherence_score !== null && r.flow_coherence_score !== undefined && (
-                                <Badge status={scoreColor(r.flow_coherence_score)}>Flow: {pct(r.flow_coherence_score)}</Badge>
+                        {selectedRun.results?.map((r) => {
+                          const resultTools = Array.isArray(r.actual_tools) ? r.actual_tools : [];
+                          const failureReasons = Array.isArray(r.failure_reasons) ? r.failure_reasons : [];
+                          const turnResults = Array.isArray(r.turn_results) ? r.turn_results : [];
+                          const actualContent = typeof r.actual_content === "string" ? r.actual_content : "";
+                          return (
+                            <Card key={r.id} style={{ padding: 12 }}>
+                              <Row gap={8} style={{ marginBottom: 6 }}>
+                                {statusBadge(r.status)}
+                                <strong>{r.case_name}</strong>
+                                <MetaText>"{r.input_message}"</MetaText>
+                                {r.latency_ms !== null && r.latency_ms !== undefined && <MetaText>{r.latency_ms}ms</MetaText>}
+                                {r.model && <Badge status="muted">{r.model}</Badge>}
+                                {r.flow_coherence_score !== null && r.flow_coherence_score !== undefined && (
+                                  <Badge status={scoreColor(r.flow_coherence_score)}>Flow: {pct(r.flow_coherence_score)}</Badge>
+                                )}
+                              </Row>
+
+                              {r.judge_scores && (
+                                <Row gap={8} style={{ marginBottom: 4 }}>
+                                  <Badge status={scoreColor(r.judge_scores.correctness)}>Correctness: {pct(r.judge_scores.correctness)}</Badge>
+                                  <Badge status={scoreColor(r.judge_scores.tool_accuracy)}>Tool Accuracy: {pct(r.judge_scores.tool_accuracy)}</Badge>
+                                  <Badge status={scoreColor(r.judge_scores.response_quality)}>Quality: {pct(r.judge_scores.response_quality)}</Badge>
+                                </Row>
                               )}
-                            </Row>
 
-                            {r.judge_scores && (
-                              <Row gap={8} style={{ marginBottom: 4 }}>
-                                <Badge status={scoreColor(r.judge_scores.correctness)}>Correctness: {pct(r.judge_scores.correctness)}</Badge>
-                                <Badge status={scoreColor(r.judge_scores.tool_accuracy)}>Tool Accuracy: {pct(r.judge_scores.tool_accuracy)}</Badge>
-                                <Badge status={scoreColor(r.judge_scores.response_quality)}>Quality: {pct(r.judge_scores.response_quality)}</Badge>
-                              </Row>
-                            )}
+                              {resultTools.length > 0 && (
+                                <Row gap={4} style={{ marginBottom: 4 }}>
+                                  <MetaText>Tools:</MetaText>
+                                  {resultTools.map((t, i) => <Badge key={i} status="info">{t.name}</Badge>)}
+                                </Row>
+                              )}
 
-                            {r.actual_tools.length > 0 && (
-                              <Row gap={4} style={{ marginBottom: 4 }}>
-                                <MetaText>Tools:</MetaText>
-                                {r.actual_tools.map((t, i) => <Badge key={i} status="info">{t.name}</Badge>)}
-                              </Row>
-                            )}
+                              {failureReasons.length > 0 && (
+                                <div style={{ color: "var(--red)", fontSize: 13 }}>
+                                  {failureReasons.map((f, i) => <div key={i}>- {f}</div>)}
+                                </div>
+                              )}
 
-                            {r.failure_reasons.length > 0 && (
-                              <div style={{ color: "var(--red)", fontSize: 13 }}>
-                                {r.failure_reasons.map((f, i) => <div key={i}>- {f}</div>)}
-                              </div>
-                            )}
+                              {r.judge_scores?.reasoning && (
+                                <MetaText style={{ display: "block", marginTop: 4 }}>Judge: {r.judge_scores.reasoning}</MetaText>
+                              )}
 
-                            {r.judge_scores?.reasoning && (
-                              <MetaText style={{ display: "block", marginTop: 4 }}>Judge: {r.judge_scores.reasoning}</MetaText>
-                            )}
-
-                            {/* Per-turn results accordion for multi-turn tests */}
-                            {r.turn_results && r.turn_results.length > 0 && (
-                              <details style={{ marginTop: 8 }}>
-                                <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--text-secondary)", fontWeight: 600 }}>
-                                  Per-Turn Results ({r.turn_results.length} turns)
-                                </summary>
-                                <Stack gap={6} style={{ marginTop: 6 }}>
-                                  {r.turn_results.map((tr) => (
-                                    <div key={tr.turn_index} style={{ padding: 8, background: "var(--bg-secondary)", borderRadius: 6, fontSize: 13 }}>
-                                      <Row gap={6} style={{ marginBottom: 4 }}>
-                                        <Badge status={tr.rule_checks?.tools_ok !== false && tr.rule_checks?.patterns_ok !== false ? "success" : "error"}>
-                                          Turn {tr.turn_index + 1}
-                                        </Badge>
-                                        <MetaText>{tr.latency_ms}ms</MetaText>
-                                        {tr.model && <MetaText>{tr.model}</MetaText>}
-                                      </Row>
-                                      {tr.judge_scores && (
-                                        <Row gap={6} style={{ marginBottom: 4 }}>
-                                          <Badge status={scoreColor(tr.judge_scores.correctness)}>C: {pct(tr.judge_scores.correctness)}</Badge>
-                                          <Badge status={scoreColor(tr.judge_scores.tool_accuracy)}>T: {pct(tr.judge_scores.tool_accuracy)}</Badge>
-                                          <Badge status={scoreColor(tr.judge_scores.response_quality)}>Q: {pct(tr.judge_scores.response_quality)}</Badge>
-                                        </Row>
-                                      )}
-                                      {tr.actual_tools.length > 0 && (
-                                        <Row gap={4} style={{ marginBottom: 4 }}>
-                                          {tr.actual_tools.map((t, i) => <Badge key={i} status="info">{t.name}</Badge>)}
-                                        </Row>
-                                      )}
-                                      {tr.rule_checks?.details && tr.rule_checks.details.length > 0 && (
-                                        <div style={{ color: "var(--red)", fontSize: 12 }}>
-                                          {tr.rule_checks.details.map((d, i) => <div key={i}>- {d}</div>)}
+                              {/* Per-turn results accordion for multi-turn tests */}
+                              {turnResults.length > 0 && (
+                                <details style={{ marginTop: 8 }}>
+                                  <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--text-secondary)", fontWeight: 600 }}>
+                                    Per-Turn Results ({turnResults.length} turns)
+                                  </summary>
+                                  <Stack gap={6} style={{ marginTop: 6 }}>
+                                    {turnResults.map((tr, index) => {
+                                      const turnTools = Array.isArray(tr.actual_tools) ? tr.actual_tools : [];
+                                      const turnDetails = Array.isArray(tr.rule_checks?.details) ? tr.rule_checks.details : [];
+                                      const turnContent = typeof tr.actual_content === "string" ? tr.actual_content : String(tr.actual_content ?? "");
+                                      return (
+                                        <div key={tr.turn_index ?? index} style={{ padding: 8, background: "var(--bg-secondary)", borderRadius: 6, fontSize: 13 }}>
+                                          <Row gap={6} style={{ marginBottom: 4 }}>
+                                            <Badge status={tr.rule_checks?.tools_ok !== false && tr.rule_checks?.patterns_ok !== false ? "success" : "error"}>
+                                              Turn {tr.turn_index + 1}
+                                            </Badge>
+                                            <MetaText>{tr.latency_ms}ms</MetaText>
+                                            {tr.model && <MetaText>{tr.model}</MetaText>}
+                                          </Row>
+                                          {tr.judge_scores && (
+                                            <Row gap={6} style={{ marginBottom: 4 }}>
+                                              <Badge status={scoreColor(tr.judge_scores.correctness)}>C: {pct(tr.judge_scores.correctness)}</Badge>
+                                              <Badge status={scoreColor(tr.judge_scores.tool_accuracy)}>T: {pct(tr.judge_scores.tool_accuracy)}</Badge>
+                                              <Badge status={scoreColor(tr.judge_scores.response_quality)}>Q: {pct(tr.judge_scores.response_quality)}</Badge>
+                                            </Row>
+                                          )}
+                                          {turnTools.length > 0 && (
+                                            <Row gap={4} style={{ marginBottom: 4 }}>
+                                              {turnTools.map((t, i) => <Badge key={i} status="info">{t.name}</Badge>)}
+                                            </Row>
+                                          )}
+                                          {turnDetails.length > 0 && (
+                                            <div style={{ color: "var(--red)", fontSize: 12 }}>
+                                              {turnDetails.map((d, i) => <div key={i}>- {d}</div>)}
+                                            </div>
+                                          )}
+                                          <MetaText style={{ display: "block", marginTop: 2 }}>{turnContent.slice(0, 300)}{turnContent.length > 300 ? "..." : ""}</MetaText>
                                         </div>
-                                      )}
-                                      <MetaText style={{ display: "block", marginTop: 2 }}>{tr.actual_content.slice(0, 300)}{tr.actual_content.length > 300 ? "..." : ""}</MetaText>
-                                    </div>
-                                  ))}
-                                </Stack>
-                              </details>
-                            )}
+                                      );
+                                    })}
+                                  </Stack>
+                                </details>
+                              )}
 
-                            {r.flow_reasoning && (
-                              <MetaText style={{ display: "block", marginTop: 4 }}>Flow: {r.flow_reasoning}</MetaText>
-                            )}
+                              {r.flow_reasoning && (
+                                <MetaText style={{ display: "block", marginTop: 4 }}>Flow: {r.flow_reasoning}</MetaText>
+                              )}
 
-                            {r.actual_content && !r.turn_results && (
-                              <details style={{ marginTop: 6 }}>
-                                <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--text-secondary)" }}>Response preview</summary>
-                                <pre style={{ fontSize: 12, whiteSpace: "pre-wrap", maxHeight: 200, overflow: "auto", marginTop: 4, padding: 8, background: "var(--bg-secondary)", borderRadius: 6 }}>
-                                  {r.actual_content.slice(0, 1000)}
-                                </pre>
-                              </details>
-                            )}
-                          </Card>
-                        ))}
+                              {actualContent && turnResults.length === 0 && (
+                                <details style={{ marginTop: 6 }}>
+                                  <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--text-secondary)" }}>Response preview</summary>
+                                  <pre style={{ fontSize: 12, whiteSpace: "pre-wrap", maxHeight: 200, overflow: "auto", marginTop: 4, padding: 8, background: "var(--bg-secondary)", borderRadius: 6 }}>
+                                    {actualContent.slice(0, 1000)}
+                                  </pre>
+                                </details>
+                              )}
+                            </Card>
+                          );
+                        })}
                       </Stack>
                     </Card>
                   )}

@@ -106,7 +106,12 @@ async function checkOfficialSkills(): Promise<{
   return new Promise((resolve) => {
     execFile(
       "gh",
-      ["api", "repos/anthropics/skills/contents", "--jq", ".[].name"],
+      [
+        "api",
+        "repos/anthropics/skills/contents/skills",
+        "--jq",
+        ".[] | select(.type == \"dir\") | .name",
+      ],
       { timeout: 15000 },
       (err, stdout, stderr) => {
         if (err) {
@@ -116,7 +121,8 @@ async function checkOfficialSkills(): Promise<{
         const names = stdout
           .trim()
           .split("\n")
-          .filter((n) => n && !n.startsWith(".") && n !== "README.md" && n !== "LICENSE");
+          .map((n) => n.trim())
+          .filter((n) => n && !n.startsWith("."));
         resolve({
           available: names.map((n) => ({ name: n, description: `Official Anthropic skill: ${n}` })),
         });

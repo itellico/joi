@@ -467,6 +467,23 @@ function toDisplayJson(value: unknown): string {
   }
 }
 
+function toSearchText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (value == null) return "";
+  if (Array.isArray(value)) {
+    return value.map((item) => toSearchText(item)).filter(Boolean).join(" ");
+  }
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return "";
+    }
+  }
+  return "";
+}
+
 export default function Reviews({ ws }: { ws: { on: (type: string, handler: (frame: unknown) => void) => () => void } }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [reviews, setReviews] = useState<ReviewItem[]>([]);
@@ -508,7 +525,7 @@ export default function Reviews({ ws }: { ws: { on: (type: string, handler: (fra
       if (scope === "pending" && !showP0Noise) params.set("min_priority", "1");
       const res = await fetch(`/api/reviews?${params.toString()}`);
       const data = await res.json();
-      setReviews(data.reviews || []);
+      setReviews(Array.isArray(data?.reviews) ? data.reviews : []);
       setLastRefreshAt(new Date().toISOString());
     } catch (err) {
       console.error("Failed to load reviews:", err);
@@ -519,7 +536,7 @@ export default function Reviews({ ws }: { ws: { on: (type: string, handler: (fra
     try {
       const res = await fetch("/api/reviews/stats/summary");
       const data = await res.json();
-      setStats(data);
+      setStats({ stats: Array.isArray(data?.stats) ? data.stats : [] });
     } catch {
       // ignore
     }
@@ -762,15 +779,15 @@ export default function Reviews({ ws }: { ws: { on: (type: string, handler: (fra
   ]);
 
   const allTags = useMemo(
-    () => Array.from(new Set(reviews.flatMap((r) => r.tags || []))).sort(),
+    () => Array.from(new Set(reviews.flatMap((r) => Array.isArray(r.tags) ? r.tags : []))).sort(),
     [reviews],
   );
   const allTypes = useMemo(
-    () => Array.from(new Set(reviews.map((r) => r.type))).sort(),
+    () => Array.from(new Set(reviews.map((r) => (typeof r.type === "string" ? r.type : "unknown")))).sort(),
     [reviews],
   );
   const allAgents = useMemo(
-    () => Array.from(new Set(reviews.map((r) => r.agent_id))).sort((a, b) => getAgentLabel(a).localeCompare(getAgentLabel(b))),
+    () => Array.from(new Set(reviews.map((r) => (typeof r.agent_id === "string" ? r.agent_id : "unknown")))).sort((a, b) => getAgentLabel(a).localeCompare(getAgentLabel(b))),
     [reviews],
   );
   const statCountByStatus = useMemo(() => {
@@ -789,10 +806,10 @@ export default function Reviews({ ws }: { ws: { on: (type: string, handler: (fra
     const q = textSearch.trim().toLowerCase();
     if (q) {
       result = result.filter((r) =>
-        r.title.toLowerCase().includes(q)
-        || (r.description?.toLowerCase().includes(q) ?? false)
-        || r.agent_id.toLowerCase().includes(q)
-        || r.content?.some((b) => (b.content || "").toLowerCase().includes(q))
+        toSearchText(r.title).toLowerCase().includes(q)
+        || toSearchText(r.description).toLowerCase().includes(q)
+        || toSearchText(r.agent_id).toLowerCase().includes(q)
+        || (Array.isArray(r.content) && r.content.some((b) => toSearchText(b).toLowerCase().includes(q)))
       );
     }
     return result;
@@ -1482,36 +1499,47 @@ function DetailPanel({
 function ContentBlockRenderer({ block }: { block: ContentBlock }) {
   switch (block.type) {
     case "text":
-      return (
-        <div className="reviews-content-text">
-          {block.content || (block.data as string)}
-        </div>
-      );
+      {
+        const text = typeof block.content === "string"
+          ? block.content
+          : (typeof block.data === "string" ? block.data : toDisplayJson(block.data ?? block));
+        return (
+          <div className="reviews-content-text">
+            {text}
+          </div>
+        );
+      }
 
     case "table":
-      return (
-        <div className="overflow-x-auto">
-          {block.label && <MetaText size="sm" className="block mb-1">{block.label}</MetaText>}
-          <table className="reviews-content-table">
-            <thead>
-              <tr>
-                {(block.columns || []).map((col, i) => (
-                  <th key={i}>{col}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {(block.rows || []).map((row: unknown[], ri) => (
-                <tr key={ri}>
-                  {row.map((cell, ci) => (
-                    <td key={ci}>{String(cell)}</td>
+      {
+        const rows = Array.isArray(block.rows) ? block.rows : [];
+        return (
+          <div className="overflow-x-auto">
+            {block.label && <MetaText size="sm" className="block mb-1">{block.label}</MetaText>}
+            <table className="reviews-content-table">
+              <thead>
+                <tr>
+                  {(block.columns || []).map((col, i) => (
+                    <th key={i}>{col}</th>
                   ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      );
+              </thead>
+              <tbody>
+                {rows.map((row, ri) => {
+                  const cells = Array.isArray(row) ? row : [row];
+                  return (
+                    <tr key={ri}>
+                      {cells.map((cell, ci) => (
+                        <td key={ci}>{String(cell)}</td>
+                      ))}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        );
+      }
 
     case "diff":
       return (

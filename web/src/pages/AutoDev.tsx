@@ -48,6 +48,75 @@ const stateBadge: Record<string, { label: string; status: "muted" | "warning" | 
   completing: { label: "Completing", status: "success" },
 };
 
+function asObject(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function safeString(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value == null) return "";
+  return String(value);
+}
+
+function normalizeStatusPayload(value: unknown): AutoDevStatus {
+  const base: AutoDevStatus = {
+    state: "waiting",
+    projectUuid: null,
+    projectTitle: null,
+    currentTask: null,
+    completedCount: 0,
+    queue: [],
+  };
+
+  const raw = asObject(value);
+  if (!raw) return base;
+
+  const rawTask = asObject(raw.currentTask);
+  const rawChecklist = Array.isArray(rawTask?.checklist) ? rawTask.checklist : [];
+  const checklist = rawChecklist
+    .map((item) => asObject(item))
+    .filter((item): item is Record<string, unknown> => Boolean(item))
+    .map((item) => ({
+      title: safeString(item.title),
+      completed: item.completed === true,
+    }))
+    .filter((item) => item.title.length > 0);
+
+  const currentTask = rawTask && typeof rawTask.uuid === "string" && typeof rawTask.title === "string"
+    ? {
+        uuid: rawTask.uuid,
+        title: rawTask.title,
+        notes: typeof rawTask.notes === "string" ? rawTask.notes : undefined,
+        checklist,
+      }
+    : null;
+
+  const queue = Array.isArray(raw.queue)
+    ? raw.queue
+        .map((item) => asObject(item))
+        .filter((item): item is Record<string, unknown> => Boolean(item))
+        .map((item) => ({
+          uuid: safeString(item.uuid),
+          title: safeString(item.title),
+        }))
+        .filter((item) => item.uuid.length > 0 && item.title.length > 0)
+    : [];
+
+  const state = (typeof raw.state === "string" && stateBadge[raw.state]) ? raw.state as AutoDevStatus["state"] : base.state;
+
+  return {
+    ...base,
+    ...(raw as Partial<AutoDevStatus>),
+    state,
+    projectUuid: typeof raw.projectUuid === "string" || raw.projectUuid === null ? raw.projectUuid : null,
+    projectTitle: typeof raw.projectTitle === "string" || raw.projectTitle === null ? raw.projectTitle : null,
+    currentTask,
+    completedCount: typeof raw.completedCount === "number" ? raw.completedCount : 0,
+    queue,
+  };
+}
+
 export default function AutoDev({ ws }: Props) {
   const [status, setStatus] = useState<AutoDevStatus>({
     state: "waiting",
@@ -73,8 +142,9 @@ export default function AutoDev({ ws }: Props) {
       fetch("/api/autodev/status").then((r) => r.json()).catch(() => null),
       fetch("/api/autodev/log").then((r) => r.json()).catch(() => null),
     ]).then(([statusData, logData]) => {
-      if (statusData) setStatus(statusData);
-      if (logData?.log !== undefined) setLog(logData.log);
+      if (statusData) setStatus(normalizeStatusPayload(statusData));
+      const logObj = asObject(logData);
+      if (logObj && "log" in logObj) setLog(safeString(logObj.log));
       setLoaded(true);
     });
   }, [ws.status]);
@@ -84,16 +154,15 @@ export default function AutoDev({ ws }: Props) {
     const unsubs: Array<() => void> = [];
 
     unsubs.push(ws.on("autodev.status", (frame) => {
-      setStatus(frame.data as AutoDevStatus);
+      setStatus(normalizeStatusPayload(frame.data));
     }));
 
     unsubs.push(ws.on("autodev.log", (frame) => {
-      const data = frame.data as { delta: string; full?: boolean };
-      if (data.full) {
-        setLog(data.delta);
-      } else {
-        setLog((prev) => prev + data.delta);
-      }
+      const data = asObject(frame.data);
+      const delta = safeString(data?.delta);
+      const full = data?.full === true;
+      if (full) setLog(delta);
+      else if (delta) setLog((prev) => prev + delta);
     }));
 
     unsubs.push(ws.on("autodev.task_complete", (frame) => {

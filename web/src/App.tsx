@@ -32,6 +32,7 @@ import QuoteDetail from "./pages/QuoteDetail";
 import Organizations from "./pages/Organizations";
 import AssistantChat from "./components/AssistantChat";
 import JoiOrb from "./components/JoiOrb";
+import RouteErrorBoundary from "./components/RouteErrorBoundary";
 
 // Collapsible sidebar section
 function NavSection({ label, children, defaultOpen = true }: { label: string; children: React.ReactNode; defaultOpen?: boolean }) {
@@ -384,12 +385,33 @@ function App() {
           <Route path="/terminal" element={<Terminal ws={ws} />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/tasks" element={<Tasks ws={ws} chatMode={chatMode} />} />
-          <Route path="/reviews" element={<Reviews ws={ws} />} />
+          <Route
+            path="/reviews"
+            element={(
+              <RouteErrorBoundary title="Reviews">
+                <Reviews ws={ws} />
+              </RouteErrorBoundary>
+            )}
+          />
           <Route path="/bookmarks" element={<Bookmarks />} />
           <Route path="/cloud-sync" element={<CloudSync />} />
           <Route path="/integrations" element={<Channels ws={ws} />} />
-          <Route path="/autodev" element={<AutoDev ws={ws} />} />
-          <Route path="/quality" element={<QualityCenter ws={ws} />} />
+          <Route
+            path="/autodev"
+            element={(
+              <RouteErrorBoundary title="AutoDev">
+                <AutoDev ws={ws} />
+              </RouteErrorBoundary>
+            )}
+          />
+          <Route
+            path="/quality"
+            element={(
+              <RouteErrorBoundary title="Quality Center">
+                <QualityCenter ws={ws} />
+              </RouteErrorBoundary>
+            )}
+          />
           <Route path="/channels" element={<Navigate to="/integrations" replace />} />
         </Routes>
       </main>

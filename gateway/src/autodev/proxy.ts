@@ -43,8 +43,15 @@ export class AutoDevProxy {
     return this.logBuffer;
   }
 
-  setWorkerSocket(ws: WebSocket): void {
-    // Clean up previous worker connection
+  setWorkerSocket(ws: WebSocket): boolean {
+    // Reject duplicate live workers to avoid reconnect thrash.
+    if (this.workerWs && this.workerWs !== ws && this.workerWs.readyState === 1) {
+      console.warn("[AutoDevProxy] Duplicate worker connection rejected");
+      try { ws.close(1008, "worker-already-connected"); } catch { /* ignore */ }
+      return false;
+    }
+
+    // Clean up stale previous worker connection.
     if (this.workerWs && this.workerWs !== ws) {
       try { this.workerWs.close(); } catch { /* ignore */ }
     }
@@ -65,6 +72,7 @@ export class AutoDevProxy {
         this.workerWs = null;
       }
     });
+    return true;
   }
 
   handleWorkerMessage(msg: Frame): void {

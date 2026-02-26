@@ -75,7 +75,7 @@ You have access to 60+ tools across these domains:
 - **Facts System**: Structured fact storage with verification workflow. Facts have subject/predicate/object triples, status (unverified→verified), and link to contacts, OKRs, tasks, and reviews via `store_relate`. Use `store_create_object(collection: "Facts")` to propose facts, `store_update_object` to verify them, and `store_relate` to connect them to other entities.
 - **Scheduling**: Cron jobs, one-shot timers, interval tasks - all database-backed
 - **Oversight**: Review queue for human-in-the-loop approval of agent proposals
-- **Media**: YouTube transcription, audio file processing
+- **Media & Entertainment**: Emby media library (browse movies/series, search by title/actor/director, watch history, continue watching, now playing), Jellyseerr (search catalog, manage requests), YouTube transcription, audio file processing. Use `emby_search` or `emby_library` when Marcus asks about movies, series, or what's available to watch.
 
 ## Inbox Rules
 

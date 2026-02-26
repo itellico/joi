@@ -3,6 +3,9 @@
 // Self-healing: the bash wrapper (scripts/dev-autodev.sh) restarts on crash.
 
 import WebSocket from "ws";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadConfig } from "../config/loader.js";
 import { AutoDevManager } from "./manager.js";
 import { frame, parseFrame, type AutoDevStatusData } from "../protocol.js";
@@ -16,6 +19,8 @@ function buildGatewayUrl(): string {
   return secret ? `${base}?token=${encodeURIComponent(secret)}` : base;
 }
 const GATEWAY_URL = buildGatewayUrl();
+const WORKER_LOCK_DIR = join(tmpdir(), "joi-autodev-worker.lock");
+const WORKER_LOCK_PID_FILE = join(WORKER_LOCK_DIR, "pid");
 
 let ws: WebSocket | null = null;
 let reconnectDelay = 1000;
@@ -25,6 +30,68 @@ const MAX_RECONNECT_DELAY = 30_000;
 
 // Buffer events when disconnected — we only need the latest status
 let pendingStatus: (AutoDevStatusData & { paused?: boolean; systemInfo?: unknown }) | null = null;
+
+function isPidRunning(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function releaseWorkerLock(): void {
+  try {
+    rmSync(WORKER_LOCK_DIR, { recursive: true, force: true });
+  } catch {
+    // ignore
+  }
+}
+
+function tryCreateWorkerLock(): boolean {
+  try {
+    mkdirSync(WORKER_LOCK_DIR);
+    writeFileSync(WORKER_LOCK_PID_FILE, String(process.pid), "utf8");
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "EEXIST") throw err;
+    return false;
+  }
+}
+
+function readLockPid(): number | null {
+  try {
+    const raw = readFileSync(WORKER_LOCK_PID_FILE, "utf8").trim();
+    const pid = Number(raw);
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+function acquireWorkerLock(): boolean {
+  if (tryCreateWorkerLock()) return true;
+
+  const existingPid = readLockPid();
+  if (existingPid !== null && existingPid !== process.pid && isPidRunning(existingPid)) {
+    console.log(`[AutoDev Worker] Another worker is already running (PID ${existingPid}). Exiting.`);
+    return false;
+  }
+
+  // Stale lock; try to reclaim it.
+  releaseWorkerLock();
+  if (tryCreateWorkerLock()) return true;
+
+  const winnerPid = readLockPid();
+  if (winnerPid !== null && winnerPid !== process.pid) {
+    console.log(`[AutoDev Worker] Another worker won lock (PID ${winnerPid}). Exiting.`);
+  } else {
+    console.log("[AutoDev Worker] Another worker won lock. Exiting.");
+  }
+  return false;
+}
 
 function isConnected(): boolean {
   return ws !== null && ws.readyState === WebSocket.OPEN;
@@ -41,6 +108,11 @@ function sendToGateway(type: string, data: unknown): void {
 }
 
 // Create the manager with a broadcast function that sends over WS
+if (!acquireWorkerLock()) {
+  process.exit(0);
+}
+process.on("exit", releaseWorkerLock);
+
 const manager = new AutoDevManager(sendToGateway, config);
 
 function connect(): void {

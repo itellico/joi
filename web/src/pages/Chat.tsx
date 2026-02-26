@@ -98,12 +98,76 @@ interface ChatProps {
   chatMode?: "api" | "claude-code";
 }
 
+interface QualitySuiteOption {
+  id: string;
+  name: string;
+  agent_id?: string;
+  tags?: string[];
+}
+
+type ChatExecutionMode = "live" | "shadow" | "dry_run";
+type ChatLatencyPreset = "none" | "light" | "realistic" | "stress";
+
+interface QaCaseDraft {
+  suiteId: string;
+  name: string;
+  inputMessage: string;
+  expectedTools: string;
+  unexpectedTools: string;
+  expectedContentPatterns: string;
+  maxLatencyMs: string;
+  minQualityScore: string;
+  description: string;
+}
+
+function csvToArray(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function defaultQaSuiteId(suites: QualitySuiteOption[]): string {
+  if (suites.length === 0) return "";
+  const preferred = suites.find((suite) => suite.name.toLowerCase() === "core agent behavior");
+  return preferred?.id || suites[0].id;
+}
+
+function chatLatencyProfileFromPreset(preset: ChatLatencyPreset): Record<string, number> | null {
+  if (preset === "none") return null;
+  if (preset === "light") {
+    return { toolMinMs: 80, toolMaxMs: 250, responseMinMs: 120, responseMaxMs: 380, jitterMs: 40 };
+  }
+  if (preset === "realistic") {
+    return { toolMinMs: 180, toolMaxMs: 900, responseMinMs: 300, responseMaxMs: 1400, jitterMs: 200 };
+  }
+  return { toolMinMs: 500, toolMaxMs: 2200, responseMinMs: 1200, responseMaxMs: 4200, jitterMs: 650 };
+}
+
 export default function Chat({ ws, chatMode = "api" }: ChatProps) {
   const { messages, isStreaming, conversationId, sendMessage, loadConversation } = useChat({
     send: ws.send,
     on: ws.on,
   });
   const [input, setInput] = useState("");
+  const [chatExecutionMode, setChatExecutionMode] = useState<ChatExecutionMode>("live");
+  const [chatLatencyPreset, setChatLatencyPreset] = useState<ChatLatencyPreset>("none");
+  const [qaSuites, setQaSuites] = useState<QualitySuiteOption[]>([]);
+  const [qaSuitesLoading, setQaSuitesLoading] = useState(false);
+  const [qaCaseModalOpen, setQaCaseModalOpen] = useState(false);
+  const [qaCaseSaving, setQaCaseSaving] = useState(false);
+  const [qaCaseError, setQaCaseError] = useState<string | null>(null);
+  const [qaCaseDraft, setQaCaseDraft] = useState<QaCaseDraft>({
+    suiteId: "",
+    name: "",
+    inputMessage: "",
+    expectedTools: "",
+    unexpectedTools: "",
+    expectedContentPatterns: "",
+    maxLatencyMs: "",
+    minQualityScore: "0.5",
+    description: "",
+  });
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [convFilter, setConvFilter] = useState<ConversationFilter>("inbox");
   const [accountFilter, setAccountFilter] = useState<string>("all");
@@ -137,10 +201,110 @@ export default function Chat({ ws, chatMode = "api" }: ChatProps) {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  const ensureQaSuites = useCallback(async (): Promise<QualitySuiteOption[]> => {
+    if (qaSuites.length > 0) return qaSuites;
+    setQaSuitesLoading(true);
+    try {
+      const response = await fetch("/api/quality/suites");
+      if (!response.ok) throw new Error("Failed to load quality suites");
+      const data = await response.json();
+      const suites = Array.isArray(data) ? data as QualitySuiteOption[] : [];
+      setQaSuites(suites);
+      return suites;
+    } catch {
+      return [];
+    } finally {
+      setQaSuitesLoading(false);
+    }
+  }, [qaSuites]);
+
+  const openQaCaseFromAssistant = useCallback(async (assistantMessage: ChatMessage, userPrompt: string) => {
+    const suites = await ensureQaSuites();
+    if (suites.length === 0) {
+      setQaCaseError("No QA suites available. Create one in /quality first.");
+      setQaCaseModalOpen(true);
+      return;
+    }
+
+    const expectedTools = Array.from(new Set(
+      (assistantMessage.toolCalls || [])
+        .map((call) => call.name)
+        .filter((name): name is string => typeof name === "string" && name.trim().length > 0),
+    ));
+    const normalizedPrompt = userPrompt.trim();
+    const promptForCase = normalizedPrompt || "TODO: add user prompt";
+    const nameSeed = promptForCase.replace(/\s+/g, " ").slice(0, 72);
+    const suiteId = defaultQaSuiteId(suites);
+    const latencyBudget = assistantMessage.latencyMs
+      ? String(Math.max(1000, Math.round(assistantMessage.latencyMs * 1.25)))
+      : "";
+
+    setQaCaseDraft({
+      suiteId,
+      name: nameSeed ? `Chat case: ${nameSeed}` : "Chat case",
+      inputMessage: promptForCase,
+      expectedTools: expectedTools.join(", "),
+      unexpectedTools: "",
+      expectedContentPatterns: "",
+      maxLatencyMs: latencyBudget,
+      minQualityScore: "0.5",
+      description: `Created from chat${conversationId ? ` ${conversationId}` : ""}`,
+    });
+    setQaCaseError(null);
+    setQaCaseModalOpen(true);
+  }, [conversationId, ensureQaSuites]);
+
+  const saveQaCase = useCallback(async () => {
+    if (!qaCaseDraft.suiteId.trim()) {
+      setQaCaseError("Pick a suite.");
+      return;
+    }
+    if (!qaCaseDraft.name.trim() || !qaCaseDraft.inputMessage.trim()) {
+      setQaCaseError("Case name and input message are required.");
+      return;
+    }
+
+    setQaCaseSaving(true);
+    setQaCaseError(null);
+    try {
+      const response = await fetch(`/api/quality/suites/${qaCaseDraft.suiteId}/cases`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: qaCaseDraft.name.trim(),
+          description: qaCaseDraft.description.trim() || null,
+          input_message: qaCaseDraft.inputMessage.trim(),
+          expected_tools: csvToArray(qaCaseDraft.expectedTools),
+          unexpected_tools: csvToArray(qaCaseDraft.unexpectedTools),
+          expected_content_patterns: csvToArray(qaCaseDraft.expectedContentPatterns),
+          max_latency_ms: qaCaseDraft.maxLatencyMs.trim() ? Number.parseInt(qaCaseDraft.maxLatencyMs, 10) : null,
+          min_quality_score: Number.parseFloat(qaCaseDraft.minQualityScore) || 0.5,
+        }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.error || "Failed to create QA case");
+      }
+      setQaCaseModalOpen(false);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to create QA case";
+      setQaCaseError(message);
+    } finally {
+      setQaCaseSaving(false);
+    }
+  }, [qaCaseDraft]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim()) return;
-    sendMessage(input.trim(), chatMode, "personal");
+    const latencyProfile = chatLatencyProfileFromPreset(chatLatencyPreset);
+    const simulationMetadata = chatMode === "claude-code"
+      ? undefined
+      : {
+          executionMode: chatExecutionMode,
+          ...(latencyProfile ? { latencyProfile } : {}),
+        };
+    sendMessage(input.trim(), chatMode, "personal", simulationMetadata);
     setInput("");
   };
 
@@ -165,6 +329,7 @@ export default function Chat({ ws, chatMode = "api" }: ChatProps) {
     if (accountFilter === "all") return true;
     return conv.channel_id === accountFilter;
   });
+  const isInboxConversation = conversations.find((conv) => conv.id === conversationId)?.type === "inbox";
 
   const accountTabs = accounts.length > 1 ? (
     <div className="chat-channel-filters">
@@ -267,23 +432,179 @@ export default function Chat({ ws, chatMode = "api" }: ChatProps) {
             </div>
           )}
 
-          {messages.map((msg) => (
-            <MessageBubble
-              key={msg.id}
-              message={msg}
-              onInstruct={conversations.find(c => c.id === conversationId)?.type === "inbox" ? (text) => {
-                setInput(text);
-                // Focus the textarea
-                const textarea = document.querySelector<HTMLTextAreaElement>(".chat-compose textarea");
-                textarea?.focus();
-              } : undefined}
-            />
-          ))}
+          {messages.map((msg, index) => {
+            let previousUserText = "";
+            for (let i = index - 1; i >= 0; i--) {
+              if (messages[i].role === "user") {
+                previousUserText = messages[i].content;
+                break;
+              }
+            }
+
+            return (
+              <MessageBubble
+                key={msg.id}
+                message={msg}
+                onInstruct={isInboxConversation ? (text) => {
+                  setInput(text);
+                  // Focus the textarea
+                  const textarea = document.querySelector<HTMLTextAreaElement>(".chat-compose textarea");
+                  textarea?.focus();
+                } : undefined}
+                onCreateQaCase={msg.role === "assistant" && !msg.isStreaming
+                  ? () => { void openQaCaseFromAssistant(msg, previousUserText); }
+                  : undefined}
+              />
+            );
+          })}
 
           <div ref={messagesEndRef} />
         </div>
 
         <ConversationTotals messages={messages} />
+        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", padding: "0 16px 8px" }}>
+          <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12 }}>
+            Mode
+            <select
+              value={chatExecutionMode}
+              onChange={(e) => setChatExecutionMode(e.target.value as ChatExecutionMode)}
+              disabled={chatMode === "claude-code"}
+            >
+              <option value="live">live</option>
+              <option value="shadow">shadow</option>
+              <option value="dry_run">dry_run</option>
+            </select>
+          </label>
+          <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12 }}>
+            Latency
+            <select
+              value={chatLatencyPreset}
+              onChange={(e) => setChatLatencyPreset(e.target.value as ChatLatencyPreset)}
+              disabled={chatMode === "claude-code"}
+            >
+              <option value="none">none</option>
+              <option value="light">light</option>
+              <option value="realistic">realistic</option>
+              <option value="stress">stress</option>
+            </select>
+          </label>
+          {chatMode === "claude-code" && <MetaText size="xs">Simulation controls work in API mode only.</MetaText>}
+        </div>
+        <Modal
+          open={qaCaseModalOpen}
+          onClose={() => setQaCaseModalOpen(false)}
+          title="Create QA Case from Chat"
+          width={720}
+        >
+          <div style={{ display: "grid", gap: 10 }}>
+            <label style={{ display: "grid", gap: 4 }}>
+              <MetaText size="xs">Suite</MetaText>
+              <select
+                value={qaCaseDraft.suiteId}
+                onChange={(e) => setQaCaseDraft((prev) => ({ ...prev, suiteId: e.target.value }))}
+                disabled={qaSuitesLoading || qaCaseSaving}
+              >
+                {qaSuites.length === 0 && <option value="">No suites</option>}
+                {qaSuites.map((suite) => (
+                  <option key={suite.id} value={suite.id}>{suite.name}</option>
+                ))}
+              </select>
+            </label>
+
+            <label style={{ display: "grid", gap: 4 }}>
+              <MetaText size="xs">Case Name</MetaText>
+              <input
+                type="text"
+                value={qaCaseDraft.name}
+                onChange={(e) => setQaCaseDraft((prev) => ({ ...prev, name: e.target.value }))}
+                disabled={qaCaseSaving}
+              />
+            </label>
+
+            <label style={{ display: "grid", gap: 4 }}>
+              <MetaText size="xs">Input Message</MetaText>
+              <textarea
+                rows={3}
+                value={qaCaseDraft.inputMessage}
+                onChange={(e) => setQaCaseDraft((prev) => ({ ...prev, inputMessage: e.target.value }))}
+                disabled={qaCaseSaving}
+              />
+            </label>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <label style={{ display: "grid", gap: 4 }}>
+                <MetaText size="xs">Expected Tools (CSV)</MetaText>
+                <input
+                  type="text"
+                  value={qaCaseDraft.expectedTools}
+                  onChange={(e) => setQaCaseDraft((prev) => ({ ...prev, expectedTools: e.target.value }))}
+                  disabled={qaCaseSaving}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 4 }}>
+                <MetaText size="xs">Unexpected Tools (CSV)</MetaText>
+                <input
+                  type="text"
+                  value={qaCaseDraft.unexpectedTools}
+                  onChange={(e) => setQaCaseDraft((prev) => ({ ...prev, unexpectedTools: e.target.value }))}
+                  disabled={qaCaseSaving}
+                />
+              </label>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+              <label style={{ display: "grid", gap: 4 }}>
+                <MetaText size="xs">Expected Content Patterns (CSV)</MetaText>
+                <input
+                  type="text"
+                  value={qaCaseDraft.expectedContentPatterns}
+                  onChange={(e) => setQaCaseDraft((prev) => ({ ...prev, expectedContentPatterns: e.target.value }))}
+                  disabled={qaCaseSaving}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 4 }}>
+                <MetaText size="xs">Max Latency (ms)</MetaText>
+                <input
+                  type="number"
+                  value={qaCaseDraft.maxLatencyMs}
+                  onChange={(e) => setQaCaseDraft((prev) => ({ ...prev, maxLatencyMs: e.target.value }))}
+                  disabled={qaCaseSaving}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 4 }}>
+                <MetaText size="xs">Min Quality Score</MetaText>
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.1}
+                  value={qaCaseDraft.minQualityScore}
+                  onChange={(e) => setQaCaseDraft((prev) => ({ ...prev, minQualityScore: e.target.value }))}
+                  disabled={qaCaseSaving}
+                />
+              </label>
+            </div>
+
+            <label style={{ display: "grid", gap: 4 }}>
+              <MetaText size="xs">Description</MetaText>
+              <input
+                type="text"
+                value={qaCaseDraft.description}
+                onChange={(e) => setQaCaseDraft((prev) => ({ ...prev, description: e.target.value }))}
+                disabled={qaCaseSaving}
+              />
+            </label>
+
+            {qaCaseError && <MetaText size="xs" style={{ color: "var(--red)" }}>{qaCaseError}</MetaText>}
+
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button type="button" className="msg-action-btn" onClick={() => setQaCaseModalOpen(false)} disabled={qaCaseSaving}>Cancel</button>
+              <button type="button" className="msg-action-btn msg-action-btn--primary" onClick={() => { void saveQaCase(); }} disabled={qaCaseSaving || qaSuitesLoading}>
+                {qaCaseSaving ? "Creating..." : "Create Case"}
+              </button>
+            </div>
+          </div>
+        </Modal>
         <form className="chat-compose" onSubmit={handleSubmit}>
           <textarea
             value={input}
@@ -514,7 +835,15 @@ function MessageActions({ copied, onCopy, onInstruct, onTask, onExtract }: {
   );
 }
 
-function MessageBubble({ message, onInstruct }: { message: ChatMessage; onInstruct?: (text: string) => void }) {
+function MessageBubble({
+  message,
+  onInstruct,
+  onCreateQaCase,
+}: {
+  message: ChatMessage;
+  onInstruct?: (text: string) => void;
+  onCreateQaCase?: () => void;
+}) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
@@ -617,6 +946,16 @@ function MessageBubble({ message, onInstruct }: { message: ChatMessage; onInstru
           )}
           {!message.isStreaming && (message.model || message.usage || message.latencyMs || message.toolCalls?.length) && (
             <MessageMeta message={message} />
+          )}
+          {!message.isStreaming && onCreateQaCase && (
+            <div className="msg-actions">
+              <button type="button" className="msg-action-btn" onClick={onCreateQaCase} title="Create a QA test case from this assistant turn">
+                QA Case
+              </button>
+              <button type="button" className="msg-action-btn" onClick={handleCopy} title="Copy message">
+                {copied ? "Copied!" : "Copy"}
+              </button>
+            </div>
           )}
         </>
       ) : emailMode ? (

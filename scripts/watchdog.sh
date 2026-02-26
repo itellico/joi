@@ -220,7 +220,9 @@ check_autodev() {
   # Process must exist AND gateway must see it as connected.
   # Without the WS check, a zombie worker (alive but disconnected after
   # gateway restart) would appear healthy to pgrep.
-  pgrep -f "$PROJECT_ROOT/gateway.*autodev/worker" >/dev/null 2>&1 || return 1
+  local pids
+  pids="$(autodev_pids)"
+  [ -n "$pids" ] || return 1
   local resp
   resp=$(curl -sf -m 3 "http://127.0.0.1:3100/api/autodev/status" 2>/dev/null) || return 1
   echo "$resp" | grep -q '"workerConnected":true'
@@ -277,6 +279,16 @@ check_livekit() {
 gateway_pids() {
   ps -Ao pid=,command= | awk -v root="$PROJECT_ROOT/gateway" '
     index($0, root) && ($0 ~ /src\/server\.ts/ || $0 ~ /dist\/server\.js/) { print $1 }
+  ' | awk 'NF > 0 && !seen[$0]++'
+}
+
+autodev_pids() {
+  ps -Ao pid=,command= | awk -v root="$PROJECT_ROOT" '
+    index($0, root) && (
+      $0 ~ /scripts\/dev-autodev\.sh/ ||
+      $0 ~ /src\/autodev\/worker\.ts/ ||
+      $0 ~ /dist\/autodev\/worker\.js/
+    ) { print $1 }
   ' | awk 'NF > 0 && !seen[$0]++'
 }
 
@@ -417,6 +429,10 @@ restart_autodev() {
     return
   fi
   load_project_env
+  local pids
+  pids="$(autodev_pids)"
+  graceful_stop_pids "AutoDev process" "$pids"
+  sleep 1
   cd "$PROJECT_ROOT"
   nohup "$PNPM_BIN" --filter gateway dev:autodev:run >> /tmp/joi-autodev.log 2>&1 &
   disown

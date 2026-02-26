@@ -16,6 +16,7 @@ import { runSelfRepair } from "./self-repair.js";
 import { runTestSuite } from "../quality/runner.js";
 import { createIssuesFromRun } from "../quality/issues.js";
 import { checkHeartbeats } from "../agent/heartbeat.js";
+import { normalizeExecutionMode } from "../agent/execution-mode.js";
 import type { JoiConfig } from "../config/schema.js";
 import { evaluateAllActiveSoulRollouts, getSoulGovernanceSummary } from "../agent/soul-rollouts.js";
 
@@ -259,6 +260,11 @@ async function executeJob(job: CronJob): Promise<void> {
           break;
         case "run_qa_tests": {
           // Run all enabled QA test suites
+          let suiteErrors = 0;
+          const executionMode = normalizeExecutionMode(process.env.JOI_QA_EXECUTION_MODE, "live");
+          const caseTimeoutMs = process.env.JOI_QA_CASE_TIMEOUT_MS
+            ? Number(process.env.JOI_QA_CASE_TIMEOUT_MS)
+            : undefined;
           const suites = await query<{ id: string; name: string }>(
             "SELECT id, name FROM qa_test_suites WHERE enabled = true ORDER BY name",
           );
@@ -267,12 +273,20 @@ async function executeJob(job: CronJob): Promise<void> {
             try {
               const run = await runTestSuite(suite.id, schedulerConfig!, {
                 triggeredBy: "cron",
+                executionMode,
+                ...(typeof caseTimeoutMs === "number" && Number.isFinite(caseTimeoutMs) && caseTimeoutMs > 0
+                  ? { caseTimeoutMs: Math.floor(caseTimeoutMs) }
+                  : {}),
               });
               await createIssuesFromRun(run);
               console.log(`[QA] Suite "${suite.name}": ${run.passed} passed, ${run.failed} failed, ${run.errored} errored`);
             } catch (err) {
+              suiteErrors++;
               console.error(`[QA] Suite "${suite.name}" failed:`, err);
             }
+          }
+          if (suiteErrors > 0) {
+            throw new Error(`run_qa_tests encountered ${suiteErrors} suite error(s)`);
           }
           break;
         }

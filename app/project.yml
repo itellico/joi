@@ -43,7 +43,6 @@ targets:
         release:
           CODE_SIGN_IDENTITY: "-"
     dependencies:
-      - target: JOI_watchOS
       - package: LiveKit
         product: LiveKit
     entitlements:

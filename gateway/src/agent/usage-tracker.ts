@@ -6,7 +6,7 @@ import { AVAILABLE_MODELS, type ModelProvider } from "./model-router.js";
 interface UsageEntry {
   provider: ModelProvider;
   model: string;
-  task: "chat" | "voice" | "tool" | "utility" | "triage" | "embedding";
+  task: "chat" | "voice" | "tool" | "utility" | "triage" | "classifier" | "embedding";
   inputTokens: number;
   outputTokens: number;
   conversationId?: string | null;

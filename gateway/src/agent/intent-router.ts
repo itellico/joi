@@ -1,14 +1,12 @@
 /**
- * Intent Router — routes obvious specialist queries directly to the right agent,
- * bypassing the expensive personal-agent first pass.
+ * Intent Router — routes specialist queries to the right agent
+ * based on LLM classification results.
  *
- * Feature-gated by JOI_INTENT_ROUTER=1 env flag.
+ * Previously used regex patterns; now uses the routeToAgent field
+ * from the intent classifier (intent-classifier.ts).
  */
 
 import { query } from "../db/client.js";
-
-// ── Route patterns ──
-// Each route maps keyword patterns to a target agent ID with an execution profile.
 
 export interface ExecutionProfile {
   includeSkillsPrompt: boolean;
@@ -39,42 +37,25 @@ export interface RouteFailed {
 
 export type IntentRouteResult = RouteDecision | RouteSkipped | RouteFailed;
 
-interface RouteRule {
-  agentId: string;
-  patterns: RegExp[];
-  confidence: number;
-  executionProfile: ExecutionProfile;
-}
-
-// Shared media keywords — also used by shouldEnableVoiceTools() in server.ts
-// Note: "show"/"shows" excluded — too ambiguous (e.g. "show my inbox").
-// "library" excluded — could be code library. Use "media library" context naturally from other keywords.
-export const MEDIA_INTENT_KEYWORDS = /\b(emby|jellyseerr|movie|movies|series|tv\s*show|episode|episodes|tv|film|films|watchlist|watching|watched|media|streaming|subtitle|subtitles|plex|jellyfin)\b/i;
-
-const EMAIL_INTENT_KEYWORDS = /\b(email|emails|inbox|mail|gmail|send\s+(?:an?\s+)?email|compose|draft|unread|reply|forward)\b/i;
-
-const ROUTE_RULES: RouteRule[] = [
-  {
-    agentId: "media-integrations",
-    patterns: [MEDIA_INTENT_KEYWORDS],
-    confidence: 0.85,
-    executionProfile: {
-      includeSkillsPrompt: false,
-      includeMemoryContext: false,
-      historyLimit: 10,
-    },
+// Execution profiles for known specialist agents
+const AGENT_EXECUTION_PROFILES: Record<string, ExecutionProfile> = {
+  "media-integrations": {
+    includeSkillsPrompt: false,
+    includeMemoryContext: false,
+    historyLimit: 10,
   },
-  {
-    agentId: "email",
-    patterns: [EMAIL_INTENT_KEYWORDS],
-    confidence: 0.80,
-    executionProfile: {
-      includeSkillsPrompt: false,
-      includeMemoryContext: true,
-      historyLimit: 10,
-    },
+  email: {
+    includeSkillsPrompt: false,
+    includeMemoryContext: true,
+    historyLimit: 10,
   },
-];
+};
+
+const DEFAULT_EXECUTION_PROFILE: ExecutionProfile = {
+  includeSkillsPrompt: true,
+  includeMemoryContext: true,
+  historyLimit: 20,
+};
 
 // Cache for agent existence/enabled checks (5 minute TTL)
 const agentStatusCache = new Map<string, { exists: boolean; enabled: boolean; name: string | null; checkedAt: number }>();
@@ -102,65 +83,52 @@ async function checkAgentStatus(agentId: string): Promise<{ exists: boolean; ena
 }
 
 /**
- * Attempt to route a user message to a specialist agent.
+ * Route a user message to a specialist agent based on LLM classification.
  *
- * Only routes when:
- * - Feature flag is enabled
- * - Incoming agentId is absent or "personal"
- * - A pattern matches with sufficient confidence
- * - Target agent exists and is enabled
+ * @param incomingAgentId - Current agent (user-selected or default)
+ * @param classifiedAgent - Agent suggested by the intent classifier (e.g. "media-integrations", "email")
+ * @param confidence - Classifier confidence (0-1)
  */
 export async function routeIntent(
-  message: string,
   incomingAgentId?: string,
+  classifiedAgent?: string | null,
+  confidence?: number,
 ): Promise<IntentRouteResult> {
-  // Feature gate
-  if (process.env.JOI_INTENT_ROUTER !== "1") {
-    return { routed: false, reason: "feature_disabled" };
-  }
-
   // User override protection — if user explicitly selected a non-personal agent, respect it
   if (incomingAgentId && incomingAgentId !== "personal") {
     return { routed: false, reason: "user_override" };
   }
 
-  const trimmed = message.trim();
-  if (!trimmed) {
-    return { routed: false, reason: "empty_message" };
+  // No routing suggestion from classifier
+  if (!classifiedAgent) {
+    return { routed: false, reason: "no_match" };
   }
 
-  // Find matching route
-  for (const rule of ROUTE_RULES) {
-    for (const pattern of rule.patterns) {
-      const match = pattern.exec(trimmed);
-      if (match) {
-        // Validate target agent exists and is enabled
-        const status = await checkAgentStatus(rule.agentId);
-        if (!status.exists) {
-          console.warn(`[intent-router] Target agent "${rule.agentId}" not found in DB`);
-          return { routed: false, reason: "target_missing", attemptedAgentId: rule.agentId };
-        }
-        if (!status.enabled) {
-          console.warn(`[intent-router] Target agent "${rule.agentId}" is disabled`);
-          return { routed: false, reason: "target_disabled", attemptedAgentId: rule.agentId };
-        }
-
-        const decision: RouteDecision = {
-          routed: true,
-          agentId: rule.agentId,
-          agentName: status.name,
-          confidence: rule.confidence,
-          reason: `keyword_match:${rule.agentId}`,
-          matchedPattern: match[0],
-          executionProfile: rule.executionProfile,
-        };
-        console.log(`[intent-router] Routed to ${rule.agentId} (name=${status.name}, confidence=${rule.confidence}, pattern="${match[0]}")`);
-        return decision;
-      }
-    }
+  // Validate target agent exists and is enabled
+  const status = await checkAgentStatus(classifiedAgent);
+  if (!status.exists) {
+    console.warn(`[intent-router] Target agent "${classifiedAgent}" not found in DB`);
+    return { routed: false, reason: "target_missing", attemptedAgentId: classifiedAgent };
+  }
+  if (!status.enabled) {
+    console.warn(`[intent-router] Target agent "${classifiedAgent}" is disabled`);
+    return { routed: false, reason: "target_disabled", attemptedAgentId: classifiedAgent };
   }
 
-  return { routed: false, reason: "no_match" };
+  const executionProfile = AGENT_EXECUTION_PROFILES[classifiedAgent] || DEFAULT_EXECUTION_PROFILE;
+  const conf = typeof confidence === "number" ? confidence : 0.8;
+
+  const decision: RouteDecision = {
+    routed: true,
+    agentId: classifiedAgent,
+    agentName: status.name,
+    confidence: conf,
+    reason: `classifier:${classifiedAgent}`,
+    matchedPattern: classifiedAgent,
+    executionProfile,
+  };
+  console.log(`[intent-router] Routed to ${classifiedAgent} (name=${status.name}, confidence=${conf})`);
+  return decision;
 }
 
 /** Clear agent status cache — for testing only. */

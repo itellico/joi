@@ -14,6 +14,7 @@
     "dev:frontend": "./scripts/dev-web.sh",
     "dev:worker": "cd infra/livekit-worker && ./run.sh",
     "dev:autodev": "./scripts/dev-autodev.sh",
+    "dev:sim": "./scripts/dev-sim.sh",
     "skills:sync": "./scripts/skills-sync.sh",
     "skills:sync:install": "./scripts/install-skills-sync-launchd.sh",
     "skills:sync:uninstall": "./scripts/uninstall-skills-sync-launchd.sh",

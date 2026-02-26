@@ -17,7 +17,13 @@ import {
   listSessions, addListener, addExitListener, getScrollback, killAllSessions,
 } from "./pty/manager.js";
 import { runAgent, saveMessage, ensureConversation, type AgentRunResult } from "./agent/runtime.js";
-import { routeIntent, MEDIA_INTENT_KEYWORDS, type RouteDecision } from "./agent/intent-router.js";
+import {
+  normalizeExecutionMode,
+  parseLatencyProfile,
+  type AgentExecutionMode,
+} from "./agent/execution-mode.js";
+import { routeIntent, type RouteDecision } from "./agent/intent-router.js";
+import { classifyIntent, domainToIntentLabel } from "./agent/intent-classifier.js";
 import { runClaudeCode } from "./agent/claude-code.js";
 import { query, recordSuccess, recordFailure, reloadFromEnv } from "./db/client.js";
 import { checkOllama, pullModel, embed } from "./knowledge/embeddings.js";
@@ -107,6 +113,7 @@ import {
 } from "./skills/catalog.js";
 
 const config = loadConfig();
+const DEFAULT_EXECUTION_MODE = normalizeExecutionMode(process.env.JOI_DEFAULT_EXECUTION_MODE, "live");
 
 const TOOL_ANNOUNCEMENT_CACHE = new Map<string, string>();
 const TOOL_ANNOUNCEMENT_RULES: Array<{ pattern: RegExp; phrase: string }> = [
@@ -121,6 +128,15 @@ const TOOL_ANNOUNCEMENT_RULES: Array<{ pattern: RegExp; phrase: string }> = [
   { pattern: /(emby|jellyseerr|movie|series|watchlist)/i, phrase: "checking your media library" },
   { pattern: /(code|autodev|terminal|shell|command|git)/i, phrase: "running that task" },
 ];
+
+function resolveExecutionMode(value: unknown): AgentExecutionMode {
+  return normalizeExecutionMode(value, DEFAULT_EXECUTION_MODE);
+}
+
+function normalizeQaCaseTimeoutMs(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
+  return Math.min(10 * 60 * 1000, Math.floor(value));
+}
 const VOICE_TOOL_FILLER_INITIAL_DELAY_MS = Math.max(
   200,
   Number.parseInt(process.env.JOI_VOICE_TOOL_FILLER_DELAY_MS || "900", 10) || 900,
@@ -307,16 +323,13 @@ function pickSeededVariant(seed: string, variants: string[]): string {
   return variants[idx];
 }
 
-function getVoiceIntentLabel(message: string): string {
-  const text = message.toLowerCase();
-  if (/(task|todo|things|okr)/.test(text)) return "task";
-  if (/(email|inbox|mail|gmail)/.test(text)) return "inbox";
-  if (/(calendar|schedule|event)/.test(text)) return "calendar";
-  if (/(contact|person|people)/.test(text)) return "contact";
-  if (/(weather|forecast)/.test(text)) return "weather";
-  if (/(message|whatsapp|telegram|imessage|sms)/.test(text)) return "message";
-  if (/(memory|knowledge|search|lookup|find)/.test(text)) return "lookup";
-  return "request";
+// Voice intent label is now derived from the LLM classifier's domain field.
+// See domainToIntentLabel() in intent-classifier.ts.
+// This wrapper is kept for the pre-tool filler system which needs a sync label
+// before the async classifier result is available. Falls back to "request".
+let _lastClassifiedDomain: string = "general";
+function getVoiceIntentLabel(_message: string): string {
+  return domainToIntentLabel(_lastClassifiedDomain);
 }
 
 function getPreToolProgressFiller(message: string, stage: 0 | 1): string {
@@ -383,14 +396,8 @@ function getDelayedVoiceToolFiller(toolName: string, toolInput: unknown, toolUse
   return renderVoiceToolFillerTemplate(template, hint);
 }
 
-// Voice-specific tool intent gate. Keep narrow so small-talk stays fast.
-// Media keywords are shared with intent-router to avoid duplication.
-const VOICE_TOOL_INTENT_REGEX = /\b(task|todo|things|okr|email|inbox|calendar|event|schedule|contact|weather|forecast|search|find|lookup|check|show|list|open|send|message|whatsapp|telegram|imessage|sms|notion|memory|knowledge)\b/i;
-function shouldEnableVoiceTools(message: string): boolean {
-  const trimmed = message.trim();
-  if (!trimmed) return false;
-  return VOICE_TOOL_INTENT_REGEX.test(trimmed) || MEDIA_INTENT_KEYWORDS.test(trimmed);
-}
+// Voice tool intent is now determined by the LLM classifier (classifyIntent).
+// The old regex-based shouldEnableVoiceTools has been removed.
 
 function firstStringField(input: unknown, key: string): string | null {
   const obj = asRecord(input);
@@ -667,9 +674,15 @@ async function runSoulQualityGate(params: {
     broadcast: wsBroadcast,
   });
 
-  await createIssuesFromRun(run).catch((err) => {
-    console.warn("[Soul] Failed to auto-create QA issues from quality gate run:", err);
-  });
+  await createIssuesFromRun(run)
+    .then((issues) => {
+      for (const issue of issues) {
+        wsBroadcast("qa.issue_created", { issueId: issue.id, severity: issue.severity, title: issue.title });
+      }
+    })
+    .catch((err) => {
+      console.warn("[Soul] Failed to auto-create QA issues from quality gate run:", err);
+    });
 
   const passed = run.status === "completed" && run.failed === 0 && run.errored === 0;
   return {
@@ -1298,11 +1311,21 @@ app.post("/api/livekit/token", async (req, res) => {
 // ─── Voice Chat SSE Endpoint (for Python LiveKit worker) ───
 app.post("/api/voice/chat", async (req, res) => {
   try {
-    const { conversationId, agentId, message, voicePromptSuffix } = req.body;
+    const { conversationId, agentId, message, voicePromptSuffix } = req.body as {
+      conversationId?: string;
+      agentId?: string;
+      message?: string;
+      voicePromptSuffix?: string;
+      executionMode?: unknown;
+      latencyProfile?: unknown;
+    };
     if (!message) {
       res.status(400).json({ error: "message is required" });
       return;
     }
+    const executionMode = resolveExecutionMode(req.body?.executionMode);
+    const latencyProfile = parseLatencyProfile(req.body?.latencyProfile);
+    const persistMessages = executionMode !== "dry_run";
 
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -1311,7 +1334,9 @@ app.post("/api/voice/chat", async (req, res) => {
     });
     res.flushHeaders?.();
 
-    const convId = await ensureConversation(conversationId, agentId || "personal");
+    const convId = persistMessages
+      ? await ensureConversation(conversationId, agentId || "personal")
+      : (conversationId && conversationId.trim() ? conversationId : crypto.randomUUID());
     const voiceModel = config.livekit.voiceModel || process.env.JOI_VOICE_MODEL || "openai/gpt-4o-mini";
     const voiceHistoryLimitRaw = Number.parseInt(
       String(config.livekit.voiceHistoryLimit ?? process.env.JOI_VOICE_HISTORY_LIMIT ?? "8"),
@@ -1322,7 +1347,10 @@ app.post("/api/voice/chat", async (req, res) => {
       : 8;
     const voiceToolsEnabled = config.livekit.voiceEnableTools ?? (process.env.JOI_VOICE_ENABLE_TOOLS === "1");
     const voiceMemoryEnabled = config.livekit.voiceIncludeMemory ?? (process.env.JOI_VOICE_INCLUDE_MEMORY === "1");
-    const hasToolIntent = shouldEnableVoiceTools(String(message || ""));
+    // Classify intent using LLM (replaces regex-based shouldEnableVoiceTools)
+    const voiceClassification = await classifyIntent(String(message || ""), config);
+    _lastClassifiedDomain = voiceClassification.domain;
+    const hasToolIntent = voiceClassification.needsTools;
     const effectiveVoiceToolsEnabled = voiceToolsEnabled && hasToolIntent;
     const effectiveVoiceMemoryEnabled = voiceMemoryEnabled && hasToolIntent;
     const effectiveVoiceHistoryLimit = hasToolIntent
@@ -1420,10 +1448,10 @@ app.post("/api/voice/chat", async (req, res) => {
       pendingVoiceToolFillers.set(toolUseId, state);
     };
 
-    // Intent routing for voice path
+    // Intent routing for voice path (uses LLM classifier result)
     let effectiveVoiceAgentId = agentId || "personal";
     let voiceRouteDecision: RouteDecision | null = null;
-    const voiceRouteResult = await routeIntent(String(message || ""), effectiveVoiceAgentId);
+    const voiceRouteResult = await routeIntent(effectiveVoiceAgentId, voiceClassification.routeToAgent, voiceClassification.confidence);
     if (voiceRouteResult.routed) {
       voiceRouteDecision = voiceRouteResult;
       effectiveVoiceAgentId = voiceRouteResult.agentId;
@@ -1453,6 +1481,9 @@ app.post("/api/voice/chat", async (req, res) => {
       userMessage: message,
       config,
       model: voiceModel,
+      executionMode,
+      persistMessages,
+      latencyProfile,
       toolTask: "voice",
       chatTask: "voice",
       enableTools: effectiveVoiceToolsEnabled,
@@ -1530,6 +1561,7 @@ app.post("/api/voice/chat", async (req, res) => {
       toolProvider: result.toolProvider,
       usage: result.usage,
       costUsd: result.costUsd,
+      executionMode,
       latencyMs,
       timings: result.timings,
       ...(voiceAgentVisibility ? {
@@ -1541,7 +1573,17 @@ app.post("/api/voice/chat", async (req, res) => {
       } : {}),
     });
     if (!voiceClosed) {
-      res.write(`data: ${JSON.stringify({ type: "done", messageId: result.messageId, content: cleanContent, model: result.model, usage: result.usage, costUsd: result.costUsd, latencyMs })}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        type: "done",
+        messageId: result.messageId,
+        content: cleanContent,
+        model: result.model,
+        toolModel: result.toolModel,
+        toolProvider: result.toolProvider,
+        usage: result.usage,
+        costUsd: result.costUsd,
+        latencyMs,
+      })}\n\n`);
     }
     voiceClosed = true;
     res.end();
@@ -2725,6 +2767,7 @@ app.get("/api/settings/model-routes", async (_req, res) => {
     { task: "tool", model: "openai/gpt-4o-mini", provider: "openrouter" },
     { task: "utility", model: "anthropic/claude-haiku-3-20240307", provider: "openrouter" },
     { task: "triage", model: "openai/gpt-4o-mini", provider: "openrouter" },
+    { task: "classifier", model: "openai/gpt-4.1-nano", provider: "openrouter" },
     { task: "embedding", model: "nomic-embed-text", provider: "ollama" },
   ];
   try {
@@ -8180,41 +8223,341 @@ app.delete("/api/quality/cases/:id", async (req, res) => {
   }
 });
 
+app.get("/api/quality/cases", async (_req, res) => {
+  try {
+    const result = await query<QATestCase & { suite_name: string }>(
+      `SELECT c.*, s.name AS suite_name
+       FROM qa_test_cases c
+       JOIN qa_test_suites s ON s.id = c.suite_id
+       ORDER BY s.name, c.sort_order, c.created_at`,
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 // Runs
 app.post("/api/quality/suites/:id/run", async (req, res) => {
   try {
-    const { modelOverrides } = req.body || {};
+    const {
+      modelOverrides,
+      executionMode: rawExecutionMode,
+      latencyProfile: rawLatencyProfile,
+      caseTimeoutMs: rawCaseTimeoutMs,
+      keepConversationArtifacts,
+    } = req.body || {};
+    const executionMode = resolveExecutionMode(rawExecutionMode);
+    const latencyProfile = parseLatencyProfile(rawLatencyProfile);
+    const caseTimeoutMs = normalizeQaCaseTimeoutMs(rawCaseTimeoutMs);
     // Start run asynchronously, return the run ID immediately
     const suiteCheck = await query("SELECT id FROM qa_test_suites WHERE id = $1", [req.params.id]);
     if (suiteCheck.rows.length === 0) return res.status(404).json({ error: "Suite not found" });
+
+    const modelConfigSnapshot = {
+      modelOverrides: modelOverrides || {},
+      executionMode,
+      latencyProfile: latencyProfile || null,
+      ...(caseTimeoutMs !== undefined ? { caseTimeoutMs } : {}),
+      keepConversationArtifacts: keepConversationArtifacts === true,
+    };
 
     const runRow = await query<QATestRun>(
       `INSERT INTO qa_test_runs (suite_id, status, triggered_by, model_config, total_cases)
        VALUES ($1, 'running', 'manual', $2,
          (SELECT COUNT(*) FROM qa_test_cases WHERE suite_id = $1 AND enabled = true))
        RETURNING *`,
-      [req.params.id, JSON.stringify(modelOverrides || {})],
+      [req.params.id, JSON.stringify(modelConfigSnapshot)],
     );
     const runId = runRow.rows[0].id;
 
-    res.json({ runId, status: "running" });
+    res.json({ runId, status: "running", executionMode });
 
     // Execute in background
     runTestSuite(req.params.id, config, {
       modelOverrides,
+      existingRunId: runId,
       triggeredBy: "manual",
+      executionMode,
+      latencyProfile: latencyProfile || undefined,
+      caseTimeoutMs,
+      keepConversationArtifacts: keepConversationArtifacts === true,
       broadcast: wsBroadcast,
     }).then(async (completedRun) => {
       // Auto-create issues for failures
-      await createIssuesFromRun(completedRun).catch((err) =>
-        console.error("[QA] Issue creation failed:", err),
-      );
+      await createIssuesFromRun(completedRun)
+        .then((createdIssues) => {
+          for (const issue of createdIssues) {
+            wsBroadcast("qa.issue_created", { issueId: issue.id, severity: issue.severity, title: issue.title });
+          }
+        })
+        .catch((err) => console.error("[QA] Issue creation failed:", err));
     }).catch((err) => {
       console.error("[QA] Run failed:", err);
       query(
         "UPDATE qa_test_runs SET status = 'failed', completed_at = NOW() WHERE id = $1",
         [runId],
       ).catch(() => {});
+      wsBroadcast("qa.run_completed", {
+        runId,
+        suiteId: req.params.id,
+        status: "failed",
+        passed: 0,
+        failed: 0,
+        errored: 1,
+      });
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/api/quality/live-captures", async (req, res) => {
+  try {
+    const body = req.body as {
+      suiteId?: string | null;
+      caseName?: string;
+      inputMessage?: string;
+      status?: string;
+      failureReasons?: unknown[];
+      expectedTools?: unknown[];
+      assistant?: Record<string, unknown>;
+    } | undefined;
+
+    const truncate = (value: string, max: number): string => value.slice(0, max);
+    const normalizeString = (value: unknown): string => typeof value === "string" ? value.trim() : "";
+    const asFiniteNumber = (value: unknown): number | null =>
+      typeof value === "number" && Number.isFinite(value) ? value : null;
+    const isUuid = (value: string): boolean =>
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+
+    const requestedSuiteId = normalizeString(body?.suiteId);
+    const caseNameRaw = normalizeString(body?.caseName) || "Live Chat Capture";
+    const caseName = truncate(caseNameRaw, 180);
+    const inputMessageRaw = normalizeString(body?.inputMessage) || "Captured from live chat simulation";
+    const inputMessage = truncate(inputMessageRaw, 6000);
+    const status = normalizeString(body?.status).toLowerCase() as "passed" | "failed" | "errored";
+    if (!["passed", "failed", "errored"].includes(status)) {
+      return res.status(400).json({ error: "status must be passed, failed, or errored" });
+    }
+
+    const failureReasons = Array.isArray(body?.failureReasons)
+      ? body!.failureReasons
+          .map((reason) => normalizeString(reason))
+          .filter(Boolean)
+          .slice(0, 20)
+      : [];
+    if (status !== "passed" && failureReasons.length === 0) {
+      failureReasons.push("Captured issue from live chat simulation");
+    }
+
+    const expectedTools = Array.isArray(body?.expectedTools)
+      ? body!.expectedTools
+          .map((tool) => normalizeString(tool).toLowerCase())
+          .filter(Boolean)
+          .slice(0, 30)
+      : [];
+
+    const assistant = body?.assistant && typeof body.assistant === "object"
+      ? body.assistant
+      : {};
+
+    const executionMode = resolveExecutionMode(assistant.executionMode);
+    const latencyProfile = parseLatencyProfile(assistant.latencyProfile);
+    const assistantLatencyMs = asFiniteNumber(assistant.latencyMs);
+    const assistantCostUsd = asFiniteNumber(assistant.costUsd) ?? 0;
+    const assistantModel = normalizeString(assistant.model) || null;
+    const assistantProvider = normalizeString(assistant.provider) || null;
+    const assistantContentRaw = typeof assistant.content === "string" ? assistant.content : "";
+    const assistantContent = assistantContentRaw ? truncate(assistantContentRaw, 16000) : null;
+    const conversationIdRaw = normalizeString(assistant.conversationId);
+    const conversationId = conversationIdRaw && isUuid(conversationIdRaw) ? conversationIdRaw : null;
+    const assistantAgentId = normalizeString(assistant.agentId) || "personal";
+    const routeReason = normalizeString(assistant.routeReason) || null;
+    const routeConfidence = asFiniteNumber(assistant.routeConfidence);
+
+    const rawToolCalls = Array.isArray(assistant.toolCalls) ? assistant.toolCalls : [];
+    const actualTools = rawToolCalls
+      .map((entry): Record<string, unknown> | null => {
+        if (!entry || typeof entry !== "object") return null;
+        const tool = entry as Record<string, unknown>;
+        const name = normalizeString(tool.name) || "unknown_tool";
+        const id = normalizeString(tool.id) || crypto.randomUUID();
+        const normalized: Record<string, unknown> = {
+          id,
+          name,
+          input: Object.prototype.hasOwnProperty.call(tool, "input") ? tool.input : null,
+        };
+        if (Object.prototype.hasOwnProperty.call(tool, "result")) {
+          normalized.result = tool.result;
+        }
+        return normalized;
+      })
+      .filter((tool): tool is Record<string, unknown> => Boolean(tool));
+
+    let suite: { id: string; name: string; agent_id: string } | null = null;
+    if (requestedSuiteId) {
+      const suiteResult = await query<{ id: string; name: string; agent_id: string }>(
+        "SELECT id, name, agent_id FROM qa_test_suites WHERE id = $1",
+        [requestedSuiteId],
+      );
+      if (suiteResult.rows.length > 0) {
+        suite = suiteResult.rows[0];
+      }
+    }
+
+    if (!suite) {
+      const liveSuiteName = "Live Chat Captures";
+      const existingSuite = await query<{ id: string; name: string; agent_id: string }>(
+        "SELECT id, name, agent_id FROM qa_test_suites WHERE name = $1 LIMIT 1",
+        [liveSuiteName],
+      );
+      if (existingSuite.rows.length > 0) {
+        suite = existingSuite.rows[0];
+      } else {
+        const insertedSuite = await query<{ id: string; name: string; agent_id: string }>(
+          `INSERT INTO qa_test_suites (name, description, agent_id, tags)
+           VALUES ($1, $2, $3, $4)
+           RETURNING id, name, agent_id`,
+          [
+            liveSuiteName,
+            "Captured assistant responses from Quality Center Live Chat Lab.",
+            assistantAgentId,
+            ["live-chat", "simulation", "captured"],
+          ],
+        );
+        suite = insertedSuite.rows[0];
+      }
+    }
+
+    const ruleChecks = {
+      tools_ok: status === "passed",
+      patterns_ok: status === "passed",
+      latency_ok: status !== "errored",
+      details: failureReasons,
+    };
+
+    const caseDescriptionParts = [
+      "Captured from Quality Center Live Chat Lab.",
+      routeReason ? `Route reason: ${routeReason}` : null,
+      routeConfidence !== null ? `Route confidence: ${(routeConfidence * 100).toFixed(1)}%` : null,
+      normalizeString(assistant.conversationId) ? `Conversation: ${normalizeString(assistant.conversationId)}` : null,
+      failureReasons.length > 0 ? `Capture notes: ${failureReasons.join(" | ")}` : null,
+    ].filter((part): part is string => Boolean(part));
+
+    const caseRow = await query<QATestCase>(
+      `INSERT INTO qa_test_cases (
+         suite_id, name, description, input_message,
+         expected_tools, unexpected_tools, expected_content_patterns,
+         max_latency_ms, min_quality_score, turns, turn_count, category
+       )
+       VALUES ($1, $2, $3, $4, $5, '{}', '{}', $6, 0.5, NULL, 1, 'single-turn')
+       RETURNING *`,
+      [
+        suite.id,
+        caseName,
+        caseDescriptionParts.join("\n"),
+        inputMessage,
+        expectedTools,
+        assistantLatencyMs !== null ? Math.max(500, Math.round(assistantLatencyMs * 1.4)) : null,
+      ],
+    );
+    const capturedCase = caseRow.rows[0];
+
+    const passed = status === "passed" ? 1 : 0;
+    const failed = status === "failed" ? 1 : 0;
+    const errored = status === "errored" ? 1 : 0;
+    const totalLatencyMs = assistantLatencyMs !== null ? Math.max(0, Math.round(assistantLatencyMs)) : null;
+
+    const runModelConfig = {
+      source: "quality-live-capture",
+      executionMode,
+      latencyProfile: latencyProfile || null,
+      conversationId: conversationIdRaw || null,
+      agentId: assistantAgentId,
+      model: assistantModel,
+      provider: assistantProvider,
+      routeReason,
+      routeConfidence,
+    };
+
+    const runRow = await query<QATestRun>(
+      `INSERT INTO qa_test_runs (
+         suite_id, status, triggered_by, model_config, total_cases,
+         passed, failed, errored, skipped, avg_correctness, avg_tool_accuracy,
+         avg_response_quality, total_latency_ms, total_cost_usd, started_at, completed_at
+       )
+       VALUES ($1, 'completed', 'live_capture', $2, 1, $3, $4, $5, 0, NULL, NULL, NULL, $6, $7, NOW(), NOW())
+       RETURNING *`,
+      [suite.id, JSON.stringify(runModelConfig), passed, failed, errored, totalLatencyMs, assistantCostUsd],
+    );
+    const run = runRow.rows[0];
+
+    const resultRow = await query<QATestResult>(
+      `INSERT INTO qa_test_results (
+         run_id, case_id, status, actual_content, actual_tools, judge_scores,
+         rule_checks, failure_reasons, latency_ms, cost_usd, model, provider, conversation_id
+       )
+       VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $8, $9, $10, $11, $12)
+       RETURNING *`,
+      [
+        run.id,
+        capturedCase.id,
+        status,
+        assistantContent,
+        JSON.stringify(actualTools),
+        JSON.stringify(ruleChecks),
+        failureReasons,
+        totalLatencyMs,
+        assistantCostUsd,
+        assistantModel,
+        assistantProvider,
+        conversationId,
+      ],
+    );
+    const result = resultRow.rows[0];
+
+    wsBroadcast("qa.case_result", {
+      runId: run.id,
+      caseId: capturedCase.id,
+      caseName: capturedCase.name,
+      status,
+      failureReasons,
+      latencyMs: totalLatencyMs,
+    });
+
+    const createdIssues: QAIssue[] = status === "passed"
+      ? []
+      : await createIssuesFromRun(run);
+    for (const issue of createdIssues) {
+      wsBroadcast("qa.issue_created", {
+        issueId: issue.id,
+        severity: issue.severity,
+        title: issue.title,
+      });
+    }
+
+    wsBroadcast("qa.run_completed", {
+      runId: run.id,
+      suiteId: suite.id,
+      suiteName: suite.name,
+      status: "completed",
+      passed,
+      failed,
+      errored,
+      avgCorrectness: null,
+      avgToolAccuracy: null,
+      avgResponseQuality: null,
+      totalCost: assistantCostUsd,
+    });
+
+    res.json({
+      saved: true,
+      suite,
+      case: capturedCase,
+      run,
+      result,
+      issues: createdIssues,
     });
   } catch (err) {
     res.status(500).json({ error: String(err) });
@@ -8994,7 +9337,24 @@ wss.on("connection", (ws) => {
           const agentId = data.agentId || "personal";
           const conversationId = data.conversationId;
           const mode = data.mode || "api";
+          const dataMetadata = (data.metadata && typeof data.metadata === "object")
+            ? (data.metadata as Record<string, unknown>)
+            : null;
+          const executionMode = resolveExecutionMode(
+            (data as { executionMode?: unknown }).executionMode ?? dataMetadata?.executionMode,
+          );
+          const latencyProfile = parseLatencyProfile(
+            (data as { latencyProfile?: unknown }).latencyProfile ?? dataMetadata?.latencyProfile,
+          );
+          const persistMessages = executionMode !== "dry_run";
           const emittedToolUseIds = new Set<string>();
+
+          if (mode === "claude-code" && executionMode !== "live") {
+            ws.send(frame("chat.error", {
+              error: "claude-code mode requires live execution. Use mode=api for shadow/dry_run.",
+            }, msg.id));
+            break;
+          }
 
           if (mode === "claude-code") {
             // ── Claude Code CLI mode (uses subscription, not API) ──
@@ -9075,10 +9435,13 @@ wss.on("connection", (ws) => {
             }, msg.id));
           } else {
             // ── API mode (OpenRouter / Anthropic) ──
-            // Intent routing — try to route specialist queries to the right agent
+            // Classify intent using LLM (replaces all regex-based intent detection)
+            const chatClassification = await classifyIntent(data.content, config);
+
+            // Intent routing — route specialist queries to the right agent
             let effectiveAgentId = agentId;
             let routeDecision: RouteDecision | null = null;
-            const routeResult = await routeIntent(data.content, agentId);
+            const routeResult = await routeIntent(agentId, chatClassification.routeToAgent, chatClassification.confidence);
             if (routeResult.routed) {
               routeDecision = routeResult;
               effectiveAgentId = routeResult.agentId;
@@ -9086,7 +9449,9 @@ wss.on("connection", (ws) => {
             }
 
             // Ensure conversation exists BEFORE runAgent so all events use the real ID
-            const convId = await ensureConversation(conversationId || undefined, effectiveAgentId, !conversationId ? data.metadata : undefined);
+            const convId = persistMessages
+              ? await ensureConversation(conversationId || undefined, effectiveAgentId, !conversationId ? data.metadata : undefined)
+              : (conversationId && conversationId.trim() ? conversationId : crypto.randomUUID());
 
             // Emit chat.routed event if intent router selected a different agent
             const agentVisibility = process.env.JOI_AGENT_VISIBILITY === "1";
@@ -9108,6 +9473,10 @@ wss.on("connection", (ws) => {
               userMessage: data.content,
               config,
               model: data.model,
+              enableTools: chatClassification.needsTools,
+              executionMode,
+              persistMessages,
+              latencyProfile,
               broadcast,
               onToolPlan: (toolCalls) => {
                 const steps = toolCalls.map((tc) => getToolPlanStep(tc.name, tc.input));
@@ -9170,6 +9539,7 @@ wss.on("connection", (ws) => {
               toolProvider: result.toolProvider,
               usage: result.usage,
               costUsd: result.costUsd,
+              executionMode,
               latencyMs: Date.now() - apiStartMs,
               timings: result.timings,
               ...(agentVisibility ? {
@@ -9822,13 +10192,18 @@ server.listen(port, host, () => {
 ╚═══════════════════════════════════════╝
   `);
 
-  // Start cron scheduler
-  startScheduler(config);
+  const schedulerDisabled = process.env.JOI_DISABLE_SCHEDULER === "1";
+  if (schedulerDisabled) {
+    console.log("[Server] Scheduler disabled (JOI_DISABLE_SCHEDULER=1)");
+  } else {
+    // Start cron scheduler
+    startScheduler(config);
 
-  // Register built-in system cron jobs (idempotent)
-  registerBuiltInJobs().catch((err) =>
-    console.warn("[Server] Failed to register built-in cron jobs:", err),
-  );
+    // Register built-in system cron jobs (idempotent)
+    registerBuiltInJobs().catch((err) =>
+      console.warn("[Server] Failed to register built-in cron jobs:", err),
+    );
+  }
 
   // Start Obsidian vault watcher if configured
   if (config.obsidian.syncEnabled && config.obsidian.vaultPath) {
@@ -9840,15 +10215,25 @@ server.listen(port, host, () => {
     console.warn("[Server] Failed to migrate Google tokens:", err),
   );
 
-  // Init channel manager (auto-connects enabled channels)
-  initChannelManager(config, broadcast).catch((err) =>
-    console.warn("[Server] Failed to init channel manager:", err),
-  );
+  const channelsDisabled = process.env.JOI_DISABLE_CHANNEL_AUTOSTART === "1";
+  if (channelsDisabled) {
+    console.log("[Server] Channel autostart disabled (JOI_DISABLE_CHANNEL_AUTOSTART=1)");
+  } else {
+    // Init channel manager (auto-connects enabled channels)
+    initChannelManager(config, broadcast).catch((err) =>
+      console.warn("[Server] Failed to init channel manager:", err),
+    );
+  }
 
-  // Start cloud sync scheduler
-  startSyncScheduler((pairId, run) => {
-    broadcast("cloud-sync.completed", { pairId, run });
-  });
+  const cloudSyncDisabled = process.env.JOI_DISABLE_CLOUD_SYNC === "1";
+  if (cloudSyncDisabled) {
+    console.log("[Server] Cloud sync scheduler disabled (JOI_DISABLE_CLOUD_SYNC=1)");
+  } else {
+    // Start cloud sync scheduler
+    startSyncScheduler((pairId, run) => {
+      broadcast("cloud-sync.completed", { pairId, run });
+    });
+  }
 });
 
 // Graceful shutdown

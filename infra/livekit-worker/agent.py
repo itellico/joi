@@ -928,10 +928,12 @@ class JOIAgent(Agent):
                                 metrics_parts = [
                                     f"chunks={chunk_count}",
                                     f"model={data.get('model')}",
+                                    f"tool_model={data.get('toolModel')}" if data.get("toolModel") else None,
                                     f"usage={data.get('usage')}",
                                     f"total_ms={total_ms:.0f}",
                                     f"gateway_latency_ms={data.get('latencyMs')}",
                                 ]
+                                metrics_parts = [part for part in metrics_parts if part]
                                 if first_chunk_ms is not None:
                                     metrics_parts.append(f"first_chunk_ms={first_chunk_ms:.0f}")
                                 logger.info("Stream done: " + ", ".join(metrics_parts))

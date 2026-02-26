@@ -221,6 +221,7 @@ export default function Bookmarks() {
   const [suggestions, setSuggestions] = useState<Bookmark[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState("");
 
   // Filters
   const [search, setSearch] = useState("");
@@ -302,8 +303,17 @@ export default function Bookmarks() {
 
   const syncPull = useCallback(async () => {
     setSyncing(true);
+    setSyncMessage("");
     try {
-      await fetch("/api/bookmarks/sync/pull", { method: "POST" });
+      const res = await fetch("/api/bookmarks/sync/pull", { method: "POST" });
+      const data = await res.json();
+      const parts: string[] = [];
+      if (data.imported) parts.push(`${data.imported} imported`);
+      if (data.updated) parts.push(`${data.updated} updated`);
+      if (data.archived) parts.push(`${data.archived} archived`);
+      if (data.conflicts) parts.push(`${data.conflicts} conflicts (JOI wins)`);
+      setSyncMessage(parts.length > 0 ? `Sync: ${parts.join(", ")}` : "Sync: no changes");
+      setTimeout(() => setSyncMessage(""), 5000);
       await Promise.all([fetchBookmarks(), fetchMeta()]);
     } finally { setSyncing(false); }
   }, [fetchBookmarks, fetchMeta]);
@@ -534,9 +544,11 @@ export default function Bookmarks() {
     );
   }
 
-  const subtitle = stats
-    ? `${stats.total} bookmarks \u00B7 ${stats.domains} domains`
-    : "";
+  const subtitle = syncMessage
+    ? syncMessage
+    : stats
+      ? `${stats.total} bookmarks \u00B7 ${stats.domains} domains`
+      : "";
 
   return (
     <>

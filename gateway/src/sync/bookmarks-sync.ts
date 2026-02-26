@@ -26,6 +26,7 @@ export interface Bookmark {
   content_hash: string | null;
   chrome_date_added: string | null;
   last_synced_at: string | null;
+  sync_dirty: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -49,10 +50,22 @@ interface ChromeBookmarksFile {
 interface SyncResult {
   imported: number;
   updated: number;
+  archived: number;
+  conflicts: number;
   duplicates_removed: number;
   exported_to_chrome: number;
   errors: string[];
 }
+
+// Snapshot entry — what Chrome looked like at last sync
+interface SnapshotEntry {
+  chrome_id: string;
+  title: string;
+  url: string;
+  folder_path: string;
+  content_hash: string;
+}
+type ChromeSnapshot = Record<string, SnapshotEntry>; // keyed by content_hash
 
 // ─── URL cleaning ───
 
@@ -178,7 +191,7 @@ export async function updateBookmark(
   id: string,
   data: Partial<{ title: string; folder_path: string; tags: string[]; status: string; description: string }>,
 ): Promise<Bookmark> {
-  const updates: string[] = ["updated_at = NOW()"];
+  const updates: string[] = ["updated_at = NOW()", "sync_dirty = TRUE"];
   const params: unknown[] = [];
   let idx = 1;
 
@@ -245,7 +258,7 @@ export async function listFolders(): Promise<Array<{ folder_path: string; count:
 
 export async function moveBookmarks(ids: string[], targetFolder: string): Promise<number> {
   const result = await query(
-    `UPDATE bookmarks SET folder_path = $1, updated_at = NOW() WHERE id = ANY($2)`,
+    `UPDATE bookmarks SET folder_path = $1, updated_at = NOW(), sync_dirty = TRUE WHERE id = ANY($2)`,
     [targetFolder, ids],
   );
   return result.rowCount || 0;
@@ -273,6 +286,19 @@ export async function deleteFolder(folderPath: string): Promise<number> {
     [folderPath, folderPath + "/%"],
   );
   return result.rowCount || 0;
+}
+
+export async function moveFolder(source: string, target: string): Promise<number> {
+  // Rename folder_path for all bookmarks in source folder and subfolders
+  const exact = await query(
+    "UPDATE bookmarks SET folder_path = $2 WHERE folder_path = $1",
+    [source, target],
+  );
+  const nested = await query(
+    "UPDATE bookmarks SET folder_path = $2 || substr(folder_path, length($1) + 1) WHERE folder_path LIKE $1 || '/%'",
+    [source, target],
+  );
+  return (exact.rowCount || 0) + (nested.rowCount || 0);
 }
 
 // ─── LLM-powered optimization ───
@@ -392,18 +418,41 @@ export async function getBookmarkStats(): Promise<{
   };
 }
 
-// ─── Sync engine ───
+// ─── Sync engine (three-way merge) ───
+//
+// How it works:
+// 1. Snapshot = what Chrome looked like at last sync (stored as JSONB)
+// 2. Chrome now = current Chrome Bookmarks file
+// 3. JOI DB = current bookmarks in our database
+//
+// Diff snapshot vs Chrome now → Chrome-side changes (added/deleted/moved/renamed)
+// Diff snapshot vs JOI DB (sync_dirty flag) → JOI-side changes
+// Merge with JOI-wins conflict resolution.
+
+function buildSnapshot(
+  flat: Array<{ chrome_id: string; title: string; url: string; folder_path: string; date_added: string | null }>,
+): ChromeSnapshot {
+  const snap: ChromeSnapshot = {};
+  for (const b of flat) {
+    const hash = urlHash(b.url);
+    snap[hash] = { chrome_id: b.chrome_id, title: b.title, url: b.url, folder_path: b.folder_path, content_hash: hash };
+  }
+  return snap;
+}
 
 export async function syncFromChrome(): Promise<SyncResult> {
-  const stateResult = await query<{ profile_path: string; last_checksum: string | null }>(
-    "SELECT profile_path, last_checksum FROM bookmark_sync_state WHERE id = 'chrome'",
+  const stateResult = await query<{ profile_path: string; last_checksum: string | null; chrome_snapshot: ChromeSnapshot | null }>(
+    "SELECT profile_path, last_checksum, chrome_snapshot FROM bookmark_sync_state WHERE id = 'chrome'",
   );
   if (stateResult.rows.length === 0) throw new Error("No Chrome sync state configured");
 
-  const { profile_path } = stateResult.rows[0];
-  const result: SyncResult = { imported: 0, updated: 0, duplicates_removed: 0, exported_to_chrome: 0, errors: [] };
+  const { profile_path, chrome_snapshot } = stateResult.rows[0];
+  const snapshot: ChromeSnapshot = chrome_snapshot && Object.keys(chrome_snapshot).length > 0 ? chrome_snapshot : {};
+  const isFirstSync = Object.keys(snapshot).length === 0;
 
-  // Read Chrome bookmarks
+  const result: SyncResult = { imported: 0, updated: 0, archived: 0, conflicts: 0, duplicates_removed: 0, exported_to_chrome: 0, errors: [] };
+
+  // 1. Read current Chrome bookmarks
   let chromeData: ChromeBookmarksFile;
   try {
     chromeData = await readChromeBookmarks(profile_path);
@@ -411,51 +460,124 @@ export async function syncFromChrome(): Promise<SyncResult> {
     throw new Error(`Failed to read Chrome bookmarks: ${err}`);
   }
 
-  // Flatten all bookmarks
-  const chromeBookmarks: Array<{ chrome_id: string; title: string; url: string; folder_path: string; date_added: string | null }> = [];
+  // Flatten Chrome bookmarks
+  const chromeFlat: Array<{ chrome_id: string; title: string; url: string; folder_path: string; date_added: string | null }> = [];
   for (const [rootKey, rootNode] of Object.entries(chromeData.roots)) {
     if (rootNode && rootNode.children) {
-      flattenChromeBookmarks(rootNode, rootKey, chromeBookmarks);
+      flattenChromeBookmarks(rootNode, rootKey, chromeFlat);
     }
   }
+  const chromeNow = buildSnapshot(chromeFlat);
 
-  // Get existing bookmarks from DB
-  const existing = await query<{ id: string; url: string; content_hash: string; chrome_id: string }>(
-    "SELECT id, url, content_hash, chrome_id FROM bookmarks",
+  // 2. Load JOI bookmarks (with chrome source)
+  const joiAll = await query<Bookmark & { sync_dirty: boolean }>(
+    "SELECT *, sync_dirty FROM bookmarks WHERE source = 'chrome'",
   );
-  const existingByHash = new Map(existing.rows.map((r) => [r.content_hash, r]));
-  const existingByUrl = new Map(existing.rows.map((r) => [r.url, r]));
+  const joiByHash = new Map(joiAll.rows.filter((r) => r.content_hash).map((r) => [r.content_hash!, r]));
 
-  // Import new bookmarks, skip duplicates
-  for (const cb of chromeBookmarks) {
-    try {
-      const hash = urlHash(cb.url);
-      const clean = cleanUrl(cb.url);
-      const domain = extractDomain(cb.url);
-
-      if (existingByHash.has(hash) || existingByUrl.has(cb.url)) {
-        continue; // Already exists
+  // 3. Diff: what changed in Chrome since snapshot?
+  if (isFirstSync) {
+    // First sync: just import everything new, build snapshot
+    console.log("[Bookmarks] First sync — importing new bookmarks, building snapshot");
+    for (const [hash, entry] of Object.entries(chromeNow)) {
+      if (joiByHash.has(hash)) continue; // Already in DB
+      try {
+        const clean = cleanUrl(entry.url);
+        const domain = extractDomain(entry.url);
+        await query(
+          `INSERT INTO bookmarks (chrome_id, title, url, folder_path, domain, url_clean, content_hash,
+             source, status, last_synced_at, sync_dirty)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'chrome', 'active', NOW(), FALSE)
+           ON CONFLICT DO NOTHING`,
+          [entry.chrome_id, entry.title, entry.url, entry.folder_path, domain, clean, hash],
+        );
+        result.imported++;
+      } catch (err) {
+        result.errors.push(`Import: ${entry.url} — ${err}`);
       }
+    }
+  } else {
+    // Three-way merge
 
-      await query(
-        `INSERT INTO bookmarks (chrome_id, title, url, folder_path, domain, url_clean, content_hash,
-           chrome_date_added, source, status, last_synced_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'chrome', 'active', NOW())
-         ON CONFLICT DO NOTHING`,
-        [cb.chrome_id, cb.title, cb.url, cb.folder_path, domain, clean, hash, cb.date_added],
-      );
-      result.imported++;
-    } catch (err) {
-      result.errors.push(`Import error: ${cb.url} — ${err}`);
+    // Chrome additions: in chromeNow but not in snapshot
+    for (const [hash, entry] of Object.entries(chromeNow)) {
+      if (snapshot[hash]) continue; // Was already known
+      if (joiByHash.has(hash)) continue; // Already in JOI
+      try {
+        const clean = cleanUrl(entry.url);
+        const domain = extractDomain(entry.url);
+        await query(
+          `INSERT INTO bookmarks (chrome_id, title, url, folder_path, domain, url_clean, content_hash,
+             source, status, last_synced_at, sync_dirty)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'chrome', 'active', NOW(), FALSE)
+           ON CONFLICT DO NOTHING`,
+          [entry.chrome_id, entry.title, entry.url, entry.folder_path, domain, clean, hash],
+        );
+        result.imported++;
+      } catch (err) {
+        result.errors.push(`Import: ${entry.url} — ${err}`);
+      }
+    }
+
+    // Chrome deletions: in snapshot but not in chromeNow
+    for (const [hash, snapEntry] of Object.entries(snapshot)) {
+      if (chromeNow[hash]) continue; // Still in Chrome
+      const joi = joiByHash.get(hash);
+      if (!joi) continue; // Already gone from JOI too
+
+      if (joi.sync_dirty) {
+        // Conflict: JOI modified it but Chrome deleted it → JOI wins, keep it
+        result.conflicts++;
+      } else {
+        // Chrome deleted, JOI didn't touch it → archive in JOI
+        await query(
+          "UPDATE bookmarks SET status = 'archived', updated_at = NOW(), sync_dirty = FALSE WHERE id = $1",
+          [joi.id],
+        );
+        result.archived++;
+      }
+    }
+
+    // Chrome moves/renames: in both snapshot and chromeNow but folder or title changed
+    for (const [hash, entry] of Object.entries(chromeNow)) {
+      const snapEntry = snapshot[hash];
+      if (!snapEntry) continue; // New in Chrome, already handled above
+      const joi = joiByHash.get(hash);
+      if (!joi) continue;
+
+      const chromeMoved = entry.folder_path !== snapEntry.folder_path;
+      const chromeRenamed = entry.title !== snapEntry.title;
+      if (!chromeMoved && !chromeRenamed) continue;
+
+      if (joi.sync_dirty) {
+        // Conflict: both sides changed → JOI wins
+        result.conflicts++;
+      } else {
+        // Apply Chrome's changes to JOI
+        const updates: string[] = ["updated_at = NOW()", "sync_dirty = FALSE", "last_synced_at = NOW()"];
+        const params: unknown[] = [];
+        let idx = 1;
+        if (chromeMoved) { updates.push(`folder_path = $${idx++}`); params.push(entry.folder_path); }
+        if (chromeRenamed) { updates.push(`title = $${idx++}`); params.push(entry.title); }
+        params.push(joi.id);
+        await query(`UPDATE bookmarks SET ${updates.join(", ")} WHERE id = $${idx}`, params);
+        result.updated++;
+      }
     }
   }
 
-  // Update sync state
+  // 4. Clear sync_dirty on all chrome-source bookmarks that weren't conflicted
+  await query(
+    "UPDATE bookmarks SET sync_dirty = FALSE, last_synced_at = NOW() WHERE source = 'chrome' AND sync_dirty = TRUE AND status != 'archived'",
+  );
+
+  // 5. Save new snapshot
+  const newSnapshot = buildSnapshot(chromeFlat);
   const fileHash = createHash("md5").update(JSON.stringify(chromeData)).digest("hex");
   await query(
     `UPDATE bookmark_sync_state SET last_sync_at = NOW(), last_checksum = $1,
-       bookmarks_count = $2, updated_at = NOW() WHERE id = 'chrome'`,
-    [fileHash, chromeBookmarks.length],
+       bookmarks_count = $2, chrome_snapshot = $3, updated_at = NOW() WHERE id = 'chrome'`,
+    [fileHash, chromeFlat.length, JSON.stringify(newSnapshot)],
   );
 
   return result;
@@ -468,7 +590,7 @@ export async function exportToChrome(): Promise<SyncResult> {
   if (stateResult.rows.length === 0) throw new Error("No Chrome sync state configured");
 
   const { profile_path } = stateResult.rows[0];
-  const result: SyncResult = { imported: 0, updated: 0, duplicates_removed: 0, exported_to_chrome: 0, errors: [] };
+  const result: SyncResult = { imported: 0, updated: 0, archived: 0, conflicts: 0, duplicates_removed: 0, exported_to_chrome: 0, errors: [] };
 
   // Backup current Chrome bookmarks
   await copyFile(profile_path, profile_path + ".bak");
