@@ -210,24 +210,32 @@ function messagesToOpenAI(
   const result: OpenAI.ChatCompletionMessageParam[] = [
     { role: "system", content: systemPrompt },
   ];
-  const toolResultToText = (content: unknown): string => (
-    typeof content === "string" ? content : JSON.stringify(content)
-  );
+  const toolResultToText = (content: unknown): string => {
+    if (typeof content === "string") return content || "{}";
+    return JSON.stringify(content) ?? "{}";
+  };
+
+  // Track valid tool_call_ids from assistant messages so we can skip orphaned tool_results
+  // (happens when conversation history is truncated at message boundaries)
+  const knownToolCallIds = new Set<string>();
 
   for (const msg of messages) {
     if (msg.role === "user") {
       if (typeof msg.content === "string") {
         result.push({ role: "user", content: msg.content });
       } else if (Array.isArray(msg.content)) {
-        // Separate text blocks from tool_result blocks
         const textParts: string[] = [];
         const toolResults: Array<{ tool_use_id: string; content: string }> = [];
         for (const block of msg.content) {
           if (block.type === "tool_result") {
-            toolResults.push({
-              tool_use_id: (block as { tool_use_id: string }).tool_use_id,
-              content: toolResultToText((block as { content: unknown }).content),
-            });
+            const id = (block as { tool_use_id: string }).tool_use_id;
+            if (knownToolCallIds.has(id)) {
+              toolResults.push({
+                tool_use_id: id,
+                content: toolResultToText((block as { content: unknown }).content),
+              });
+            }
+            // Skip orphaned tool_results — no matching tool_call in preceding assistant message
           } else if (block.type === "text") {
             textParts.push((block as { text: string }).text);
           }
@@ -256,6 +264,7 @@ function messagesToOpenAI(
             textParts.push((block as Anthropic.TextBlock).text);
           } else if (block.type === "tool_use") {
             const tu = block as Anthropic.ToolUseBlock;
+            knownToolCallIds.add(tu.id);
             toolCalls.push({
               id: tu.id,
               type: "function",
@@ -266,6 +275,8 @@ function messagesToOpenAI(
             });
           }
         }
+        // Skip empty assistant messages (no text, no tool_calls)
+        if (textParts.length === 0 && toolCalls.length === 0) continue;
         const assistantMsg: OpenAI.ChatCompletionAssistantMessageParam = {
           role: "assistant",
           content: textParts.join("") || null,

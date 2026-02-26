@@ -6,9 +6,8 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import OpenAI from "openai";
 import type { JoiConfig } from "../config/schema.js";
-import { getModelClient, getOllamaUrl } from "./model-router.js";
+import { getModelClient } from "./model-router.js";
 import { ollamaChat } from "./ollama-llm.js";
 
 export interface IntentClassification {
@@ -59,6 +58,7 @@ const NO_TOOLS_CLASSIFICATION: IntentClassification = {
 // Cache to avoid redundant LLM calls for identical messages
 const cache = new Map<string, { result: IntentClassification; ts: number }>();
 const CACHE_TTL_MS = 120_000;
+const CLASSIFIER_TIMEOUT_MS = 1500; // Hard timeout — fallback to tools-enabled if slower
 
 function cleanCache(): void {
   const now = Date.now();
@@ -91,54 +91,12 @@ export async function classifyIntent(
   const startMs = Date.now();
 
   try {
-    const { client, openaiClient, model, provider, ollamaUrl } = await getModelClient(config, "classifier");
+    const classifyPromise = classifyWithLLM(trimmed, config);
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("classifier_timeout")), CLASSIFIER_TIMEOUT_MS),
+    );
 
-    let responseText: string;
-
-    if (provider === "ollama" && ollamaUrl) {
-      const result = await ollamaChat(ollamaUrl, model, CLASSIFIER_SYSTEM_PROMPT, trimmed, { maxTokens: 128, temperature: 0 });
-      responseText = result.text;
-    } else if (openaiClient) {
-      const response = await openaiClient.chat.completions.create({
-        model,
-        max_tokens: 128,
-        temperature: 0,
-        messages: [
-          { role: "system", content: CLASSIFIER_SYSTEM_PROMPT },
-          { role: "user", content: trimmed },
-        ],
-      });
-      responseText = response.choices[0]?.message?.content || "";
-    } else if (client) {
-      const response = await client.messages.create({
-        model,
-        max_tokens: 128,
-        temperature: 0,
-        system: CLASSIFIER_SYSTEM_PROMPT,
-        messages: [{ role: "user", content: trimmed }],
-      });
-      const textBlock = response.content.find((b: Anthropic.ContentBlock) => b.type === "text");
-      responseText = (textBlock as Anthropic.TextBlock)?.text || "";
-    } else {
-      console.warn("[intent-classifier] No API client available, defaulting to tools-enabled");
-      return DEFAULT_CLASSIFICATION;
-    }
-
-    // Parse JSON from response (handle possible markdown fences)
-    const cleaned = responseText.replace(/```json\s*/g, "").replace(/```\s*/g, "");
-    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      console.warn("[intent-classifier] No JSON in response:", responseText.slice(0, 200));
-      return DEFAULT_CLASSIFICATION;
-    }
-
-    const parsed = JSON.parse(jsonMatch[0]);
-    const result: IntentClassification = {
-      needsTools: typeof parsed.needsTools === "boolean" ? parsed.needsTools : true,
-      domain: typeof parsed.domain === "string" ? parsed.domain : "general",
-      routeToAgent: typeof parsed.routeToAgent === "string" ? parsed.routeToAgent : null,
-      confidence: typeof parsed.confidence === "number" ? parsed.confidence : 0.5,
-    };
+    const result = await Promise.race([classifyPromise, timeoutPromise]);
 
     // Cache result
     cache.set(trimmed, { result, ts: Date.now() });
@@ -150,12 +108,65 @@ export async function classifyIntent(
     return result;
   } catch (err) {
     const latencyMs = Date.now() - startMs;
-    console.error(
-      `[intent-classifier] Failed after ${latencyMs}ms, defaulting to tools-enabled:`,
-      err instanceof Error ? err.message : err,
+    const isTimeout = err instanceof Error && err.message === "classifier_timeout";
+    console.warn(
+      `[intent-classifier] ${isTimeout ? "Timeout" : "Failed"} after ${latencyMs}ms, defaulting to tools-enabled:`,
+      isTimeout ? `>${CLASSIFIER_TIMEOUT_MS}ms` : (err instanceof Error ? err.message : err),
     );
     return DEFAULT_CLASSIFICATION;
   }
+}
+
+/** Internal: make the actual LLM call (separated for timeout wrapping) */
+async function classifyWithLLM(message: string, config: JoiConfig): Promise<IntentClassification> {
+  const { client, openaiClient, model, provider, ollamaUrl } = await getModelClient(config, "classifier");
+
+  let responseText: string;
+
+  if (provider === "ollama" && ollamaUrl) {
+    const result = await ollamaChat(ollamaUrl, model, CLASSIFIER_SYSTEM_PROMPT, message, { maxTokens: 128, temperature: 0 });
+    responseText = result.text;
+  } else if (openaiClient) {
+    const response = await openaiClient.chat.completions.create({
+      model,
+      max_tokens: 128,
+      temperature: 0,
+      messages: [
+        { role: "system", content: CLASSIFIER_SYSTEM_PROMPT },
+        { role: "user", content: message },
+      ],
+    });
+    responseText = response.choices[0]?.message?.content || "";
+  } else if (client) {
+    const response = await client.messages.create({
+      model,
+      max_tokens: 128,
+      temperature: 0,
+      system: CLASSIFIER_SYSTEM_PROMPT,
+      messages: [{ role: "user", content: message }],
+    });
+    const textBlock = response.content.find((b: Anthropic.ContentBlock) => b.type === "text");
+    responseText = (textBlock as Anthropic.TextBlock)?.text || "";
+  } else {
+    console.warn("[intent-classifier] No API client available, defaulting to tools-enabled");
+    return DEFAULT_CLASSIFICATION;
+  }
+
+  // Parse JSON from response (handle possible markdown fences)
+  const cleaned = responseText.replace(/```json\s*/g, "").replace(/```\s*/g, "");
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    console.warn("[intent-classifier] No JSON in response:", responseText.slice(0, 200));
+    return DEFAULT_CLASSIFICATION;
+  }
+
+  const parsed = JSON.parse(jsonMatch[0]);
+  return {
+    needsTools: typeof parsed.needsTools === "boolean" ? parsed.needsTools : true,
+    domain: typeof parsed.domain === "string" ? parsed.domain : "general",
+    routeToAgent: typeof parsed.routeToAgent === "string" ? parsed.routeToAgent : null,
+    confidence: typeof parsed.confidence === "number" ? parsed.confidence : 0.5,
+  };
 }
 
 /** Map classifier domain to voice intent label for filler text */

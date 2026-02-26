@@ -1334,9 +1334,6 @@ app.post("/api/voice/chat", async (req, res) => {
     });
     res.flushHeaders?.();
 
-    const convId = persistMessages
-      ? await ensureConversation(conversationId, agentId || "personal")
-      : (conversationId && conversationId.trim() ? conversationId : crypto.randomUUID());
     const voiceModel = config.livekit.voiceModel || process.env.JOI_VOICE_MODEL || "openai/gpt-4o-mini";
     const voiceHistoryLimitRaw = Number.parseInt(
       String(config.livekit.voiceHistoryLimit ?? process.env.JOI_VOICE_HISTORY_LIMIT ?? "8"),
@@ -1347,8 +1344,15 @@ app.post("/api/voice/chat", async (req, res) => {
       : 8;
     const voiceToolsEnabled = config.livekit.voiceEnableTools ?? (process.env.JOI_VOICE_ENABLE_TOOLS === "1");
     const voiceMemoryEnabled = config.livekit.voiceIncludeMemory ?? (process.env.JOI_VOICE_INCLUDE_MEMORY === "1");
-    // Classify intent using LLM (replaces regex-based shouldEnableVoiceTools)
-    const voiceClassification = await classifyIntent(String(message || ""), config);
+    // Start timing before classifier — captures true user-perceived latency
+    const voiceStartMs = Date.now();
+    // Run conversation lookup and intent classification in parallel to reduce voice latency
+    const [convId, voiceClassification] = await Promise.all([
+      persistMessages
+        ? ensureConversation(conversationId, agentId || "personal")
+        : Promise.resolve(conversationId && conversationId.trim() ? conversationId : crypto.randomUUID()),
+      classifyIntent(String(message || ""), config),
+    ]);
     _lastClassifiedDomain = voiceClassification.domain;
     const hasToolIntent = voiceClassification.needsTools;
     const effectiveVoiceToolsEnabled = voiceToolsEnabled && hasToolIntent;
@@ -1368,7 +1372,6 @@ app.post("/api/voice/chat", async (req, res) => {
       .join("\n\n");
     const stripVoiceTags = (text: string) =>
       text.replace(/\[(?:[a-z][a-z0-9_-]{0,20})\]\s*/gi, "");
-    const voiceStartMs = Date.now();
     const emittedToolUseIds = new Set<string>();
     type VoiceToolFillerState = {
       toolName: string;
@@ -9435,6 +9438,7 @@ wss.on("connection", (ws) => {
             }, msg.id));
           } else {
             // ── API mode (OpenRouter / Anthropic) ──
+            const apiStartMs = Date.now();
             // Classify intent using LLM (replaces all regex-based intent detection)
             const chatClassification = await classifyIntent(data.content, config);
 
@@ -9465,8 +9469,6 @@ wss.on("connection", (ws) => {
                 matchedPattern: routeDecision.matchedPattern,
               }, msg.id));
             }
-
-            const apiStartMs = Date.now();
             const runOptions: Parameters<typeof runAgent>[0] = {
               conversationId: convId,
               agentId: effectiveAgentId,
