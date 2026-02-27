@@ -239,15 +239,17 @@ export function runTurnRuleChecks(
 
   let patterns_ok = true;
   if (turn.expected_content_patterns) {
-    for (const pattern of turn.expected_content_patterns) {
+    for (const rawPattern of turn.expected_content_patterns) {
       try {
+        // Strip inline flags like (?i) — JS RegExp doesn't support them; we pass "i" as flag
+        const pattern = rawPattern.replace(/^\(\?[imsx]+\)/, "");
         const regex = new RegExp(pattern, "i");
         if (!regex.test(actualContent)) {
           patterns_ok = false;
           details.push(`Content pattern not matched: /${pattern}/i`);
         }
       } catch {
-        details.push(`Invalid regex pattern: ${pattern}`);
+        details.push(`Invalid regex pattern: ${rawPattern}`);
       }
     }
   }
@@ -284,15 +286,17 @@ export function runRuleChecks(
 
   // Check content patterns (regex)
   let patterns_ok = true;
-  for (const pattern of testCase.expected_content_patterns) {
+  for (const rawPattern of testCase.expected_content_patterns) {
     try {
+      // Strip inline flags like (?i) — JS RegExp doesn't support them; we pass "i" as flag
+      const pattern = rawPattern.replace(/^\(\?[imsx]+\)/, "");
       const regex = new RegExp(pattern, "i");
       if (!regex.test(actualContent)) {
         patterns_ok = false;
         details.push(`Content pattern not matched: /${pattern}/i`);
       }
     } catch {
-      details.push(`Invalid regex pattern: ${pattern}`);
+      details.push(`Invalid regex pattern: ${rawPattern}`);
     }
   }
 

@@ -150,7 +150,7 @@ BEGIN
     'multi-turn', 'multi-turn', 2,
     '[
       {"role": "user", "message": "Remember that my favorite programming language is Rust. I really love its type system and memory safety.", "expected_tools": ["memory_store"], "description": "Store preference"},
-      {"role": "user", "message": "What is my favorite programming language and why do I like it?", "expected_tools": ["memory_search"], "expected_content_patterns": ["(?i)rust", "(?i)(type system|memory safety)"], "description": "Recall preference"}
+      {"role": "user", "message": "What is my favorite programming language and why do I like it?", "expected_tools": ["memory_search"], "expected_content_patterns": ["rust", "(type system|memory safety)"], "description": "Recall preference"}
     ]'::jsonb,
     ARRAY['memory_store', 'memory_search'], 0.6, 1);
 
@@ -173,8 +173,8 @@ BEGIN
     'multi-turn', 'multi-turn', 3,
     '[
       {"role": "user", "message": "I have a meeting with Sarah tomorrow at 3pm about the Q4 budget.", "description": "Set context with names and details"},
-      {"role": "user", "message": "Can you remind me about it?", "expected_content_patterns": ["(?i)sarah", "(?i)(3\\s*pm|15:00)", "(?i)(budget|Q4)"], "description": "Pronoun resolution - it refers to meeting"},
-      {"role": "user", "message": "What time was that again?", "expected_content_patterns": ["(?i)(3\\s*pm|15:00)"], "description": "Continued pronoun resolution"}
+      {"role": "user", "message": "Can you remind me about it?", "expected_content_patterns": ["sarah", "(3\\s*pm|15:00)", "(budget|Q4)"], "description": "Pronoun resolution - it refers to meeting"},
+      {"role": "user", "message": "What time was that again?", "expected_content_patterns": ["(3\\s*pm|15:00)"], "description": "Continued pronoun resolution"}
     ]'::jsonb,
     ARRAY[]::text[], 0.6, 3);
 
@@ -186,7 +186,7 @@ BEGIN
     '[
       {"role": "user", "message": "Remember that my birthday is on March 15th.", "expected_tools": ["memory_store"], "description": "Store initial fact"},
       {"role": "user", "message": "Actually, I made a mistake. My birthday is on March 25th, not the 15th.", "expected_tools": ["memory_store"], "description": "Correct the fact"},
-      {"role": "user", "message": "When is my birthday?", "expected_tools": ["memory_search"], "expected_content_patterns": ["(?i)march 25"], "unexpected_tools": [], "description": "Verify corrected fact"}
+      {"role": "user", "message": "When is my birthday?", "expected_tools": ["memory_search"], "expected_content_patterns": ["march 25"], "unexpected_tools": [], "description": "Verify corrected fact"}
     ]'::jsonb,
     ARRAY['memory_store', 'memory_search'], 0.6, 4);
 
@@ -198,7 +198,7 @@ BEGIN
     'multi-turn', 'multi-turn', 5,
     '[
       {"role": "user", "message": "Create a new entry in the knowledge store: Project Alpha is a machine learning pipeline project, status is active, team lead is Sarah Chen, budget is $150k.", "expected_tools": ["store_upsert"], "description": "Create store object"},
-      {"role": "user", "message": "What do we have stored about Project Alpha?", "expected_tools": ["store_query"], "expected_content_patterns": ["(?i)alpha", "(?i)sarah"], "description": "Query the object"},
+      {"role": "user", "message": "What do we have stored about Project Alpha?", "expected_tools": ["store_query"], "expected_content_patterns": ["alpha", "sarah"], "description": "Query the object"},
       {"role": "user", "message": "Update Project Alpha - the budget has been increased to $200k and add a note that phase 1 is complete.", "expected_tools": ["store_upsert"], "description": "Update the object"},
       {"role": "user", "message": "Search the store for all active projects", "expected_tools": ["store_query"], "description": "Search by attribute"},
       {"role": "user", "message": "Delete the Project Alpha entry from the store", "expected_tools": ["store_delete"], "description": "Delete the object"}
@@ -257,7 +257,7 @@ BEGIN
       {"role": "user", "message": "What interactions have I had with the first contact you found?", "expected_tools": ["contacts_interactions"], "description": "Check interactions"},
       {"role": "user", "message": "Remember that Marcus works at Anthropic as a software engineer.", "expected_tools": ["memory_store"], "description": "Enrich with fact"},
       {"role": "user", "message": "Now search my contacts for Marcus again and tell me what we know about him.", "expected_tools": ["contacts_search"], "description": "Verify enrichment"},
-      {"role": "user", "message": "Search my memories for anything about Marcus.", "expected_tools": ["memory_search"], "expected_content_patterns": ["(?i)(anthropic|software engineer)"], "description": "Cross-check memory"}
+      {"role": "user", "message": "Search my memories for anything about Marcus.", "expected_tools": ["memory_search"], "expected_content_patterns": ["(anthropic|software engineer)"], "description": "Cross-check memory"}
     ]'::jsonb,
     ARRAY['contacts_search', 'memory_store', 'memory_search'], 0.5, 1);
 
@@ -274,7 +274,7 @@ BEGIN
       {"role": "user", "message": "We need priority levels: urgent, normal, and low. Urgent ones should be real-time push.", "description": "Priority details"},
       {"role": "user", "message": "Users should be able to configure their preferences per channel.", "description": "User preferences"},
       {"role": "user", "message": "We should also add a digest mode that batches low-priority notifications into a daily summary.", "description": "Digest feature"},
-      {"role": "user", "message": "Can you summarize what we have discussed so far about this notification system?", "expected_content_patterns": ["(?i)notification", "(?i)(email|push|in-app)", "(?i)(urgent|priority)", "(?i)digest"], "description": "Summary request"},
+      {"role": "user", "message": "Can you summarize what we have discussed so far about this notification system?", "expected_content_patterns": ["notification", "(email|push|in-app)", "(urgent|priority)", "digest"], "description": "Summary request"},
       {"role": "user", "message": "Please store this planning session as an episode in your memory.", "expected_tools": ["memory_store"], "description": "Store as episode"}
     ]'::jsonb,
     ARRAY['memory_store'], 0.5, 1);
@@ -289,7 +289,7 @@ BEGIN
       {"role": "user", "message": "My brother Thomas picked me up from the airport. He just got a new Tesla Model 3.", "description": "Mention family and details"},
       {"role": "user", "message": "We went to our favorite restaurant, Steirereck. Had the best Tafelspitz.", "description": "Mention restaurant preference"},
       {"role": "user", "message": "Can you remember the key things from what I just told you?", "expected_tools": ["memory_store"], "description": "Prompt to remember"},
-      {"role": "user", "message": "What do you know about my brother?", "expected_tools": ["memory_search"], "expected_content_patterns": ["(?i)thomas"], "description": "Verify recall"}
+      {"role": "user", "message": "What do you know about my brother?", "expected_tools": ["memory_search"], "expected_content_patterns": ["thomas"], "description": "Verify recall"}
     ]'::jsonb,
     ARRAY['memory_store', 'memory_search'], 0.5, 2);
 
@@ -336,12 +336,12 @@ BEGIN
       {"role": "user", "message": "Can you suggest a good venue? Maybe a restaurant with a private room.", "description": "Venue discussion"},
       {"role": "user", "message": "I like the restaurant idea. We should also hire a small jazz trio for live music.", "description": "Entertainment"},
       {"role": "user", "message": "For the menu, let us do a 4-course Italian dinner with wine pairing.", "description": "Menu planning"},
-      {"role": "user", "message": "We need to send invitations. Can you help me draft one?", "expected_content_patterns": ["(?i)anna", "(?i)(march 15|birthday)"], "description": "Invitation draft - should reference Anna and date"},
-      {"role": "user", "message": "What is our total estimated budget breakdown so far?", "expected_content_patterns": ["(?i)(5.?000|budget|euro)"], "description": "Budget check - should reference 5000 euro budget"},
+      {"role": "user", "message": "We need to send invitations. Can you help me draft one?", "expected_content_patterns": ["anna", "(march 15|birthday)"], "description": "Invitation draft - should reference Anna and date"},
+      {"role": "user", "message": "What is our total estimated budget breakdown so far?", "expected_content_patterns": ["(5.?000|budget|euro)"], "description": "Budget check - should reference 5000 euro budget"},
       {"role": "user", "message": "Actually, let us increase the budget to 6000 euros. I want to add a custom cake.", "description": "Budget update"},
       {"role": "user", "message": "Remember all these party planning details for me.", "expected_tools": ["memory_store"], "description": "Store planning details"},
-      {"role": "user", "message": "Give me a complete summary of the party plan.", "expected_content_patterns": ["(?i)anna", "(?i)italian", "(?i)jazz", "(?i)30", "(?i)6.?000"], "description": "Full summary - must retain ALL details"},
-      {"role": "user", "message": "How many people are we inviting and what is the per-person budget?", "expected_content_patterns": ["(?i)30", "(?i)200"], "description": "Math check: 6000/30 = 200 per person"}
+      {"role": "user", "message": "Give me a complete summary of the party plan.", "expected_content_patterns": ["anna", "italian", "jazz", "30", "6.?000"], "description": "Full summary - must retain ALL details"},
+      {"role": "user", "message": "How many people are we inviting and what is the per-person budget?", "expected_content_patterns": ["30", "200"], "description": "Math check: 6000/30 = 200 per person"}
     ]'::jsonb,
     ARRAY['memory_store'], 0.5, 1);
 
@@ -355,8 +355,8 @@ BEGIN
     '[
       {"role": "user", "message": "Remember that I am allergic to shellfish. This is important health information about my identity.", "expected_tools": ["memory_store"], "description": "Store identity fact"},
       {"role": "user", "message": "Also store a solution: when dealing with API rate limits, implement exponential backoff with jitter.", "expected_tools": ["memory_store"], "description": "Store solution"},
-      {"role": "user", "message": "Search all my memories for anything related to health.", "expected_tools": ["memory_search"], "expected_content_patterns": ["(?i)(shellfish|allerg)"], "description": "Cross-area search"},
-      {"role": "user", "message": "Now search for anything about API rate limits.", "expected_tools": ["memory_search"], "expected_content_patterns": ["(?i)(exponential backoff|jitter)"], "description": "Second cross-area search"}
+      {"role": "user", "message": "Search all my memories for anything related to health.", "expected_tools": ["memory_search"], "expected_content_patterns": ["(shellfish|allerg)"], "description": "Cross-area search"},
+      {"role": "user", "message": "Now search for anything about API rate limits.", "expected_tools": ["memory_search"], "expected_content_patterns": ["(exponential backoff|jitter)"], "description": "Second cross-area search"}
     ]'::jsonb,
     ARRAY['memory_store', 'memory_search'], 0.5, 5);
 
