@@ -53,7 +53,27 @@ services:
     volumes:
       - redis_data:/data
 
+  toolbox:
+    build: ./infra/toolbox
+    container_name: joi-toolbox
+    restart: unless-stopped
+    ports:
+      - "3101:3101"
+    volumes:
+      - ./infra/toolbox/models:/app/models
+      - toolbox_data:/app/data
+    environment:
+      WAKEWORD_THRESHOLD: "0.5"
+      WAKEWORD_COOLDOWN: "3.0"
+      WAKEWORD_NAME: "hey_jarvis"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3101/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
 volumes:
   pgdata:
   ollama_data:
   redis_data:
+  toolbox_data:
