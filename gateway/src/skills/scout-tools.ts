@@ -97,7 +97,9 @@ function scanGeminiSkills(): Array<{
     .filter((entry) => !!entry.path);
 }
 
-// ─── Check official Anthropic skills repo ───
+// ─── Check Anthropic Claude Code community skills repo ───
+// These are Claude Code instruction-based skills (markdown files), NOT JOI gateway tools.
+// Included for informational purposes — they cannot be directly installed into JOI.
 
 async function checkOfficialSkills(): Promise<{
   available: Array<{ name: string; description: string }>;
@@ -124,7 +126,7 @@ async function checkOfficialSkills(): Promise<{
           .map((n) => n.trim())
           .filter((n) => n && !n.startsWith("."));
         resolve({
-          available: names.map((n) => ({ name: n, description: `Official Anthropic skill: ${n}` })),
+          available: names.map((n) => ({ name: n, description: `Claude Code community skill (not a JOI tool)` })),
         });
       },
     );
@@ -178,14 +180,9 @@ async function fullSkillAudit(): Promise<{
 
   const suggestedImprovements: string[] = [];
 
-  // Check for official skills we don't have
-  for (const official of officialSkills.available) {
-    if (!ccNames.has(official.name) && !codexNames.has(official.name) && !geminiNames.has(official.name) && !joiNames.has(official.name)) {
-      suggestedImprovements.push(
-        `Official Anthropic skill "${official.name}" is available but not installed`,
-      );
-    }
-  }
+  // Note: officialSkills are Claude Code community skills from github.com/anthropics/skills.
+  // They are NOT JOI gateway tools and cannot be "installed" into JOI, so we don't suggest them.
+  // They're included in the audit for informational purposes only.
 
   // Check for agents getting all tools
   if (agentsWithNoSkills.length > 0) {
@@ -275,7 +272,7 @@ export function getSkillScoutToolDefinitions(): Anthropic.Tool[] {
     },
     {
       name: "skill_scan_official",
-      description: "Check the official Anthropic skills repository (github.com/anthropics/skills) for available skills.",
+      description: "List Claude Code community skills from github.com/anthropics/skills. These are instruction-based markdown skills for Claude Code, not JOI gateway tools.",
       input_schema: {
         type: "object" as const,
         properties: {},
