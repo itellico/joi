@@ -9,7 +9,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { query } from "../db/client.js";
-import { createTask } from "../things/client.js";
+import { createTask, getActiveTasks } from "../things/client.js";
 import type { JoiConfig } from "../config/schema.js";
 
 const execFileAsync = promisify(execFile);
@@ -298,6 +298,24 @@ async function sendTelegramNotification(config: JoiConfig, message: string): Pro
 async function createRepairTask(report: SelfRepairReport): Promise<void> {
   const downServices = report.services.filter((s) => s.status === "down");
   const title = `🔧 Self-Repair: ${downServices.map((s) => s.name).join(", ")} down`;
+
+  // Dedup: skip if an open self-repair task already covers any of the same services
+  try {
+    const activeTasks = getActiveTasks();
+    const hasDuplicate = activeTasks.some((t) => {
+      if (!t.title.startsWith("🔧 Self-Repair:")) return false;
+      // Check if any down service name appears in the existing task title
+      return downServices.some((ds) => t.title.includes(ds.name));
+    });
+    if (hasDuplicate) {
+      console.log("[SelfRepair] Skipping Things3 task — duplicate already exists");
+      return;
+    }
+  } catch (err) {
+    // If we can't check for duplicates, proceed with creation
+    console.warn("[SelfRepair] Could not check for duplicate tasks:", (err as Error).message);
+  }
+
   const notes = [
     `Auto-detected at ${report.timestamp}`,
     "",
@@ -312,7 +330,6 @@ async function createRepairTask(report: SelfRepairReport): Promise<void> {
   ].join("\n");
 
   try {
-    // Find JOI project and create task there
     await createTask(title, {
       notes,
       tags: ["self-repair", "automated"],
