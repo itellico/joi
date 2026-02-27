@@ -27,6 +27,7 @@ import { getCalendarToolHandlers, getCalendarToolDefinitions } from "../google/c
 import { getGmailToolHandlers, getGmailToolDefinitions } from "../google/gmail-tools.js";
 import { getChannelToolHandlers, getChannelToolDefinitions } from "../channels/tools.js";
 import { getThingsToolHandlers, getThingsToolDefinitions } from "../things/tools.js";
+import { createTask as createThingsTask } from "../things/client.js";
 import { getObsidianToolHandlers, getObsidianToolDefinitions } from "../knowledge/obsidian-tools.js";
 import { getOutlineToolHandlers, getOutlineToolDefinitions } from "../sync/outline-tools.js";
 import { getNotionToolHandlers, getNotionToolDefinitions } from "../sync/notion-tools.js";
@@ -47,7 +48,12 @@ import { getQuotesToolHandlers, getQuotesToolDefinitions } from "../quotes/tools
 import { readFileSync } from "node:fs";
 import { resolveSkillPathByName } from "../skills/catalog.js";
 import { runClaudeCode } from "./claude-code.js";
-import { updateHeartbeat, createTask, updateTask, listTasks } from "./heartbeat.js";
+import {
+  updateHeartbeat,
+  createTask as createAgentTask,
+  updateTask as updateAgentTask,
+  listTasks as listAgentTasks,
+} from "./heartbeat.js";
 
 export interface ToolContext {
   config: JoiConfig;
@@ -599,15 +605,55 @@ toolRegistry.set("schedule_create", async (input, ctx) => {
     deleteAfterRun: schedule_type === "once",
   });
 
+  const scheduleLabel = schedule_type === "once"
+    ? `once at ${schedule_at}`
+    : schedule_type === "every"
+      ? `every ${interval_minutes} minutes`
+      : `cron: ${cron_expression}`;
+
+  const reminderSyncMode = ctx.config.tasks?.reminderSyncMode || "cron_plus_things";
+  let thingsTaskCreated = false;
+  let thingsTaskError: string | null = null;
+
+  if (reminderSyncMode === "cron_plus_things") {
+    try {
+      let when: string | undefined;
+      if (schedule_type === "once" && schedule_at) {
+        const parsed = new Date(schedule_at);
+        if (!Number.isNaN(parsed.getTime())) {
+          when = parsed.toISOString().slice(0, 10);
+        }
+      }
+
+      const notes = [
+        "Created by JOI reminder sync",
+        `Cron job: ${job.id}`,
+        `Schedule: ${scheduleLabel}`,
+        "",
+        message,
+      ].join("\n");
+
+      await createThingsTask(name, {
+        when,
+        list: when ? undefined : "anytime",
+        notes,
+        tags: ["joi-reminder"],
+      });
+      thingsTaskCreated = true;
+    } catch (err) {
+      thingsTaskError = err instanceof Error ? err.message : String(err);
+      console.warn("[schedule_create] Cron created but Things task sync failed:", thingsTaskError);
+    }
+  }
+
   return {
     created: true,
     id: job.id,
     name: job.name,
-    schedule: schedule_type === "once"
-      ? `once at ${schedule_at}`
-      : schedule_type === "every"
-        ? `every ${interval_minutes} minutes`
-        : `cron: ${cron_expression}`,
+    schedule: scheduleLabel,
+    reminder_sync_mode: reminderSyncMode,
+    things_task_created: thingsTaskCreated,
+    ...(thingsTaskError ? { things_task_error: thingsTaskError } : {}),
   };
 });
 
@@ -975,7 +1021,7 @@ toolRegistry.set("agent_task_create", async (input, ctx) => {
     deadline?: string;
   };
 
-  const task = await createTask({
+  const task = await createAgentTask({
     agent_id,
     assigned_by: ctx.agentId,
     title,
@@ -1007,7 +1053,7 @@ toolRegistry.set("agent_task_update", async (input, ctx) => {
     result_data?: unknown;
   };
 
-  const task = await updateTask(task_id, {
+  const task = await updateAgentTask(task_id, {
     status,
     progress,
     result_data,
@@ -1034,7 +1080,7 @@ toolRegistry.set("agent_task_list", async (input, ctx) => {
     limit?: number;
   };
 
-  const tasks = await listTasks({
+  const tasks = await listAgentTasks({
     agent_id: agent_id || undefined,
     status: status || undefined,
     assigned_by: assigned_by || undefined,
@@ -1316,7 +1362,7 @@ export function getToolDefinitions(allowedSkills?: string[] | null): Anthropic.T
     {
       name: "schedule_create",
       description:
-        "Create a scheduled or recurring task. The agent will be called with the given message at the scheduled time. Use for reminders, recurring check-ins, periodic tasks, etc.",
+        "Create a scheduled or recurring task. The agent will be called with the given message at the scheduled time. Use for reminders, recurring check-ins, periodic tasks, etc. Depending on Settings > Integrations > Reminder Mode, this can also mirror the reminder into Things3.",
       input_schema: {
         type: "object" as const,
         properties: {
@@ -1359,7 +1405,7 @@ export function getToolDefinitions(allowedSkills?: string[] | null): Anthropic.T
     },
     {
       name: "schedule_list",
-      description: "List all scheduled tasks with their status, last run info, and schedule.",
+      description: "List all scheduled tasks (reminders, recurring jobs, one-off timers) with their status, last run info, and schedule. Use this to verify or review scheduled reminders.",
       input_schema: {
         type: "object" as const,
         properties: {},
