@@ -5,7 +5,29 @@ import { utilityCall } from "../agent/model-router.js";
 import type { JoiConfig } from "../config/schema.js";
 import type { JudgeScores, QATestCase, CapturedToolInteraction, TurnDefinition, TurnResult } from "./types.js";
 
-const JUDGE_SYSTEM_PROMPT = `You are a QA judge evaluating an AI assistant's response to a test case.
+/** Build the judge system prompt with the current date/time context.
+ *  This is critical so the judge can correctly evaluate date-relative
+ *  queries like "tomorrow at 10am" against the tool parameters produced
+ *  by the agent at execution time. */
+function buildJudgeSystemPrompt(): string {
+  const now = new Date();
+  const dateStr = now.toLocaleDateString("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  const timeStr = now.toLocaleTimeString("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
+
+  return `You are a QA judge evaluating an AI assistant's response to a test case.
+
+**IMPORTANT — Current date/time context**: The test was executed on ${dateStr} at ${timeStr}.
+When evaluating date-relative expressions like "tomorrow", "next week", etc., use this date as the reference point.
+
 Score the response on three dimensions from 0.0 to 1.0:
 
 1. **correctness** — Did the assistant answer the question correctly and helpfully?
@@ -14,6 +36,7 @@ Score the response on three dimensions from 0.0 to 1.0:
 
 Return ONLY valid JSON (no markdown, no code fences):
 {"correctness": 0.0, "tool_accuracy": 0.0, "response_quality": 0.0, "reasoning": "brief explanation"}`;
+}
 
 export async function evaluateResponse(
   config: JoiConfig,
@@ -41,7 +64,7 @@ ${toolsSummary}
 Score this response.`;
 
   try {
-    const raw = await utilityCall(config, JUDGE_SYSTEM_PROMPT, userPrompt, {
+    const raw = await utilityCall(config, buildJudgeSystemPrompt(), userPrompt, {
       maxTokens: 300,
       temperature: 0.1,
       task: "utility",
@@ -158,7 +181,7 @@ ${toolsSummary}
 Score this turn's response.`;
 
   try {
-    const raw = await utilityCall(config, JUDGE_SYSTEM_PROMPT, userPrompt, {
+    const raw = await utilityCall(config, buildJudgeSystemPrompt(), userPrompt, {
       maxTokens: 300,
       temperature: 0.1,
       task: "utility",
