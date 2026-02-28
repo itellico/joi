@@ -89,7 +89,7 @@ read -r LIVEKIT_HOST LIVEKIT_PORT <<<"$(parse_url_host_port "${LIVEKIT_URL:-}" 7
 read -r REDIS_HOST REDIS_PORT <<<"$(parse_url_host_port "${JOI_TTS_CACHE_REDIS_URL:-}" 6379)"
 
 section "Processes"
-watchdog_pattern="watchdog.sh"
+watchdog_pattern="$PROJECT_ROOT/scripts/watchdog.sh"
 gateway_pattern="$PROJECT_ROOT/gateway.*src/server\\.ts"
 web_pattern="$PROJECT_ROOT/web.*vite"
 autodev_pattern="$PROJECT_ROOT/gateway.*autodev/worker"
@@ -180,9 +180,9 @@ for file in /tmp/joi-watchdog.log /tmp/joi-gateway.log /tmp/joi-autodev.log /tmp
   if [ -f "$file" ]; then
     echo "--- $file ---"
     if command -v rg >/dev/null 2>&1; then
-      tail -n "$RECENT_LINES" "$file" | rg -n -i "$ERROR_PATTERN" | tail -n 8 || tail -n 8 "$file"
+      tail -n "$RECENT_LINES" "$file" | rg --text -n -i "$ERROR_PATTERN" | tail -n 8 || tail -n 8 "$file"
     else
-      tail -n "$RECENT_LINES" "$file" | grep -nEi "$ERROR_PATTERN" | tail -n 8 || tail -n 8 "$file"
+      tail -n "$RECENT_LINES" "$file" | grep -a -nEi "$ERROR_PATTERN" | tail -n 8 || tail -n 8 "$file"
     fi
   fi
 done
