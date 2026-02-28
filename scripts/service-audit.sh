@@ -73,13 +73,23 @@ if [ -f "$ENV_FILE" ]; then
   set +a
 fi
 
+if [ -x "$SCRIPTS_DIR/mini-runtime-env.sh" ]; then
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    key="${line%%=*}"
+    value="${line#*=}"
+    [ -n "$key" ] || continue
+    export "$key=$value"
+  done < <("$SCRIPTS_DIR/mini-runtime-env.sh" --plain)
+fi
+
 read -r DB_HOST DB_PORT <<<"$(parse_url_host_port "${DATABASE_URL:-}" 5432)"
 read -r OLLAMA_HOST OLLAMA_PORT <<<"$(parse_url_host_port "${OLLAMA_URL:-}" 11434)"
 read -r LIVEKIT_HOST LIVEKIT_PORT <<<"$(parse_url_host_port "${LIVEKIT_URL:-}" 7880)"
 read -r REDIS_HOST REDIS_PORT <<<"$(parse_url_host_port "${JOI_TTS_CACHE_REDIS_URL:-}" 6379)"
 
 section "Processes"
-watchdog_pattern="$PROJECT_ROOT/scripts/watchdog.sh"
+watchdog_pattern="watchdog.sh"
 gateway_pattern="$PROJECT_ROOT/gateway.*src/server\\.ts"
 web_pattern="$PROJECT_ROOT/web.*vite"
 autodev_pattern="$PROJECT_ROOT/gateway.*autodev/worker"
@@ -159,6 +169,10 @@ section "Recent Error Signals"
 for file in /tmp/joi-watchdog.log /tmp/joi-gateway.log /tmp/joi-autodev.log /tmp/joi-livekit.log; do
   if [ -f "$file" ]; then
     echo "--- $file ---"
-    rg -n -i "timeout|timed out|econnreset|failed|error|disconnected|crashed|cannot connect" "$file" | tail -n 8 || tail -n 8 "$file"
+    if command -v rg >/dev/null 2>&1; then
+      rg -n -i "timeout|timed out|econnreset|failed|error|disconnected|crashed|cannot connect" "$file" | tail -n 8 || tail -n 8 "$file"
+    else
+      grep -nEi "timeout|timed out|econnreset|failed|error|disconnected|crashed|cannot connect" "$file" | tail -n 8 || tail -n 8 "$file"
+    fi
   fi
 done

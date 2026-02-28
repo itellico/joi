@@ -278,17 +278,25 @@ check_livekit() {
 
 gateway_pids() {
   ps -Ao pid=,command= | awk -v root="$PROJECT_ROOT/gateway" '
-    index($0, root) && ($0 ~ /src\/server\.ts/ || $0 ~ /dist\/server\.js/) { print $1 }
+    index($0, root) {
+      if ($0 ~ /src\/server\.ts/ || $0 ~ /dist\/server\.js/) {
+        print $1
+      }
+    }
   ' | awk 'NF > 0 && !seen[$0]++'
 }
 
 autodev_pids() {
   ps -Ao pid=,command= | awk -v root="$PROJECT_ROOT" '
-    index($0, root) && (
-      $0 ~ /scripts\/dev-autodev\.sh/ ||
-      $0 ~ /src\/autodev\/worker\.ts/ ||
-      $0 ~ /dist\/autodev\/worker\.js/
-    ) { print $1 }
+    index($0, root) {
+      if (
+        $0 ~ /scripts\/dev-autodev\.sh/ ||
+        $0 ~ /src\/autodev\/worker\.ts/ ||
+        $0 ~ /dist\/autodev\/worker\.js/
+      ) {
+        print $1
+      }
+    }
   ' | awk 'NF > 0 && !seen[$0]++'
 }
 
