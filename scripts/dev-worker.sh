@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Start LiveKit voice worker after LiveKit server + gateway are ready.
 set -euo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 
 SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPTS_DIR")"
@@ -9,6 +10,11 @@ PROJECT_ROOT="$(dirname "$SCRIPTS_DIR")"
 set -a
 [ -f "$PROJECT_ROOT/.env" ] && source "$PROJECT_ROOT/.env"
 set +a
+
+# Resolve mini alias to active Home/Road IP for this process without requiring /etc/hosts edits.
+if [ -x "$SCRIPTS_DIR/mini-runtime-env.sh" ]; then
+  eval "$("$SCRIPTS_DIR/mini-runtime-env.sh")"
+fi
 
 # Parse LiveKit host/port from LIVEKIT_URL (ws://host:port)
 LK_HOST=$(echo "$LIVEKIT_URL" | sed -E 's|wss?://([^:]+):([0-9]+).*|\1|')
