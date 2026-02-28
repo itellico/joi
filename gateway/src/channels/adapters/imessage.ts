@@ -17,6 +17,14 @@ import { checkPermission } from "../../apple/permission-guard.js";
 const execFileAsync = promisify(execFile);
 const CHAT_DB = join(homedir(), "Library/Messages/chat.db");
 const POLL_INTERVAL = 3000;
+
+// Compiled helper binary that opens chat.db via sqlite3 C API.
+// TCC checks the process that calls open() — granting FDA to this binary
+// is sufficient and stable (no need to re-grant when node/sqlite3 updates).
+const MESSAGES_QUERY_BIN = join(
+  import.meta.dirname,
+  "../../../../bin/joi-messages-query",
+);
 // Seconds between Unix epoch (1970-01-01) and Apple Cocoa epoch (2001-01-01)
 const COCOA_EPOCH_OFFSET = 978307200;
 
@@ -34,16 +42,10 @@ function formatMessagesDbReadError(err: unknown): string {
   const base = `Cannot read Messages database (${CHAT_DB}): ${msg}`;
   if (!likelyTccDenied) return base;
 
-  const launcher =
-    process.env.TERM_PROGRAM ||
-    process.env.ORIGINAL_XDG_CURRENT_DESKTOP ||
-    "Terminal/iTerm/VS Code/Cursor";
-
   return [
     base,
-    `Grant Full Disk Access to the app that launches JOI Gateway (${launcher}) in System Settings > Privacy & Security > Full Disk Access.`,
-    "If the gateway runs under launchd/watchdog, run gateway from an FDA-enabled terminal session instead.",
-    `Verify in that same session: sqlite3 -readonly ${CHAT_DB} "SELECT COUNT(*) FROM message LIMIT 1;"`,
+    `Grant Full Disk Access to joi-messages-query in System Settings > Privacy & Security > Full Disk Access.`,
+    `Binary location: bin/joi-messages-query (inside the JOI project).`,
   ].join(" ");
 }
 
@@ -72,7 +74,7 @@ export function createIMessageAdapter(channelId: string): ChannelAdapter {
 
   async function initLastRowId(): Promise<void> {
     try {
-      const { stdout } = await execFileAsync("sqlite3", [
+      const { stdout } = await execFileAsync(MESSAGES_QUERY_BIN, [
         "-readonly",
         CHAT_DB,
         "SELECT COALESCE(MAX(ROWID), 0) FROM message;",
@@ -111,7 +113,7 @@ export function createIMessageAdapter(channelId: string): ChannelAdapter {
         ORDER BY m.ROWID ASC
         LIMIT 50;`;
 
-      const { stdout } = await execFileAsync("sqlite3", [
+      const { stdout } = await execFileAsync(MESSAGES_QUERY_BIN, [
         "-readonly",
         "-json",
         CHAT_DB,
@@ -203,7 +205,7 @@ export function createIMessageAdapter(channelId: string): ChannelAdapter {
 
       // Verify we can read the Messages database
       try {
-        await execFileAsync("sqlite3", [
+        await execFileAsync(MESSAGES_QUERY_BIN, [
           "-readonly",
           CHAT_DB,
           "SELECT COUNT(*) FROM message LIMIT 1;",

@@ -75,6 +75,8 @@ tmp/
 
 # JOI runtime/generated artifacts
 JOIGateway.app/
+bin/joi-messages-query
+!bin/joi-messages-query.c
 app/.artifacts/
 app/.derived/
 
