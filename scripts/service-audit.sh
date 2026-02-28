@@ -174,13 +174,15 @@ else
 fi
 
 section "Recent Error Signals"
+ERROR_PATTERN="timeout|timed out|econnreset|failed|error|disconnected|crashed|cannot connect"
+RECENT_LINES=400
 for file in /tmp/joi-watchdog.log /tmp/joi-gateway.log /tmp/joi-autodev.log /tmp/joi-livekit.log; do
   if [ -f "$file" ]; then
     echo "--- $file ---"
     if command -v rg >/dev/null 2>&1; then
-      rg -n -i "timeout|timed out|econnreset|failed|error|disconnected|crashed|cannot connect" "$file" | tail -n 8 || tail -n 8 "$file"
+      tail -n "$RECENT_LINES" "$file" | rg -n -i "$ERROR_PATTERN" | tail -n 8 || tail -n 8 "$file"
     else
-      grep -nEi "timeout|timed out|econnreset|failed|error|disconnected|crashed|cannot connect" "$file" | tail -n 8 || tail -n 8 "$file"
+      tail -n "$RECENT_LINES" "$file" | grep -nEi "$ERROR_PATTERN" | tail -n 8 || tail -n 8 "$file"
     fi
   fi
 done
