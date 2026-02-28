@@ -12,18 +12,17 @@ import type {
   ChannelStatusInfo,
   ChannelStatus,
 } from "../types.js";
-import { checkPermission } from "../../apple/permission-guard.js";
 
 const execFileAsync = promisify(execFile);
 const CHAT_DB = join(homedir(), "Library/Messages/chat.db");
 const POLL_INTERVAL = 3000;
 
-// Compiled helper binary that opens chat.db via sqlite3 C API.
-// TCC checks the process that calls open() — granting FDA to this binary
-// is sufficient and stable (no need to re-grant when node/sqlite3 updates).
-const MESSAGES_QUERY_BIN = join(
+// JOIGateway.app binary with "query" subcommand — opens chat.db via sqlite3
+// C API directly. macOS TCC checks the process that calls open(), so granting
+// FDA to JOIGateway.app is sufficient. No FDA needed for node/sqlite3.
+const GATEWAY_BIN = join(
   import.meta.dirname,
-  "../../../../bin/joi-messages-query",
+  "../../../../JOIGateway.app/Contents/MacOS/JOIGateway",
 );
 // Seconds between Unix epoch (1970-01-01) and Apple Cocoa epoch (2001-01-01)
 const COCOA_EPOCH_OFFSET = 978307200;
@@ -44,8 +43,8 @@ function formatMessagesDbReadError(err: unknown): string {
 
   return [
     base,
-    `Grant Full Disk Access to joi-messages-query in System Settings > Privacy & Security > Full Disk Access.`,
-    `Binary location: bin/joi-messages-query (inside the JOI project).`,
+    `Grant Full Disk Access to JOI Gateway in System Settings > Privacy & Security > Full Disk Access.`,
+    `App location: JOIGateway.app (in the JOI project root).`,
   ].join(" ");
 }
 
@@ -74,8 +73,8 @@ export function createIMessageAdapter(channelId: string): ChannelAdapter {
 
   async function initLastRowId(): Promise<void> {
     try {
-      const { stdout } = await execFileAsync(MESSAGES_QUERY_BIN, [
-        "-readonly",
+      const { stdout } = await execFileAsync(GATEWAY_BIN, [
+        "query", "-readonly",
         CHAT_DB,
         "SELECT COALESCE(MAX(ROWID), 0) FROM message;",
       ]);
@@ -113,9 +112,8 @@ export function createIMessageAdapter(channelId: string): ChannelAdapter {
         ORDER BY m.ROWID ASC
         LIMIT 50;`;
 
-      const { stdout } = await execFileAsync(MESSAGES_QUERY_BIN, [
-        "-readonly",
-        "-json",
+      const { stdout } = await execFileAsync(GATEWAY_BIN, [
+        "query", "-readonly", "-json",
         CHAT_DB,
         sql,
       ]);
@@ -194,19 +192,11 @@ export function createIMessageAdapter(channelId: string): ChannelAdapter {
       status = "connecting";
       adapter.onStatusChange?.(adapter.getStatus());
 
-      // Check macOS permission before probing (avoids repeated system dialogs)
-      const hasPermission = await checkPermission("messages");
-      if (!hasPermission) {
-        status = "error";
-        errorMsg = "Messages permission denied. Grant Automation access in System Settings > Privacy & Security.";
-        adapter.onStatusChange?.(adapter.getStatus());
-        throw new Error(errorMsg);
-      }
-
-      // Verify we can read the Messages database
+      // Verify we can read the Messages database (via JOIGateway.app binary
+      // which has FDA — no node/osascript permission popups)
       try {
-        await execFileAsync(MESSAGES_QUERY_BIN, [
-          "-readonly",
+        await execFileAsync(GATEWAY_BIN, [
+          "query", "-readonly",
           CHAT_DB,
           "SELECT COUNT(*) FROM message LIMIT 1;",
         ]);
