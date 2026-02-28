@@ -165,6 +165,14 @@ else
   line "/health" "UNREACHABLE"
 fi
 
+section "Push Status"
+if curl -sf -m 6 "http://127.0.0.1:3100/api/push/status" > /tmp/joi-push-status.json 2>/dev/null; then
+  line "/api/push/status" "REACHABLE"
+  line "push status" "$(cat /tmp/joi-push-status.json)"
+else
+  line "/api/push/status" "UNREACHABLE"
+fi
+
 section "Recent Error Signals"
 for file in /tmp/joi-watchdog.log /tmp/joi-gateway.log /tmp/joi-autodev.log /tmp/joi-livekit.log; do
   if [ -f "$file" ]; then

@@ -44,6 +44,7 @@ mobile/macos/Flutter/ephemeral/
 
 # Python
 .venv/
+**/.venv/
 
 # Docker volumes
 pgdata/
@@ -71,3 +72,11 @@ pnpm-debug.log*
 # Misc
 tmp/
 .cache/
+
+# JOI runtime/generated artifacts
+JOIGateway.app/
+app/.artifacts/
+app/.derived/
+
+# Legacy Flutter tree kept only on some machines
+mobile/
