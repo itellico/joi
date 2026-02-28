@@ -103,7 +103,9 @@ export const APNsConfigSchema = z.object({
   keyPath: z.string().optional(),       // Path to .p8 auth key file
   keyId: z.string().optional(),         // Key ID from Apple Developer portal
   teamId: z.string().optional(),        // Team ID from Apple Developer portal
-  bundleId: z.string().default("com.joi.app"),
+  bundleId: z.string().default("com.joi.app.ios"),
+  bundleIdDevelopment: z.string().optional(),
+  bundleIdProduction: z.string().optional(),
   production: z.boolean().default(false),
 });
 
@@ -147,10 +149,14 @@ export const LiveKitConfigSchema = z.object({
   ttsCacheRedisTtlSec: z.number().int().min(60).default(7 * 24 * 60 * 60),
   ttsCachePrefix: z.string().default("joi:tts:v1"),
   ttsCacheRedisUrl: z.string().optional(),   // Optional local/managed Redis URL (redis://...)
+  wakeWordEnabled: z.boolean().default(true),
 });
 
 export const TasksConfigSchema = z.object({
   lockedProjects: z.array(z.string()).default([]),
+  reminderSyncMode: z.enum(["cron_only", "cron_plus_things"]).default("cron_plus_things"),
+  completedReminderRetentionDays: z.number().int().min(0).max(365).default(14),
+  projectLogbookPageSize: z.number().int().min(10).max(200).default(25),
 });
 
 export const MediaConfigSchema = z.object({
@@ -160,6 +166,13 @@ export const MediaConfigSchema = z.object({
   maxFileSizeMB: z.number().default(100),
   downloadEnabled: z.boolean().default(true),
 }).default({});
+
+export const AutoDevConfigSchema = z.object({
+  executorMode: z.enum(["auto", "claude-code", "gemini-cli", "codex-cli"]).default("auto"),
+  parallelExecution: z.boolean().default(true),
+  discussionMode: z.boolean().default(false),
+  discussionMaxTurns: z.number().int().min(1).max(5).default(5),
+});
 
 export const JoiConfigSchema = z.object({
   gateway: GatewayConfigSchema.default({}),
@@ -173,6 +186,7 @@ export const JoiConfigSchema = z.object({
   apns: APNsConfigSchema.default({}),
   tasks: TasksConfigSchema.default({}),
   livekit: LiveKitConfigSchema.default({}),
+  autodev: AutoDevConfigSchema.default({}),
   media: MediaConfigSchema,
 });
 

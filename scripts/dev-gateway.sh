@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Start gateway after postgres is ready. Safe to run in any order.
 set -euo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPTS_DIR")"
@@ -9,6 +10,11 @@ PROJECT_ROOT="$(dirname "$SCRIPTS_DIR")"
 set -a
 [ -f "$PROJECT_ROOT/.env" ] && source "$PROJECT_ROOT/.env"
 set +a
+
+# Resolve mini alias to active Home/Road IP for this process without requiring /etc/hosts edits.
+if [ -x "$SCRIPTS_DIR/mini-runtime-env.sh" ]; then
+  eval "$("$SCRIPTS_DIR/mini-runtime-env.sh")"
+fi
 
 # Parse postgres host/port from DATABASE_URL
 PG_HOST=$(echo "$DATABASE_URL" | sed -E 's|.*@([^:]+):([0-9]+)/.*|\1|')

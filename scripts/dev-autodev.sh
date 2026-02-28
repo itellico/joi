@@ -3,6 +3,7 @@
 # Does NOT use tsx watch (worker imports half the gateway, so any file change
 # would restart it — including changes AutoDev itself makes).
 set -uo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPTS_DIR")"

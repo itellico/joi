@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import express from "express";
@@ -25,6 +26,7 @@ import {
 import { routeIntent, type RouteDecision } from "./agent/intent-router.js";
 import { classifyIntent, domainToIntentLabel } from "./agent/intent-classifier.js";
 import { runClaudeCode } from "./agent/claude-code.js";
+import { normalizeAgentSkills } from "./agent/skill-policy.js";
 import { query, recordSuccess, recordFailure, reloadFromEnv } from "./db/client.js";
 import { checkOllama, pullModel, embed } from "./knowledge/embeddings.js";
 import { AVAILABLE_MODELS, resetClients, getOllamaUrl, utilityCall, resolveModel } from "./agent/model-router.js";
@@ -62,6 +64,7 @@ import { AutoDevProxy } from "./autodev/proxy.js";
 import { runTestSuite } from "./quality/runner.js";
 import { createIssuesFromRun, listIssues, updateIssue, pushToAutodev, createAutoDevRuntimeIssue } from "./quality/issues.js";
 import { generatePromptCandidate, abTestPrompt, submitForReview, activatePromptVersion } from "./quality/optimizer.js";
+import { analyzeChatAsync, getAnalyses, getAnalysisById, getAnalysisStats, getObserverConfig, setObserverConfig } from "./quality/observer.js";
 import type { QATestSuite, QATestCase, QATestRun, QATestResult, QAIssue, QAStats } from "./quality/types.js";
 import { getAllHeartbeats, getHeartbeat, createTask as createAgentTask, updateTask as updateAgentTask, listTasks as listAgentTasks } from "./agent/heartbeat.js";
 import { getPermissionStates, resetPermission } from "./apple/permission-guard.js";
@@ -111,23 +114,80 @@ import {
   summarizeSkillCatalog,
   type RegistrySkillRow,
 } from "./skills/catalog.js";
+import {
+  getCachedHumanizerProfile,
+  getHumanizerOverview,
+  kickoffHumanizerCacheRefresh,
+  listHumanizerTemplates,
+  runHumanizerAudit,
+  selectHumanizedLine,
+  summarizeHumanizerAudit,
+  updateHumanizerProfile,
+  updateHumanizerTemplate,
+} from "./humanizer/service.js";
 
 const config = loadConfig();
 const DEFAULT_EXECUTION_MODE = normalizeExecutionMode(process.env.JOI_DEFAULT_EXECUTION_MODE, "live");
 
 const TOOL_ANNOUNCEMENT_CACHE = new Map<string, string>();
-const TOOL_ANNOUNCEMENT_RULES: Array<{ pattern: RegExp; phrase: string }> = [
-  { pattern: /(calendar|event|schedule)/i, phrase: "checking your calendar" },
-  { pattern: /(gmail|email|inbox|mail)/i, phrase: "checking your inbox" },
-  { pattern: /(weather|forecast)/i, phrase: "checking the weather" },
-  { pattern: /(memory|knowledge|search|lookup|find)/i, phrase: "looking that up" },
-  { pattern: /(contact|person|people)/i, phrase: "checking that contact" },
-  { pattern: /(task|todo|things|okr)/i, phrase: "checking your task list" },
-  { pattern: /(channel_send|whatsapp|telegram|imessage|slack|discord|sms|message)/i, phrase: "preparing that message" },
-  { pattern: /(notion)/i, phrase: "checking Notion" },
-  { pattern: /(emby|jellyseerr|movie|series|watchlist)/i, phrase: "checking your media library" },
-  { pattern: /(code|autodev|terminal|shell|command|git)/i, phrase: "running that task" },
+const TOOL_ANNOUNCEMENT_RULES: Array<{ pattern: RegExp; en: string; de: string }> = [
+  { pattern: /(calendar|event|schedule)/i, en: "I am checking your calendar now.", de: "Ich pruefe jetzt deinen Kalender." },
+  { pattern: /(gmail|email|inbox|mail)/i, en: "I am checking your inbox now.", de: "Ich pruefe jetzt dein Postfach." },
+  { pattern: /(weather|forecast)/i, en: "I am checking the weather now.", de: "Ich pruefe jetzt das Wetter." },
+  { pattern: /(memory|knowledge|search|lookup|find)/i, en: "I am looking that up now.", de: "Ich suche das jetzt nach." },
+  { pattern: /(contact|person|people)/i, en: "I am checking that contact now.", de: "Ich suche jetzt diesen Kontakt." },
+  { pattern: /(task|todo|things|okr)/i, en: "I am checking your task list now.", de: "Ich pruefe jetzt deine Aufgabenliste." },
+  { pattern: /(channel_send|whatsapp|telegram|imessage|slack|discord|sms|message)/i, en: "I am preparing that message now.", de: "Ich bereite jetzt diese Nachricht vor." },
+  { pattern: /(notion)/i, en: "I am checking Notion now.", de: "Ich pruefe jetzt Notion." },
+  { pattern: /(emby|jellyseerr|movie|series|watchlist)/i, en: "I am checking your media library now.", de: "Ich pruefe jetzt deine Mediathek." },
+  { pattern: /(code|autodev|terminal|shell|command|git)/i, en: "I am running that task now.", de: "Ich fuehre jetzt diese Aufgabe aus." },
 ];
+
+function normalizeLanguageCode(language: string | null | undefined): string {
+  const normalized = String(language || "").trim().toLowerCase();
+  if (!normalized) return "en";
+  if (normalized.startsWith("de")) return "de";
+  if (normalized.startsWith("en")) return "en";
+  return normalized.split(/[-_]/)[0] || "en";
+}
+
+function isGermanLanguage(language: string | null | undefined): boolean {
+  return normalizeLanguageCode(language) === "de";
+}
+
+function getLocalizedIntentLabel(label: string, language: string): string {
+  if (!isGermanLanguage(language)) return label;
+  switch (label) {
+    case "task": return "Aufgaben";
+    case "inbox": return "Postfach";
+    case "calendar": return "Kalender";
+    case "contact": return "Kontakt";
+    case "weather": return "Wetter";
+    case "message": return "Nachricht";
+    case "lookup": return "Suche";
+    default: return "Anfrage";
+  }
+}
+
+async function resolveConversationLanguage(conversationId: string | null | undefined): Promise<string> {
+  const fallback = normalizeLanguageCode(config.livekit?.language || "en");
+  if (!conversationId) return fallback;
+  try {
+    const convRow = await query<{ channel_id: string | null }>(
+      "SELECT channel_id FROM conversations WHERE id = $1",
+      [conversationId],
+    );
+    const channelId = convRow.rows[0]?.channel_id;
+    if (!channelId) return fallback;
+    const channelRow = await query<{ language: string | null }>(
+      "SELECT language FROM channel_configs WHERE id = $1",
+      [channelId],
+    );
+    return normalizeLanguageCode(channelRow.rows[0]?.language || fallback);
+  } catch {
+    return fallback;
+  }
+}
 
 function resolveExecutionMode(value: unknown): AgentExecutionMode {
   return normalizeExecutionMode(value, DEFAULT_EXECUTION_MODE);
@@ -137,6 +197,375 @@ function normalizeQaCaseTimeoutMs(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
   return Math.min(10 * 60 * 1000, Math.floor(value));
 }
+
+type NormalizedChatAttachment = {
+  type: string;
+  url?: string;
+  data?: string;
+  name?: string;
+  mimeType?: string;
+  mediaId?: string;
+  size?: number;
+};
+
+function normalizeChatAttachments(raw: unknown, includeData: boolean): NormalizedChatAttachment[] {
+  if (!Array.isArray(raw)) return [];
+
+  const normalized: NormalizedChatAttachment[] = [];
+  const maxAttachments = 8;
+  const maxDataChars = 10 * 1024 * 1024; // ~10MB base64 payload cap per attachment
+
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    if (normalized.length >= maxAttachments) break;
+    const rec = item as Record<string, unknown>;
+
+    const typeValue = typeof rec.type === "string" ? rec.type.trim() : "";
+    if (!typeValue) continue;
+
+    const next: NormalizedChatAttachment = { type: typeValue };
+
+    if (typeof rec.url === "string" && rec.url.trim().length > 0) {
+      next.url = rec.url.trim();
+    }
+    if (typeof rec.name === "string" && rec.name.trim().length > 0) {
+      next.name = rec.name.trim().slice(0, 256);
+    }
+    if (typeof rec.mimeType === "string" && rec.mimeType.trim().length > 0) {
+      next.mimeType = rec.mimeType.trim().toLowerCase().slice(0, 128);
+    }
+    if (typeof rec.mediaId === "string" && rec.mediaId.trim().length > 0) {
+      next.mediaId = rec.mediaId.trim();
+    }
+    if (typeof rec.size === "number" && Number.isFinite(rec.size) && rec.size > 0) {
+      next.size = Math.floor(rec.size);
+    }
+    if (includeData && typeof rec.data === "string" && rec.data.length > 0) {
+      next.data = rec.data.length > maxDataChars ? rec.data.slice(0, maxDataChars) : rec.data;
+    }
+
+    normalized.push(next);
+  }
+
+  return normalized;
+}
+
+type NormalizedChatMention = {
+  id?: string;
+  value: string;
+  label?: string;
+  kind: "agent" | "person" | "unknown";
+  start?: number;
+  end?: number;
+};
+
+type NormalizedMessageReactions = Record<string, string[]>;
+
+const UUID_V4ISH_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const INLINE_MENTION_RE = /(^|\s)@([a-zA-Z0-9._-]{2,64})/g;
+const REACTION_ACTOR_ID_RE = /^[a-zA-Z0-9._:-]{1,64}$/;
+
+function normalizeMessageReference(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return UUID_V4ISH_RE.test(trimmed) ? trimmed : null;
+}
+
+function normalizeChatMentions(raw: unknown, content: string): NormalizedChatMention[] {
+  const out: NormalizedChatMention[] = [];
+  const seen = new Set<string>();
+
+  const pushMention = (mention: NormalizedChatMention) => {
+    const key = `${mention.kind}:${mention.value.toLowerCase()}:${mention.start ?? ""}:${mention.end ?? ""}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(mention);
+  };
+
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      if (!item || typeof item !== "object") continue;
+      const rec = item as Record<string, unknown>;
+      const value = typeof rec.value === "string" ? rec.value.trim() : "";
+      if (!value) continue;
+      const mention: NormalizedChatMention = {
+        value: value.replace(/^@+/, "").slice(0, 80),
+        kind:
+          rec.kind === "agent" || rec.kind === "person" || rec.kind === "unknown"
+            ? rec.kind
+            : "unknown",
+      };
+      if (typeof rec.id === "string" && rec.id.trim().length > 0) mention.id = rec.id.trim().slice(0, 120);
+      if (typeof rec.label === "string" && rec.label.trim().length > 0) mention.label = rec.label.trim().slice(0, 120);
+      if (typeof rec.start === "number" && Number.isFinite(rec.start) && rec.start >= 0) mention.start = Math.floor(rec.start);
+      if (typeof rec.end === "number" && Number.isFinite(rec.end) && rec.end >= 0) mention.end = Math.floor(rec.end);
+      pushMention(mention);
+    }
+  }
+
+  const text = typeof content === "string" ? content : "";
+  for (const match of text.matchAll(INLINE_MENTION_RE)) {
+    const handle = match[2];
+    if (!handle) continue;
+    const prefixLen = typeof match[1] === "string" ? match[1].length : 0;
+    const start = typeof match.index === "number" ? match.index + prefixLen : undefined;
+    const end = typeof start === "number" ? start + handle.length + 1 : undefined;
+    pushMention({
+      value: handle,
+      kind: "unknown",
+      start,
+      end,
+    });
+  }
+
+  return out.slice(0, 32);
+}
+
+function normalizeReactionEmoji(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 24 || /\s/.test(trimmed)) return null;
+  return trimmed;
+}
+
+function normalizeReactionActorId(value: unknown): string {
+  if (typeof value !== "string") return "joi-user";
+  const trimmed = value.trim();
+  if (!trimmed || !REACTION_ACTOR_ID_RE.test(trimmed)) return "joi-user";
+  return trimmed;
+}
+
+function normalizeMessageReactions(raw: unknown): NormalizedMessageReactions {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: NormalizedMessageReactions = {};
+
+  for (const [emojiRaw, actorsRaw] of Object.entries(raw as Record<string, unknown>)) {
+    const emoji = normalizeReactionEmoji(emojiRaw);
+    if (!emoji || !Array.isArray(actorsRaw)) continue;
+    const actors: string[] = [];
+    const seen = new Set<string>();
+    for (const actorRaw of actorsRaw) {
+      if (typeof actorRaw !== "string") continue;
+      const actor = normalizeReactionActorId(actorRaw);
+      if (seen.has(actor)) continue;
+      seen.add(actor);
+      actors.push(actor);
+      if (actors.length >= 32) break;
+    }
+    if (actors.length > 0) out[emoji] = actors;
+  }
+
+  return out;
+}
+
+function serializeMessageReactions(reactions: NormalizedMessageReactions): string | null {
+  const keys = Object.keys(reactions);
+  if (keys.length === 0) return null;
+  return JSON.stringify(reactions);
+}
+
+type LinkPreviewPayload = {
+  url: string;
+  title: string;
+  description?: string;
+  imageUrl?: string;
+  siteName?: string;
+};
+
+const LINK_PREVIEW_TIMEOUT_MS = 6000;
+const LINK_PREVIEW_MAX_BYTES = 512_000;
+const LINK_PREVIEW_CACHE_TTL_MS = 10 * 60 * 1000;
+const LINK_PREVIEW_CACHE = new Map<string, { expiresAt: number; payload: LinkPreviewPayload | null }>();
+
+function isPrivateIPv4(host: string): boolean {
+  if (!/^\d+\.\d+\.\d+\.\d+$/.test(host)) return false;
+  const parts = host.split(".").map((part) => Number.parseInt(part, 10));
+  if (parts.length !== 4 || parts.some((part) => Number.isNaN(part) || part < 0 || part > 255)) return false;
+  if (parts[0] === 10) return true;
+  if (parts[0] === 127) return true;
+  if (parts[0] === 192 && parts[1] === 168) return true;
+  if (parts[0] === 169 && parts[1] === 254) return true;
+  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+  return false;
+}
+
+function isBlockedLinkPreviewHost(hostname: string): boolean {
+  const host = hostname.trim().toLowerCase();
+  if (!host) return true;
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return true;
+
+  const ipVersion = net.isIP(host);
+  if (ipVersion === 4) return isPrivateIPv4(host);
+  if (ipVersion === 6) {
+    if (host === "::1") return true;
+    if (host.startsWith("fe80:")) return true; // link-local
+    if (host.startsWith("fc") || host.startsWith("fd")) return true; // unique-local
+  }
+  return false;
+}
+
+function decodeHtmlEntities(input: string): string {
+  return input
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">");
+}
+
+function collapseWhitespace(input: string): string {
+  return input.replace(/\s+/g, " ").trim();
+}
+
+function escapeRegexLiteral(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function readMetaContent(html: string, key: string, attr: "property" | "name"): string | null {
+  const escaped = escapeRegexLiteral(key);
+  const regex = new RegExp(
+    `<meta[^>]+${attr}\\s*=\\s*["']${escaped}["'][^>]*content\\s*=\\s*["']([^"']{1,2000})["'][^>]*>`,
+    "i",
+  );
+  const match = html.match(regex);
+  if (!match?.[1]) return null;
+  const content = collapseWhitespace(decodeHtmlEntities(match[1]));
+  return content || null;
+}
+
+function readDocumentTitle(html: string): string | null {
+  const match = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  if (!match?.[1]) return null;
+  const title = collapseWhitespace(decodeHtmlEntities(match[1].replace(/<[^>]+>/g, "")));
+  return title || null;
+}
+
+function normalizePreviewUrl(raw: string): string | null {
+  try {
+    const parsed = new URL(raw);
+    const protocol = parsed.protocol.toLowerCase();
+    if (protocol !== "http:" && protocol !== "https:") return null;
+    if (isBlockedLinkPreviewHost(parsed.hostname)) return null;
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function parseLinkPreview(html: string, targetUrl: string): LinkPreviewPayload | null {
+  const title = readMetaContent(html, "og:title", "property")
+    || readMetaContent(html, "twitter:title", "name")
+    || readDocumentTitle(html);
+  if (!title) return null;
+
+  const description = readMetaContent(html, "og:description", "property")
+    || readMetaContent(html, "twitter:description", "name")
+    || readMetaContent(html, "description", "name")
+    || undefined;
+  const rawImage = readMetaContent(html, "og:image", "property")
+    || readMetaContent(html, "twitter:image", "name")
+    || undefined;
+  const siteName = readMetaContent(html, "og:site_name", "property") || undefined;
+
+  let imageUrl: string | undefined;
+  if (rawImage) {
+    try {
+      imageUrl = new URL(rawImage, targetUrl).toString();
+    } catch {
+      imageUrl = undefined;
+    }
+  }
+
+  return {
+    url: targetUrl,
+    title: title.slice(0, 240),
+    description: description ? description.slice(0, 420) : undefined,
+    imageUrl,
+    siteName: siteName?.slice(0, 120),
+  };
+}
+
+async function fetchLinkPreview(targetUrl: string): Promise<LinkPreviewPayload | null> {
+  const now = Date.now();
+  const cached = LINK_PREVIEW_CACHE.get(targetUrl);
+  if (cached && cached.expiresAt > now) return cached.payload;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), LINK_PREVIEW_TIMEOUT_MS);
+  try {
+    const response = await fetch(targetUrl, {
+      method: "GET",
+      headers: {
+        "User-Agent": "JOI-LinkPreview/1.0 (+https://joi.itellico.org)",
+        "Accept": "text/html,application/xhtml+xml",
+      },
+      signal: controller.signal,
+      redirect: "follow",
+    });
+    if (!response.ok) {
+      LINK_PREVIEW_CACHE.set(targetUrl, { expiresAt: now + 60_000, payload: null });
+      return null;
+    }
+    const contentType = response.headers.get("content-type") || "";
+    if (!/text\/html|application\/xhtml\+xml/i.test(contentType)) {
+      LINK_PREVIEW_CACHE.set(targetUrl, { expiresAt: now + 60_000, payload: null });
+      return null;
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      LINK_PREVIEW_CACHE.set(targetUrl, { expiresAt: now + 60_000, payload: null });
+      return null;
+    }
+
+    let collected = "";
+    let totalBytes = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      totalBytes += value.byteLength;
+      if (totalBytes > LINK_PREVIEW_MAX_BYTES) break;
+      collected += Buffer.from(value).toString("utf8");
+      if (collected.includes("</head>") && collected.length > 8_000) break;
+    }
+
+    const payload = parseLinkPreview(collected, targetUrl);
+    LINK_PREVIEW_CACHE.set(targetUrl, { expiresAt: now + LINK_PREVIEW_CACHE_TTL_MS, payload });
+    return payload;
+  } catch {
+    LINK_PREVIEW_CACHE.set(targetUrl, { expiresAt: now + 60_000, payload: null });
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function resolveMentionedAgent(
+  mentions: NormalizedChatMention[],
+): Promise<{ agentId: string; agentName?: string; mentionValue: string } | null> {
+  for (const mention of mentions) {
+    if (mention.kind === "person") continue;
+    const candidate = (mention.id || mention.value || "").trim().replace(/^@+/, "").toLowerCase();
+    if (!candidate) continue;
+    const result = await query<{ id: string; name: string | null }>(
+      "SELECT id, name FROM agents WHERE lower(id) = $1 OR lower(name) = $1 LIMIT 1",
+      [candidate],
+    );
+    if (result.rows.length > 0) {
+      return {
+        agentId: result.rows[0].id,
+        agentName: result.rows[0].name || undefined,
+        mentionValue: mention.value,
+      };
+    }
+  }
+  return null;
+}
+
 const VOICE_TOOL_FILLER_INITIAL_DELAY_MS = Math.max(
   200,
   Number.parseInt(process.env.JOI_VOICE_TOOL_FILLER_DELAY_MS || "900", 10) || 900,
@@ -163,156 +592,308 @@ const VOICE_PRE_TOOL_LONG_DELAY_MS = Math.max(
   Number.parseInt(process.env.JOI_VOICE_PRE_TOOL_LONG_DELAY_MS || "5200", 10) || 5200,
 );
 
-type VoiceToolFillerRule = {
-  pattern: RegExp;
+// Stop command phrases — short-circuit voice processing when the user wants to end the session
+const VOICE_STOP_PHRASES: RegExp[] = [
+  /\bjoi\s+off\b/i,
+  /\bjoy\s+off\b/i,
+  /\bjoi\s+aus\b/i,
+  /\bjoy\s+aus\b/i,
+  /\bjoi\s+ruhe\b/i,
+  /\bjoy\s+ruhe\b/i,
+  /\bjoi\s+stop\b/i,
+  /\bjoy\s+stop\b/i,
+];
+
+type VoiceToolFillerSet = {
   startVariants: string[];
   progressVariants?: string[];
   longVariants?: string[];
 };
 
+type VoiceToolFillerRule = {
+  pattern: RegExp;
+  en: VoiceToolFillerSet;
+  de: VoiceToolFillerSet;
+};
+
 const VOICE_TOOL_FILLER_RULES: VoiceToolFillerRule[] = [
   {
     pattern: /(calendar|event|schedule)/i,
-    startVariants: [
-      "Give me a second while I check your calendar.",
-      "One moment, I am pulling your calendar details.",
-      "Let me quickly check your schedule.",
-      "Checking your calendar now.",
-    ],
-    progressVariants: [
-      "Still on it. I am checking cached calendar context and verifying the latest updates.",
-      "This is taking a bit longer. I am still comparing your calendar details.",
-      "I am still working on your schedule and validating the timing now.",
-    ],
-    longVariants: [
-      "This calendar check is taking longer than usual, but I am still on it.",
-      "Thanks for waiting. I am still finishing your schedule check.",
-    ],
+    en: {
+      startVariants: [
+        "Give me a second while I check your calendar.",
+        "One moment, I am pulling your calendar details.",
+        "Let me quickly check your schedule.",
+        "Checking your calendar now.",
+      ],
+      progressVariants: [
+        "Still on it. I am checking cached calendar context and verifying the latest updates.",
+        "This is taking a bit longer. I am still comparing your calendar details.",
+        "I am still working on your schedule and validating the timing now.",
+      ],
+      longVariants: [
+        "This calendar check is taking longer than usual, but I am still on it.",
+        "Thanks for waiting. I am still finishing your schedule check.",
+      ],
+    },
+    de: {
+      startVariants: [
+        "Einen Moment, ich pruefe deinen Kalender.",
+        "Ich schaue kurz in deinen Kalender.",
+        "Sekunde, ich hole deine Kalenderdetails.",
+      ],
+      progressVariants: [
+        "Ich bin noch dran und pruefe die aktuellen Kalenderdaten.",
+        "Das dauert etwas laenger, ich gleiche deine Termine noch ab.",
+      ],
+      longVariants: [
+        "Der Kalender-Check dauert ungewoehnlich lange, ich bin aber noch dran.",
+        "Danke fuers Warten, ich schliesse den Kalender-Check gleich ab.",
+      ],
+    },
   },
   {
     pattern: /(gmail|email|inbox|mail)/i,
-    startVariants: [
-      "One moment while I check your inbox.",
-      "Let me pull your latest emails.",
-      "Checking your inbox now.",
-      "Give me a second to review your emails.",
-    ],
-    progressVariants: [
-      "Still on it. I am checking cached inbox context first, then pulling fresh messages.",
-      "This is taking a bit longer. I am still reviewing your latest emails.",
-      "I am still working through your inbox updates now.",
-    ],
-    longVariants: [
-      "This inbox check is taking longer than usual, but I am still working on it.",
-      "Still on it. I am finishing the email scan now.",
-    ],
+    en: {
+      startVariants: [
+        "One moment while I check your inbox.",
+        "Let me pull your latest emails.",
+        "Checking your inbox now.",
+        "Give me a second to review your emails.",
+      ],
+      progressVariants: [
+        "Still on it. I am checking cached inbox context first, then pulling fresh messages.",
+        "This is taking a bit longer. I am still reviewing your latest emails.",
+        "I am still working through your inbox updates now.",
+      ],
+      longVariants: [
+        "This inbox check is taking longer than usual, but I am still working on it.",
+        "Still on it. I am finishing the email scan now.",
+      ],
+    },
+    de: {
+      startVariants: [
+        "Einen Moment, ich pruefe dein Postfach.",
+        "Ich hole kurz deine neuesten E-Mails.",
+        "Ich pruefe jetzt dein Postfach.",
+      ],
+      progressVariants: [
+        "Ich bin noch dran und pruefe erst den Cache, dann die neuesten Nachrichten.",
+        "Das dauert etwas laenger, ich gehe dein Postfach noch durch.",
+      ],
+      longVariants: [
+        "Der Postfach-Check dauert laenger als ueblich, ich bin aber noch dran.",
+        "Danke fuers Warten, ich schliesse den E-Mail-Scan gleich ab.",
+      ],
+    },
   },
   {
     pattern: /(task|todo|things|okr)/i,
-    startVariants: [
-      "One moment while I check your tasks.",
-      "Let me pull your task list.",
-      "Checking your tasks now.",
-      "Give me a second to review your tasks.",
-    ],
-    progressVariants: [
-      "Still on it. I am checking cached task context and syncing the latest items.",
-      "This is taking a bit longer. I am still verifying your task details.",
-      "I am still working through your task list now.",
-    ],
-    longVariants: [
-      "This task check is taking longer than usual, but I am still working on it.",
-      "Thanks for waiting. I am still finalizing your task update.",
-    ],
+    en: {
+      startVariants: [
+        "One moment while I check your tasks.",
+        "Let me pull your task list.",
+        "Checking your tasks now.",
+        "Give me a second to review your tasks.",
+      ],
+      progressVariants: [
+        "Still on it. I am checking cached task context and syncing the latest items.",
+        "This is taking a bit longer. I am still verifying your task details.",
+        "I am still working through your task list now.",
+      ],
+      longVariants: [
+        "This task check is taking longer than usual, but I am still working on it.",
+        "Thanks for waiting. I am still finalizing your task update.",
+      ],
+    },
+    de: {
+      startVariants: [
+        "Einen Moment, ich pruefe deine Aufgaben.",
+        "Ich hole kurz deine Aufgabenliste.",
+        "Ich pruefe jetzt deine Tasks.",
+      ],
+      progressVariants: [
+        "Ich bin noch dran und gleiche deine Aufgaben mit dem aktuellen Stand ab.",
+        "Das dauert etwas laenger, ich pruefe die Aufgabendetails noch.",
+      ],
+      longVariants: [
+        "Der Aufgaben-Check dauert laenger als ueblich, ich bin aber noch dran.",
+        "Danke fuers Warten, ich finalisiere dein Aufgaben-Update gleich.",
+      ],
+    },
   },
   {
     pattern: /(contact|person|people)/i,
-    startVariants: [
-      "One moment while I look that contact up.",
-      "Let me check your contacts.",
-      "Checking your contacts now.",
-      "Give me a second to find that person.",
-    ],
-    progressVariants: [
-      "Still on it. I am checking cached contact context and validating the latest details.",
-      "This is taking a bit longer. I am still searching for the right contact.",
-      "I am still working on that contact lookup.",
-    ],
-    longVariants: [
-      "This contact lookup is taking longer than usual, but I am still on it.",
-      "Thanks for waiting. I am still narrowing down the contact details.",
-    ],
+    en: {
+      startVariants: [
+        "One moment while I look that contact up.",
+        "Let me check your contacts.",
+        "Checking your contacts now.",
+        "Give me a second to find that person.",
+      ],
+      progressVariants: [
+        "Still on it. I am checking cached contact context and validating the latest details.",
+        "This is taking a bit longer. I am still searching for the right contact.",
+        "I am still working on that contact lookup.",
+      ],
+      longVariants: [
+        "This contact lookup is taking longer than usual, but I am still on it.",
+        "Thanks for waiting. I am still narrowing down the contact details.",
+      ],
+    },
+    de: {
+      startVariants: [
+        "Einen Moment, ich suche den Kontakt.",
+        "Ich pruefe kurz deine Kontakte.",
+        "Ich suche jetzt die Person.",
+      ],
+      progressVariants: [
+        "Ich bin noch dran und pruefe die Kontaktdetails.",
+        "Das dauert etwas laenger, ich suche noch den richtigen Kontakt.",
+      ],
+      longVariants: [
+        "Die Kontaktsuche dauert laenger als ueblich, ich bin aber noch dran.",
+        "Danke fuers Warten, ich grenze die Kontaktdetails weiter ein.",
+      ],
+    },
   },
   {
     pattern: /(search|lookup|find|memory|knowledge)/i,
-    startVariants: [
-      "Give me a second while I look up {hint}.",
-      "Let me search that for you.",
-      "I am checking that now.",
-      "One moment while I pull that up.",
-    ],
-    progressVariants: [
-      "Still on it. I am checking cached context for {hint} and then refreshing with live data.",
-      "This is taking a bit longer. I am still validating details for {hint}.",
-      "I am still working on that lookup and cross-checking context now.",
-    ],
-    longVariants: [
-      "This lookup is taking longer than usual, but I am still working on {hint}.",
-      "Thanks for waiting. I am still finishing the lookup for {hint}.",
-    ],
+    en: {
+      startVariants: [
+        "Give me a second while I look up {hint}.",
+        "Let me search that for you.",
+        "I am checking that now.",
+        "One moment while I pull that up.",
+      ],
+      progressVariants: [
+        "Still on it. I am checking cached context for {hint} and then refreshing with live data.",
+        "This is taking a bit longer. I am still validating details for {hint}.",
+        "I am still working on that lookup and cross-checking context now.",
+      ],
+      longVariants: [
+        "This lookup is taking longer than usual, but I am still working on {hint}.",
+        "Thanks for waiting. I am still finishing the lookup for {hint}.",
+      ],
+    },
+    de: {
+      startVariants: [
+        "Einen Moment, ich suche {hint} nach.",
+        "Ich schaue das kurz fuer dich nach.",
+        "Ich pruefe das jetzt.",
+      ],
+      progressVariants: [
+        "Ich bin noch dran und pruefe erst den Cache, dann frische Daten zu {hint}.",
+        "Das dauert etwas laenger, ich validiere die Details zu {hint} noch.",
+      ],
+      longVariants: [
+        "Diese Suche dauert laenger als ueblich, ich arbeite aber noch an {hint}.",
+        "Danke fuers Warten, ich schliesse die Suche zu {hint} gleich ab.",
+      ],
+    },
   },
   {
     pattern: /(channel_send|whatsapp|telegram|imessage|sms|message)/i,
-    startVariants: [
-      "One moment while I prepare that message.",
-      "Let me set that message up.",
-      "I am preparing that message now.",
-      "Give me a second to handle that message.",
-    ],
-    progressVariants: [
-      "Still on it. I am drafting and checking context before sending.",
-      "This is taking a bit longer. I am still preparing that message carefully.",
-      "I am still working on the message and validating details now.",
-    ],
-    longVariants: [
-      "Message prep is taking longer than usual, but I am still on it.",
-      "Thanks for waiting. I am still finalizing the message.",
-    ],
+    en: {
+      startVariants: [
+        "One moment while I prepare that message.",
+        "Let me set that message up.",
+        "I am preparing that message now.",
+        "Give me a second to handle that message.",
+      ],
+      progressVariants: [
+        "Still on it. I am drafting and checking context before sending.",
+        "This is taking a bit longer. I am still preparing that message carefully.",
+        "I am still working on the message and validating details now.",
+      ],
+      longVariants: [
+        "Message prep is taking longer than usual, but I am still on it.",
+        "Thanks for waiting. I am still finalizing the message.",
+      ],
+    },
+    de: {
+      startVariants: [
+        "Einen Moment, ich bereite die Nachricht vor.",
+        "Ich setze die Nachricht jetzt auf.",
+        "Sekunde, ich kuemmere mich um die Nachricht.",
+      ],
+      progressVariants: [
+        "Ich bin noch dran und pruefe den Kontext vor dem Senden.",
+        "Das dauert etwas laenger, ich bereite die Nachricht sorgfaeltig vor.",
+      ],
+      longVariants: [
+        "Die Nachrichtenvorbereitung dauert laenger als ueblich, ich bin aber noch dran.",
+        "Danke fuers Warten, ich finalisiere die Nachricht gleich.",
+      ],
+    },
   },
   {
     pattern: /(code|autodev|terminal|shell|command|git)/i,
-    startVariants: [
-      "One moment while I run that.",
-      "Let me execute that now.",
-      "I am running that for you.",
-      "Give me a second to process that command.",
-    ],
-    progressVariants: [
-      "Still on it. I am running the command and checking intermediate results.",
-      "This is taking a bit longer. I am still executing that task.",
-      "I am still working on that run and validating output.",
-    ],
-    longVariants: [
-      "This run is taking longer than usual, but I am still on it.",
-      "Thanks for waiting. I am still finishing that command sequence.",
-    ],
+    en: {
+      startVariants: [
+        "One moment while I run that.",
+        "Let me execute that now.",
+        "I am running that for you.",
+        "Give me a second to process that command.",
+      ],
+      progressVariants: [
+        "Still on it. I am running the command and checking intermediate results.",
+        "This is taking a bit longer. I am still executing that task.",
+        "I am still working on that run and validating output.",
+      ],
+      longVariants: [
+        "This run is taking longer than usual, but I am still on it.",
+        "Thanks for waiting. I am still finishing that command sequence.",
+      ],
+    },
+    de: {
+      startVariants: [
+        "Einen Moment, ich fuehre das aus.",
+        "Ich starte den Befehl jetzt.",
+        "Sekunde, ich bearbeite diesen Command.",
+      ],
+      progressVariants: [
+        "Ich bin noch dran und pruefe Zwischenergebnisse.",
+        "Das dauert etwas laenger, ich fuehre den Task noch aus.",
+      ],
+      longVariants: [
+        "Die Ausfuehrung dauert laenger als ueblich, ich bin aber noch dran.",
+        "Danke fuers Warten, ich schliesse die Befehlskette gleich ab.",
+      ],
+    },
   },
 ];
-const VOICE_TOOL_FILLER_START_FALLBACK = [
+const VOICE_TOOL_FILLER_START_FALLBACK_EN = [
   "One moment while I handle {hint}.",
   "Give me a second, I am on it.",
   "Working on that now.",
   "Let me pull that up for you.",
 ];
-const VOICE_TOOL_FILLER_PROGRESS_FALLBACK = [
+const VOICE_TOOL_FILLER_PROGRESS_FALLBACK_EN = [
   "Still on it. I am checking cached context where possible and refreshing the rest now.",
   "This is taking a bit longer, but I am still working on {hint}.",
   "I am still working on that and validating details before I answer.",
 ];
-const VOICE_TOOL_FILLER_LONG_FALLBACK = [
+const VOICE_TOOL_FILLER_LONG_FALLBACK_EN = [
   "This is taking longer than usual, but I am still working on it.",
   "Thanks for waiting. I am still on it and will answer as soon as it is ready.",
   "Still working on {hint}. I am finishing the last step now.",
+];
+const VOICE_TOOL_FILLER_START_FALLBACK_DE = [
+  "Einen Moment, ich kuemmere mich um {hint}.",
+  "Sekunde, ich bin dran.",
+  "Ich arbeite jetzt daran.",
+  "Ich hole die Infos jetzt.",
+];
+const VOICE_TOOL_FILLER_PROGRESS_FALLBACK_DE = [
+  "Ich bin noch dran und pruefe erst den Cache, dann die aktuellen Daten.",
+  "Das dauert etwas laenger, ich arbeite aber noch an {hint}.",
+  "Ich arbeite noch daran und validiere die Details.",
+];
+const VOICE_TOOL_FILLER_LONG_FALLBACK_DE = [
+  "Das dauert gerade laenger als ueblich, ich bin aber noch dran.",
+  "Danke fuers Warten, ich schliesse das gleich ab.",
+  "Ich arbeite noch an {hint} und mache den letzten Schritt.",
 ];
 
 function pickSeededVariant(seed: string, variants: string[]): string {
@@ -332,20 +913,51 @@ function getVoiceIntentLabel(_message: string): string {
   return domainToIntentLabel(_lastClassifiedDomain);
 }
 
-function getPreToolProgressFiller(message: string, stage: 0 | 1): string {
-  const label = getVoiceIntentLabel(message);
-  const earlyVariants = [
-    `On it, I am preparing your ${label} check now.`,
-    `Working on your ${label} request now.`,
-    `I am starting your ${label} lookup now.`,
-  ];
-  const longVariants = [
-    `Still working on your ${label} request. I am checking cached context first, then refreshing live data.`,
-    `This is taking a bit longer. I am still processing your ${label} request now.`,
-    `Thanks for waiting. I am still working on your ${label} check.`,
-  ];
+function getPreToolProgressFiller(
+  message: string,
+  stage: 0 | 1,
+  language: string,
+  context?: { conversationId?: string | null; agentId?: string | null },
+): string {
+  const dbFiller = selectHumanizedLine({
+    channel: "voice",
+    stage: stage === 0 ? "pre_tool_start" : "pre_tool_progress",
+    language,
+    strictLanguage: isGermanLanguage(language),
+    conversationId: context?.conversationId || null,
+    agentId: context?.agentId || null,
+    toolInput: { query: message },
+    hint: message,
+    emitEvent: true,
+  });
+  if (dbFiller?.text) return dbFiller.text;
+
+  const label = getLocalizedIntentLabel(getVoiceIntentLabel(message), language);
+  const isGerman = isGermanLanguage(language);
+  const earlyVariants = isGerman
+    ? [
+      `Alles klar, ich starte jetzt den Check fuer ${label}.`,
+      `Ich arbeite jetzt an der Anfrage zu ${label}.`,
+      `Ich beginne jetzt mit der Suche zu ${label}.`,
+    ]
+    : [
+      `On it, I am preparing your ${label} check now.`,
+      `Working on your ${label} request now.`,
+      `I am starting your ${label} lookup now.`,
+    ];
+  const longVariants = isGerman
+    ? [
+      `Ich arbeite noch an der Anfrage zu ${label}. Ich pruefe erst den Cache, dann frische Daten.`,
+      `Das dauert etwas laenger. Ich bearbeite die Anfrage zu ${label} noch.`,
+      `Danke fuers Warten. Ich bin noch am Check fuer ${label}.`,
+    ]
+    : [
+      `Still working on your ${label} request. I am checking cached context first, then refreshing live data.`,
+      `This is taking a bit longer. I am still processing your ${label} request now.`,
+      `Thanks for waiting. I am still working on your ${label} check.`,
+    ];
   return pickSeededVariant(
-    `${message.trim().toLowerCase()}:pretool:${stage}`,
+    `${message.trim().toLowerCase()}:pretool:${stage}:${normalizeLanguageCode(language)}`,
     stage === 0 ? earlyVariants : longVariants,
   );
 }
@@ -378,22 +990,45 @@ function getVoiceToolInputHint(toolInput: unknown): string | null {
   return null;
 }
 
-function renderVoiceToolFillerTemplate(template: string, hint: string | null): string {
-  const subject = hint ? `"${hint}"` : "that";
+function renderVoiceToolFillerTemplate(template: string, hint: string | null, language: string): string {
+  const subject = hint ? `"${hint}"` : (isGermanLanguage(language) ? "das" : "that");
   return template.replace(/\{hint\}/g, subject).replace(/\s+/g, " ").trim();
 }
 
-function getDelayedVoiceToolFiller(toolName: string, toolInput: unknown, toolUseId: string, stage: number): string {
+function getDelayedVoiceToolFiller(
+  toolName: string,
+  toolInput: unknown,
+  toolUseId: string,
+  stage: number,
+  language: string,
+  context?: { conversationId?: string | null; agentId?: string | null },
+): string {
+  const dbFiller = selectHumanizedLine({
+    channel: "voice",
+    stage: stage <= 0 ? "tool_start" : stage === 1 ? "tool_progress" : "tool_long",
+    language,
+    strictLanguage: isGermanLanguage(language),
+    conversationId: context?.conversationId || null,
+    agentId: context?.agentId || null,
+    toolName,
+    toolInput,
+    seed: toolUseId,
+    emitEvent: true,
+  });
+  if (dbFiller?.text) return dbFiller.text;
+
   const key = (toolName || "tool").trim().toLowerCase();
+  const isGerman = isGermanLanguage(language);
   const rule = VOICE_TOOL_FILLER_RULES.find((r) => r.pattern.test(key));
+  const selected = isGerman ? rule?.de : rule?.en;
   const variants = stage <= 0
-    ? (rule?.startVariants ?? VOICE_TOOL_FILLER_START_FALLBACK)
+    ? (selected?.startVariants ?? (isGerman ? VOICE_TOOL_FILLER_START_FALLBACK_DE : VOICE_TOOL_FILLER_START_FALLBACK_EN))
     : stage === 1
-      ? (rule?.progressVariants ?? VOICE_TOOL_FILLER_PROGRESS_FALLBACK)
-      : (rule?.longVariants ?? VOICE_TOOL_FILLER_LONG_FALLBACK);
+      ? (selected?.progressVariants ?? (isGerman ? VOICE_TOOL_FILLER_PROGRESS_FALLBACK_DE : VOICE_TOOL_FILLER_PROGRESS_FALLBACK_EN))
+      : (selected?.longVariants ?? (isGerman ? VOICE_TOOL_FILLER_LONG_FALLBACK_DE : VOICE_TOOL_FILLER_LONG_FALLBACK_EN));
   const hint = getVoiceToolInputHint(toolInput);
-  const template = pickSeededVariant(`${toolUseId}:${key}:stage:${stage}`, variants);
-  return renderVoiceToolFillerTemplate(template, hint);
+  const template = pickSeededVariant(`${toolUseId}:${key}:stage:${stage}:${normalizeLanguageCode(language)}`, variants);
+  return renderVoiceToolFillerTemplate(template, hint, language);
 }
 
 // Voice tool intent is now determined by the LLM classifier (classifyIntent).
@@ -408,67 +1043,95 @@ function firstStringField(input: unknown, key: string): string | null {
     : null;
 }
 
-function getGenericToolAnnouncement(toolName: string): string {
+function getGenericToolAnnouncement(toolName: string, language: string): string {
   const key = (toolName || "tool").trim().toLowerCase();
-  const cached = TOOL_ANNOUNCEMENT_CACHE.get(key);
+  const lang = normalizeLanguageCode(language);
+  const cacheKey = `${lang}:${key}`;
+  const cached = TOOL_ANNOUNCEMENT_CACHE.get(cacheKey);
   if (cached) return cached;
   const rule = TOOL_ANNOUNCEMENT_RULES.find((r) => r.pattern.test(key));
-  const phrase = rule?.phrase ?? "working on that";
-  const announcement = `I am ${phrase} now.`;
-  TOOL_ANNOUNCEMENT_CACHE.set(key, announcement);
+  const announcement = isGermanLanguage(lang)
+    ? (rule?.de || "Ich arbeite jetzt daran.")
+    : (rule?.en || "I am working on that now.");
+  TOOL_ANNOUNCEMENT_CACHE.set(cacheKey, announcement);
   return announcement;
 }
 
-function getToolAnnouncement(toolName: string, toolInput: unknown): string {
+function getToolAnnouncement(
+  toolName: string,
+  toolInput: unknown,
+  language = "en",
+  context?: { conversationId?: string | null; agentId?: string | null },
+): string {
   const key = (toolName || "tool").trim().toLowerCase();
+  const isGerman = isGermanLanguage(language);
+
+  const dbAnnouncement = selectHumanizedLine({
+    channel: "chat",
+    stage: "tool_announcement",
+    language,
+    strictLanguage: isGermanLanguage(language),
+    conversationId: context?.conversationId || null,
+    agentId: context?.agentId || null,
+    toolName: key,
+    toolInput,
+    allowEmoji: true,
+    emitEvent: true,
+  });
+  if (dbAnnouncement?.text) return dbAnnouncement.text;
 
   if (key === "store_create_collection") {
     const name = firstStringField(toolInput, "name");
     return name
-      ? `I am creating the ${name} collection now.`
-      : "I am creating that collection now.";
+      ? (isGerman ? `Ich erstelle jetzt die Sammlung ${name}.` : `I am creating the ${name} collection now.`)
+      : (isGerman ? "Ich erstelle jetzt diese Sammlung." : "I am creating that collection now.");
   }
 
   if (key === "store_create_object") {
     const collection = firstStringField(toolInput, "collection");
     const title = firstStringField(toolInput, "title");
-    if (title && collection) return `I am adding ${title} to ${collection} now.`;
-    if (title) return `I am adding ${title} now.`;
-    if (collection) return `I am adding that to ${collection} now.`;
-    return "I am creating that record now.";
+    if (title && collection) return isGerman ? `Ich lege jetzt ${title} in ${collection} an.` : `I am adding ${title} to ${collection} now.`;
+    if (title) return isGerman ? `Ich lege jetzt ${title} an.` : `I am adding ${title} now.`;
+    if (collection) return isGerman ? `Ich lege das jetzt in ${collection} an.` : `I am adding that to ${collection} now.`;
+    return isGerman ? "Ich erstelle jetzt diesen Eintrag." : "I am creating that record now.";
   }
 
   if (key === "store_update_object") {
     const collection = firstStringField(toolInput, "collection");
-    if (collection) return `I am updating that in ${collection} now.`;
-    return "I am updating that record now.";
+    if (collection) return isGerman ? `Ich aktualisiere das jetzt in ${collection}.` : `I am updating that in ${collection} now.`;
+    return isGerman ? "Ich aktualisiere jetzt diesen Eintrag." : "I am updating that record now.";
   }
 
   if (key === "store_query" || key === "store_search") {
     const collection = firstStringField(toolInput, "collection");
     return collection
-      ? `I am checking ${collection} now.`
-      : "I am checking your stored data now.";
+      ? (isGerman ? `Ich pruefe jetzt ${collection}.` : `I am checking ${collection} now.`)
+      : (isGerman ? "Ich pruefe jetzt deine gespeicherten Daten." : "I am checking your stored data now.");
   }
 
   if (key === "contacts_search") {
-    return "I am looking up your contacts now.";
+    return isGerman ? "Ich suche jetzt deine Kontakte." : "I am looking up your contacts now.";
   }
 
   if (key === "okr_report") {
-    return "I am checking your OKRs now.";
+    return isGerman ? "Ich pruefe jetzt deine OKRs." : "I am checking your OKRs now.";
   }
 
-  return getGenericToolAnnouncement(key);
+  return getGenericToolAnnouncement(key, language);
 }
 
-function getToolPlanStep(toolName: string, toolInput: unknown): string {
-  const announcement = getToolAnnouncement(toolName, toolInput);
-  const trimmed = announcement
-    .replace(/^I am\s+/i, "")
-    .replace(/\s+now\.?$/i, "")
-    .trim();
-  if (!trimmed) return "Work on requested step";
+function getToolPlanStep(
+  toolName: string,
+  toolInput: unknown,
+  language = "en",
+  context?: { conversationId?: string | null; agentId?: string | null },
+): string {
+  const announcement = getToolAnnouncement(toolName, toolInput, language, context);
+  const isGerman = isGermanLanguage(language);
+  const trimmed = isGerman
+    ? announcement.replace(/^Ich\s+/i, "").replace(/\s+jetzt\.?$/i, "").trim()
+    : announcement.replace(/^I am\s+/i, "").replace(/\s+now\.?$/i, "").trim();
+  if (!trimmed) return isGerman ? "Angeforderten Schritt ausfuehren" : "Work on requested step";
   return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
 }
 
@@ -852,6 +1515,8 @@ if (config.apns.keyPath && config.apns.keyId && config.apns.teamId) {
     keyId: config.apns.keyId,
     teamId: config.apns.teamId,
     bundleId: config.apns.bundleId,
+    bundleIdDevelopment: config.apns.bundleIdDevelopment,
+    bundleIdProduction: config.apns.bundleIdProduction,
     production: config.apns.production,
   });
 }
@@ -1011,9 +1676,207 @@ function getLanIpv4Candidates(): string[] {
   return deduped;
 }
 
+type LiveKitNetworkMode = "auto" | "home" | "road";
+
+function normalizeLiveKitNetworkMode(value: unknown): LiveKitNetworkMode | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "auto" || normalized === "home" || normalized === "road") {
+    return normalized;
+  }
+  return null;
+}
+
+function resolveClientRequestedLiveKitMode(value: unknown): LiveKitNetworkMode | null {
+  const requested = normalizeLiveKitNetworkMode(value);
+  if (!requested || requested === "auto") return null;
+  const allowOverride = String(process.env.JOI_LIVEKIT_ALLOW_MODE_OVERRIDE || "").trim() === "1";
+  return allowOverride ? requested : null;
+}
+
+function isIpv4Literal(value: string): boolean {
+  const match = value.match(/^(\d{1,3})(?:\.(\d{1,3})){3}$/);
+  if (!match) return false;
+  const parts = value.split(".").map((part) => Number(part));
+  return parts.length === 4 && parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255);
+}
+
+function normalizeClientIp(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("::ffff:")) return trimmed.slice(7);
+  const zoneIndex = trimmed.indexOf("%");
+  return zoneIndex >= 0 ? trimmed.slice(0, zoneIndex) : trimmed;
+}
+
+function isLoopbackAddress(address: string): boolean {
+  return address === "::1" || address.startsWith("127.");
+}
+
+function getRequestClientIp(req: express.Request): string | null {
+  const headerIp = firstHeaderValue(req.headers["x-forwarded-for"])
+    || firstHeaderValue(req.headers["x-real-ip"]);
+  const remote = headerIp || req.socket.remoteAddress || "";
+  const normalized = normalizeClientIp(remote);
+  return normalized || null;
+}
+
+function getHomeIpv4Candidates(): string[] {
+  return getLanIpv4Candidates().filter((ip) => isPrivateIpv4(ip) && !isCarrierGradeNatIpv4(ip));
+}
+
+function getRoadIpv4Candidates(): string[] {
+  const interfaces = os.networkInterfaces();
+  const candidates: Array<{ name: string; address: string }> = [];
+
+  for (const [name, entries] of Object.entries(interfaces)) {
+    for (const entry of entries || []) {
+      if (!entry) continue;
+      if (entry.family !== "IPv4") continue;
+      if (entry.internal) continue;
+      if (!isCarrierGradeNatIpv4(entry.address)) continue;
+      candidates.push({ name, address: entry.address });
+    }
+  }
+
+  candidates.sort((a, b) => {
+    const tunnelDiff = Number(isTunnelInterface(b.name)) - Number(isTunnelInterface(a.name));
+    if (tunnelDiff !== 0) return tunnelDiff;
+    const ifaceDiff = interfacePriority(a.name) - interfacePriority(b.name);
+    if (ifaceDiff !== 0) return ifaceDiff;
+    return a.address.localeCompare(b.address);
+  });
+
+  const deduped: string[] = [];
+  for (const candidate of candidates) {
+    if (deduped.includes(candidate.address)) continue;
+    deduped.push(candidate.address);
+  }
+  return deduped;
+}
+
+function resolveLiveKitNetworkMode(
+  req: express.Request,
+  requestedMode: LiveKitNetworkMode | null,
+): LiveKitNetworkMode {
+  if (requestedMode === "home" || requestedMode === "road") {
+    return requestedMode;
+  }
+
+  const liveKitEnvMode = normalizeLiveKitNetworkMode(process.env.JOI_LIVEKIT_NETWORK_MODE);
+  if (liveKitEnvMode && liveKitEnvMode !== "auto") return liveKitEnvMode;
+
+  const miniRuntimeMode = normalizeLiveKitNetworkMode(process.env.JOI_MINI_ACTIVE_MODE);
+  if (miniRuntimeMode && miniRuntimeMode !== "auto") return miniRuntimeMode;
+
+  const legacyEnvMode = normalizeLiveKitNetworkMode(process.env.JOI_ROAD_MODE);
+  if (legacyEnvMode && legacyEnvMode !== "auto") return legacyEnvMode;
+
+  const clientIp = getRequestClientIp(req);
+  if (!clientIp) return "home";
+  if (isLoopbackAddress(clientIp) || isLocalHostname(clientIp)) return "home";
+  if (isCarrierGradeNatIpv4(clientIp)) return "road";
+  if (isPrivateIpv4(clientIp)) return "home";
+  return "road";
+}
+
+function resolveLiveKitTargetIp(mode: LiveKitNetworkMode): string | null {
+  const homeOverride = (process.env.JOI_MINI_HOME_IP || "").trim();
+  const roadOverride = (process.env.JOI_MINI_ROAD_IP || "").trim();
+
+  const safeHomeOverride = isIpv4Literal(homeOverride) ? homeOverride : "";
+  const safeRoadOverride = isIpv4Literal(roadOverride) ? roadOverride : "";
+
+  if (mode === "road") {
+    if (safeRoadOverride) return safeRoadOverride;
+    const roadCandidates = getRoadIpv4Candidates();
+    if (roadCandidates[0]) return roadCandidates[0];
+    if (safeHomeOverride) return safeHomeOverride;
+    const homeCandidates = getHomeIpv4Candidates();
+    return homeCandidates[0] || null;
+  }
+
+  if (mode === "home") {
+    if (safeHomeOverride) return safeHomeOverride;
+    const homeCandidates = getHomeIpv4Candidates();
+    if (homeCandidates[0]) return homeCandidates[0];
+    if (safeRoadOverride) return safeRoadOverride;
+    const roadCandidates = getRoadIpv4Candidates();
+    return roadCandidates[0] || null;
+  }
+
+  return null;
+}
+
+function getKnownMiniIpv4Set(): Set<string> {
+  const knownIps = new Set<string>();
+  const append = (value: string) => {
+    const normalized = value.trim();
+    if (!normalized || !isIpv4Literal(normalized)) return;
+    knownIps.add(normalized);
+  };
+
+  append(process.env.JOI_MINI_HOME_IP || "");
+  append(process.env.JOI_MINI_ROAD_IP || "");
+  for (const ip of getHomeIpv4Candidates()) append(ip);
+  for (const ip of getRoadIpv4Candidates()) append(ip);
+  return knownIps;
+}
+
+function shouldRewriteLiveKitHost(hostname: string): boolean {
+  const normalized = hostname.trim().toLowerCase();
+  if (!normalized) return false;
+  if (isLocalHostname(normalized)) return true;
+  const alias = (process.env.JOI_MINI_HOST_ALIAS || "mini").trim().toLowerCase();
+  const miniHostname = (process.env.JOI_MINI_HOSTNAME || "marcuss-mini").trim().toLowerCase();
+  if (normalized === alias || normalized === miniHostname) return true;
+  if (!isIpv4Literal(normalized)) return false;
+  return getKnownMiniIpv4Set().has(normalized);
+}
+
+function resolveLiveKitUrlForClient(
+  rawUrl: string,
+  req: express.Request,
+  requestedMode: LiveKitNetworkMode | null = null,
+): {
+  url: string;
+  mode: LiveKitNetworkMode;
+  targetIp: string | null;
+  clientIp: string | null;
+  rewritten: boolean;
+} {
+  const mode = resolveLiveKitNetworkMode(req, requestedMode);
+  const clientIp = getRequestClientIp(req);
+  const trimmed = (rawUrl || "").trim();
+  if (!trimmed) {
+    return { url: "", mode, targetIp: null, clientIp, rewritten: false };
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return { url: trimmed, mode, targetIp: null, clientIp, rewritten: false };
+  }
+
+  if (!shouldRewriteLiveKitHost(parsed.hostname)) {
+    return { url: parsed.toString(), mode, targetIp: null, clientIp, rewritten: false };
+  }
+
+  const targetIp = resolveLiveKitTargetIp(mode);
+  if (!targetIp) {
+    return { url: parsed.toString(), mode, targetIp: null, clientIp, rewritten: false };
+  }
+
+  parsed.hostname = targetIp;
+  return { url: parsed.toString(), mode, targetIp, clientIp, rewritten: true };
+}
+
 function resolveWebhookBase(req: express.Request): {
   webhookBaseUrl: string | null;
   source: string | null;
+  networkMode: LiveKitNetworkMode;
+  requestIsLocal: boolean;
   candidates: Array<{ source: string; url: string }>;
 } {
   const candidates: Array<{ source: string; url: string }> = [];
@@ -1027,6 +1890,8 @@ function resolveWebhookBase(req: express.Request): {
   const requestProto = firstHeaderValue(req.headers["x-forwarded-proto"]) || req.protocol || "http";
   const requestHost = firstHeaderValue(req.headers["x-forwarded-host"]) || req.headers.host || "";
   const requestBaseRaw = requestHost ? `${requestProto}://${requestHost}` : undefined;
+  const requestedMode = resolveClientRequestedLiveKitMode(req.query.networkMode);
+  const networkMode = resolveLiveKitNetworkMode(req, requestedMode);
 
   let requestIsLocal = true;
   if (requestBaseRaw) {
@@ -1038,13 +1903,41 @@ function resolveWebhookBase(req: express.Request): {
     }
   }
 
+  const pushModeAwareLanCandidates = (mode: LiveKitNetworkMode) => {
+    const preferredTarget = resolveLiveKitTargetIp(mode);
+    if (preferredTarget) {
+      pushCandidate(`mode.${mode}`, `http://${preferredTarget}:${config.gateway.port}`);
+    }
+
+    const primaryIps = mode === "road" ? getRoadIpv4Candidates() : getHomeIpv4Candidates();
+    const fallbackIps = mode === "road" ? getHomeIpv4Candidates() : getRoadIpv4Candidates();
+    const primarySource = mode === "road" ? "lan-road-ip" : "lan-home-ip";
+    const fallbackSource = mode === "road" ? "lan-home-fallback-ip" : "lan-road-fallback-ip";
+
+    for (const ip of primaryIps) {
+      pushCandidate(primarySource, `http://${ip}:${config.gateway.port}`);
+    }
+    for (const ip of fallbackIps) {
+      pushCandidate(fallbackSource, `http://${ip}:${config.gateway.port}`);
+    }
+  };
+
+  const webhookBaseHomeOverride = (process.env.JOI_WEBHOOK_BASE_URL_HOME || "").trim();
+  const webhookBaseRoadOverride = (process.env.JOI_WEBHOOK_BASE_URL_ROAD || "").trim();
+  const webhookBaseOverride = (process.env.JOI_WEBHOOK_BASE_URL || "").trim();
+  if (networkMode === "road") {
+    pushCandidate("env.webhookRoad", webhookBaseRoadOverride);
+  } else {
+    pushCandidate("env.webhookHome", webhookBaseHomeOverride);
+  }
+  pushCandidate("env.webhook", webhookBaseOverride);
+
   if (!requestIsLocal) {
     pushCandidate("request", requestBaseRaw);
     pushCandidate("config.publicUrl", config.gateway.publicUrl);
+    pushModeAwareLanCandidates(networkMode);
   } else {
-    for (const ip of getLanIpv4Candidates()) {
-      pushCandidate("lan-ip", `http://${ip}:${config.gateway.port}`);
-    }
+    pushModeAwareLanCandidates(networkMode);
     const host = config.gateway.host;
     if (host && !isLocalHostname(host)) {
       pushCandidate("config.host", `http://${host}:${config.gateway.port}`);
@@ -1056,6 +1949,8 @@ function resolveWebhookBase(req: express.Request): {
   return {
     webhookBaseUrl: first?.url || null,
     source: first?.source || null,
+    networkMode,
+    requestIsLocal,
     candidates,
   };
 }
@@ -1175,17 +2070,24 @@ app.get("/api/livekit/voices", async (req, res) => {
 app.post("/api/livekit/voices/preview", async (req, res) => {
   const { voiceId, text, provider: reqProvider, language: reqLanguage } = req.body;
   const provider = reqProvider || config.livekit.ttsProvider;
+  const previewLanguage = String(reqLanguage || config.livekit.language || "en").toLowerCase();
   const rules = config.livekit.pronunciations ?? [];
 
   // Build default preview text that naturally includes pronunciation words
-  let defaultText = "Hello! I'm JOI, your personal AI assistant. How can I help you today?";
+  let defaultText = previewLanguage.startsWith("de")
+    ? "Hallo! Ich bin JOI, dein persoenlicher KI-Assistent. Wie kann ich dir helfen?"
+    : "Hello! I'm JOI, your personal AI assistant. How can I help you today?";
   if (rules.length > 0) {
     // Include all pronunciation words in a natural sentence
     const examples = rules.map((r) => r.word);
     if (examples.length === 1) {
-      defaultText = `Hello! I'm ${examples[0]}, your personal AI assistant. Let me know how I can help you today.`;
+      defaultText = previewLanguage.startsWith("de")
+        ? `Hallo! Ich bin ${examples[0]}, dein persoenlicher KI-Assistent. Sag mir einfach, wie ich dir helfen kann.`
+        : `Hello! I'm ${examples[0]}, your personal AI assistant. Let me know how I can help you today.`;
     } else {
-      defaultText = `Hello! This is ${examples[0]}. Let me say a few words: ${examples.join(", ")}. How can I help you today?`;
+      defaultText = previewLanguage.startsWith("de")
+        ? `Hallo! Hier ist ${examples[0]}. Ich sage ein paar Woerter: ${examples.join(", ")}. Wie kann ich dir helfen?`
+        : `Hello! This is ${examples[0]}. Let me say a few words: ${examples.join(", ")}. How can I help you today?`;
     }
   }
 
@@ -1213,7 +2115,7 @@ app.post("/api/livekit/voices/preview", async (req, res) => {
           transcript: previewText,
           voice: { mode: "id", id: voiceId },
           output_format: { container: "mp3", bit_rate: 128000, sample_rate: 44100 },
-          language: reqLanguage || "en",
+          language: previewLanguage,
         }),
       });
 
@@ -1258,10 +2160,16 @@ app.post("/api/livekit/voices/preview", async (req, res) => {
 });
 
 // ─── LiveKit Config Endpoint ───
-app.get("/api/livekit/config", (_req, res) => {
+app.get("/api/livekit/config", (req, res) => {
   const lk = config.livekit;
+  const requestedMode = resolveClientRequestedLiveKitMode(req.query.networkMode);
+  const resolved = resolveLiveKitUrlForClient(lk.url || "", req, requestedMode);
   res.json({
-    url: lk.url || "",
+    url: resolved.url,
+    networkMode: resolved.mode,
+    networkTargetIp: resolved.targetIp,
+    networkClientIp: resolved.clientIp,
+    language: lk.language || "en",
     sttProvider: lk.sttProvider,
     sttModel: lk.sttModel,
     ttsProvider: lk.ttsProvider,
@@ -1294,14 +2202,27 @@ app.get("/api/livekit/config", (_req, res) => {
 // ─── LiveKit Token Endpoint ───
 app.post("/api/livekit/token", async (req, res) => {
   try {
+    const requestedMode = resolveClientRequestedLiveKitMode(req.body?.networkMode ?? req.query.networkMode);
     const agentId = req.body.agentId || "personal";
     const conversationId = await ensureConversation(req.body.conversationId, agentId);
-    const result = await generateToken(config.livekit, {
+    const tokenResult = await generateToken(config.livekit, {
       participantName: req.body.participantName,
       conversationId,
       agentId,
     });
-    res.json(result);
+    const resolved = resolveLiveKitUrlForClient(tokenResult.serverUrl, req, requestedMode);
+    if (resolved.rewritten) {
+      console.log(
+        `[livekit/token] rewrote serverUrl mode=${resolved.mode} client_ip=${resolved.clientIp || "unknown"} target_ip=${resolved.targetIp || "none"}`,
+      );
+    }
+    res.json({
+      ...tokenResult,
+      serverUrl: resolved.url,
+      networkMode: resolved.mode,
+      networkTargetIp: resolved.targetIp,
+      networkClientIp: resolved.clientIp,
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Token generation failed";
     res.status(500).json({ error: msg });
@@ -1334,6 +2255,17 @@ app.post("/api/voice/chat", async (req, res) => {
     });
     res.flushHeaders?.();
 
+    // Stop command detection — short-circuit before running the agent
+    if (VOICE_STOP_PHRASES.some((re) => re.test(message))) {
+      console.log(`[voice/chat] Stop command detected: "${message}"`);
+      const farewell = /aus|ruhe/i.test(message) ? "Tschüss!" : "Bye!";
+      wsBroadcast("voice.stop_command", { reason: message });
+      res.write(`data: ${JSON.stringify({ type: "stream", delta: farewell })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: "done", content: farewell, stopCommand: true })}\n\n`);
+      res.end();
+      return;
+    }
+
     const voiceModel = config.livekit.voiceModel || process.env.JOI_VOICE_MODEL || "openai/gpt-4o-mini";
     const voiceHistoryLimitRaw = Number.parseInt(
       String(config.livekit.voiceHistoryLimit ?? process.env.JOI_VOICE_HISTORY_LIMIT ?? "8"),
@@ -1353,6 +2285,7 @@ app.post("/api/voice/chat", async (req, res) => {
         : Promise.resolve(conversationId && conversationId.trim() ? conversationId : crypto.randomUUID()),
       classifyIntent(String(message || ""), config),
     ]);
+    const voiceLanguage = await resolveConversationLanguage(convId);
     _lastClassifiedDomain = voiceClassification.domain;
     const hasToolIntent = voiceClassification.needsTools;
     const effectiveVoiceToolsEnabled = voiceToolsEnabled && hasToolIntent;
@@ -1360,13 +2293,21 @@ app.post("/api/voice/chat", async (req, res) => {
     const effectiveVoiceHistoryLimit = hasToolIntent
       ? voiceHistoryLimit
       : Math.max(2, Math.min(4, voiceHistoryLimit));
-    const voiceExecutionGuardSuffix = [
-      "Voice execution rules:",
-      "- For requests about personal data or status (contacts, tasks, calendar, inbox, messages, weather, memory, knowledge), call the relevant tools before giving a factual answer.",
-      "- Never claim you are checking, searching, or working on something unless a tool call is actually being executed in this turn.",
-      "- If tool execution is unavailable or fails, say exactly what is blocked instead of implying completion.",
-      "- Keep progress updates short, factual, and natural.",
-    ].join("\n");
+    const voiceExecutionGuardSuffix = isGermanLanguage(voiceLanguage)
+      ? [
+        "Voice-Ausfuehrungsregeln:",
+        "- Bei Anfragen zu persoenlichen Daten oder Status (Kontakte, Aufgaben, Kalender, Postfach, Nachrichten, Wetter, Memory, Knowledge) zuerst die passenden Tools aufrufen, bevor du faktisch antwortest.",
+        "- Sage nur dann, dass du etwas pruefst, suchst oder bearbeitest, wenn in diesem Turn wirklich ein Tool-Call laeuft.",
+        "- Wenn Tool-Ausfuehrung blockiert ist oder fehlschlaegt, sage klar, was blockiert ist, statt Abschluss zu implizieren.",
+        "- Halte Fortschritts-Updates kurz, sachlich und natuerlich.",
+      ].join("\n")
+      : [
+        "Voice execution rules:",
+        "- For requests about personal data or status (contacts, tasks, calendar, inbox, messages, weather, memory, knowledge), call the relevant tools before giving a factual answer.",
+        "- Never claim you are checking, searching, or working on something unless a tool call is actually being executed in this turn.",
+        "- If tool execution is unavailable or fails, say exactly what is blocked instead of implying completion.",
+        "- Keep progress updates short, factual, and natural.",
+      ].join("\n");
     const effectiveVoicePromptSuffix = [voicePromptSuffix, voiceExecutionGuardSuffix]
       .filter((part): part is string => typeof part === "string" && part.trim().length > 0)
       .join("\n\n");
@@ -1419,11 +2360,17 @@ app.post("/api/voice/chat", async (req, res) => {
     if (hasToolIntent) {
       preToolProgressTimer = setTimeout(() => {
         if (voiceClosed || preToolActivityStarted) return;
-        emitVoiceStreamDelta(`${getPreToolProgressFiller(String(message || ""), 0)} `);
+        emitVoiceStreamDelta(`${getPreToolProgressFiller(String(message || ""), 0, voiceLanguage, {
+          conversationId: convId,
+          agentId: agentId || "personal",
+        })} `);
       }, VOICE_PRE_TOOL_PROGRESS_DELAY_MS);
       preToolLongTimer = setTimeout(() => {
         if (voiceClosed || preToolActivityStarted) return;
-        emitVoiceStreamDelta(`${getPreToolProgressFiller(String(message || ""), 1)} `);
+        emitVoiceStreamDelta(`${getPreToolProgressFiller(String(message || ""), 1, voiceLanguage, {
+          conversationId: convId,
+          agentId: agentId || "personal",
+        })} `);
       }, VOICE_PRE_TOOL_LONG_DELAY_MS);
     }
     const scheduleVoiceToolFiller = (toolUseId: string) => {
@@ -1437,7 +2384,17 @@ app.post("/api/voice/chat", async (req, res) => {
       state.timer = setTimeout(() => {
         const current = pendingVoiceToolFillers.get(toolUseId);
         if (!current || voiceClosed) return;
-        const filler = getDelayedVoiceToolFiller(current.toolName, current.toolInput, toolUseId, current.stage);
+        const filler = getDelayedVoiceToolFiller(
+          current.toolName,
+          current.toolInput,
+          toolUseId,
+          current.stage,
+          voiceLanguage,
+          {
+            conversationId: convId,
+            agentId: effectiveVoiceAgentId,
+          },
+        );
         if (filler) emitVoiceStreamDelta(`${filler} `);
         const nextStage = current.stage + 1;
         if (nextStage >= VOICE_TOOL_FILLER_STAGE_DELAYS_MS.length) {
@@ -1496,7 +2453,10 @@ app.post("/api/voice/chat", async (req, res) => {
       includeMemoryContext: effectiveVoiceMemoryEnabled,
       systemPromptSuffix: effectiveVoicePromptSuffix,
       onToolPlan: (toolCalls) => {
-        const steps = toolCalls.map((tc) => getToolPlanStep(tc.name, tc.input));
+        const steps = toolCalls.map((tc) => getToolPlanStep(tc.name, tc.input, voiceLanguage, {
+          conversationId: convId,
+          agentId: effectiveVoiceAgentId,
+        }));
         if (steps.length > 0) {
           wsBroadcast("chat.plan", {
             conversationId: convId,
@@ -1575,6 +2535,12 @@ app.post("/api/voice/chat", async (req, res) => {
         delegations: result.delegations,
       } : {}),
     });
+    analyzeChatAsync(config, {
+      conversationId: convId, messageId: result.messageId, content: cleanContent,
+      agentId: result.agentId, agentName: result.agentName || voiceRouteDecision?.agentName || undefined,
+      model: result.model, provider: result.provider,
+      latencyMs, costUsd: result.costUsd, executionMode,
+    }, wsBroadcast).catch(err => console.warn("[QA Observer]", err));
     if (!voiceClosed) {
       res.write(`data: ${JSON.stringify({
         type: "done",
@@ -1745,9 +2711,14 @@ app.get("/api/conversations", async (req, res) => {
   try {
     const typeFilter = req.query.type as string | undefined;
     const includeHandled = req.query.include_handled === "true";
+    const includeEmpty = req.query.include_empty === "true";
     const limitParam = Math.min(Math.max(parseInt(req.query.limit as string) || 200, 1), 500);
     const conditions: string[] = [];
     const params: unknown[] = [];
+
+    if (!includeEmpty) {
+      conditions.push(`EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id)`);
+    }
 
     if (typeFilter && (typeFilter === "inbox" || typeFilter === "direct")) {
       params.push(typeFilter);
@@ -1782,7 +2753,9 @@ app.get("/api/conversations", async (req, res) => {
 app.get("/api/conversations/:id/messages", async (req, res) => {
   try {
     const result = await query(
-      `SELECT id, role, content, tool_calls, tool_results, model, token_usage, attachments, created_at
+      `SELECT id, role, content, tool_calls, tool_results, model, token_usage, attachments,
+              reply_to_message_id, forward_of_message_id, mentions, forwarding_metadata,
+              reactions, pinned, reported, report_note, created_at
        FROM messages
        WHERE conversation_id = $1
        ORDER BY created_at ASC`,
@@ -1805,12 +2778,339 @@ app.get("/api/conversations/:id/messages", async (req, res) => {
     }
     const messages = result.rows.map((msg: any) => ({
       ...msg,
+      reactions: normalizeMessageReactions(msg.reactions),
+      pinned: Boolean(msg.pinned),
+      reported: Boolean(msg.reported),
+      report_note: typeof msg.report_note === "string" ? msg.report_note : null,
       media: mediaByMessage[msg.id] || undefined,
     }));
     res.json({ messages });
   } catch (err) {
     console.error("Failed to load messages:", err);
     res.status(500).json({ error: "Failed to load messages" });
+  }
+});
+
+// REST API: Link preview metadata for message URLs
+app.get("/api/chat/link-preview", async (req, res) => {
+  try {
+    const rawUrl = typeof req.query.url === "string" ? req.query.url : "";
+    const targetUrl = normalizePreviewUrl(rawUrl);
+    if (!targetUrl) {
+      res.status(400).json({ error: "Invalid or blocked URL" });
+      return;
+    }
+    const payload = await fetchLinkPreview(targetUrl);
+    if (!payload) {
+      res.status(404).json({ error: "No preview available" });
+      return;
+    }
+    res.json(payload);
+  } catch (err) {
+    console.error("Failed to fetch link preview:", err);
+    res.status(500).json({ error: "Failed to fetch link preview" });
+  }
+});
+
+// REST API: Create a Things ticket from chat context (JOI project, Inbox heading)
+app.post("/api/chat/tickets", async (req, res) => {
+  const normalizeText = (value: unknown, maxChars: number): string => {
+    if (typeof value !== "string") return "";
+    const compact = value.replace(/\s+/g, " ").trim();
+    if (!compact) return "";
+    return compact.length > maxChars ? compact.slice(0, maxChars) : compact;
+  };
+
+  const extractToolNames = (value: unknown): string[] => {
+    if (!Array.isArray(value)) return [];
+    const names: string[] = [];
+    for (const item of value) {
+      if (!item || typeof item !== "object") continue;
+      const rec = item as Record<string, unknown>;
+      const name = typeof rec.name === "string"
+        ? rec.name.trim()
+        : typeof rec.toolName === "string"
+          ? rec.toolName.trim()
+          : typeof rec.tool === "string"
+            ? rec.tool.trim()
+            : "";
+      if (!name) continue;
+      if (!names.includes(name)) names.push(name);
+    }
+    return names;
+  };
+
+  try {
+    const rawBody = (req.body || {}) as Record<string, unknown>;
+    const conversationId = normalizeMessageReference(rawBody.conversationId);
+    const kind = normalizeText(rawBody.kind, 16).toLowerCase() === "bug" ? "bug" : "ticket";
+    const source = normalizeText(rawBody.source, 64) || "chat";
+    const note = normalizeText(rawBody.note, 600);
+    const commandText = normalizeText(rawBody.commandText, 600);
+    let transcript = typeof rawBody.transcript === "string" ? rawBody.transcript.trim() : "";
+
+    if (!transcript && conversationId) {
+      const rows = await query<{
+        role: string;
+        content: string | null;
+        model: string | null;
+        tool_calls: unknown;
+      }>(
+        `SELECT role, content, model, tool_calls
+         FROM messages
+         WHERE conversation_id = $1
+         ORDER BY created_at ASC`,
+        [conversationId],
+      );
+
+      transcript = rows.rows
+        .map((row) => {
+          const content = normalizeText(row.content || "", 20_000);
+          if (!content) return "";
+          if (row.role === "assistant") {
+            const meta: string[] = [];
+            if (row.model) meta.push(`model=${row.model}`);
+            const tools = extractToolNames(row.tool_calls);
+            if (tools.length > 0) meta.push(`tools=${tools.join(",")}`);
+            const prefix = meta.length > 0 ? `Assistant (${meta.join(" | ")})` : "Assistant";
+            return `${prefix}: ${content}`;
+          }
+          if (row.role === "user") {
+            return `User: ${content}`;
+          }
+          return `${row.role}: ${content}`;
+        })
+        .filter((line) => line.length > 0)
+        .join("\n\n");
+    }
+
+    if (!transcript) {
+      transcript = note || commandText;
+    }
+
+    if (!transcript) {
+      res.status(400).json({ error: "No transcript or conversation content found for ticket creation." });
+      return;
+    }
+
+    const projects = getProjects();
+    const joiProject = projects.find((project) => project.title.trim().toLowerCase() === "joi");
+    if (!joiProject) {
+      res.status(404).json({ error: 'Things project "JOI" not found.' });
+      return;
+    }
+
+    const headings = getProjectHeadings(joiProject.uuid);
+    const inboxHeading = headings.find((heading) => heading.title.trim().toLowerCase() === "inbox");
+
+    const summarySeed = note || commandText || "Chat follow-up";
+    const compactSummary = summarySeed.replace(/\s+/g, " ").trim();
+    const clippedSummary = compactSummary.length > 96 ? `${compactSummary.slice(0, 93)}...` : compactSummary;
+    const title = kind === "bug"
+      ? `Chat Bug: ${clippedSummary || "Follow-up"}`
+      : `Chat Ticket: ${clippedSummary || "Follow-up"}`;
+
+    const MAX_TRANSCRIPT_CHARS = 12_000;
+    const transcriptTrimmed = transcript.length > MAX_TRANSCRIPT_CHARS
+      ? `${transcript.slice(0, MAX_TRANSCRIPT_CHARS)}\n\n[Transcript truncated due to Things note size limits.]`
+      : transcript;
+
+    const notes = [
+      `Source: ${source}`,
+      `Type: ${kind}`,
+      `Project: JOI`,
+      `Section: ${inboxHeading?.title || "Inbox"}`,
+      conversationId ? `Conversation ID: ${conversationId}` : null,
+      note ? `Details: ${note}` : null,
+      commandText ? `Command: ${commandText}` : null,
+      "",
+      "Transcript:",
+      transcriptTrimmed,
+    ]
+      .filter((line): line is string => typeof line === "string")
+      .join("\n");
+
+    await createTask(title, {
+      listId: joiProject.uuid,
+      headingId: inboxHeading?.uuid,
+      heading: inboxHeading ? undefined : "Inbox",
+      tags: ["chat-ticket", "inbox", kind],
+      notes,
+    });
+
+    res.json({
+      created: true,
+      title,
+      projectTitle: joiProject.title,
+      headingTitle: inboxHeading?.title || "Inbox",
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("Failed to create chat ticket:", message);
+    res.status(500).json({ error: message || "Failed to create ticket" });
+  }
+});
+
+// REST API: Toggle pinned flag on message
+app.post("/api/messages/:id/pin", async (req, res) => {
+  try {
+    const messageId = normalizeMessageReference(req.params.id);
+    if (!messageId) {
+      res.status(400).json({ error: "Invalid message id" });
+      return;
+    }
+    const explicitPinned = (req.body as Record<string, unknown> | undefined)?.pinned;
+    const row = await query<{ pinned: boolean }>(
+      "SELECT pinned FROM messages WHERE id = $1 LIMIT 1",
+      [messageId],
+    );
+    if (row.rows.length === 0) {
+      res.status(404).json({ error: "Message not found" });
+      return;
+    }
+    const nextPinned = typeof explicitPinned === "boolean" ? explicitPinned : !Boolean(row.rows[0].pinned);
+    await query(
+      "UPDATE messages SET pinned = $1 WHERE id = $2",
+      [nextPinned, messageId],
+    );
+    res.json({ messageId, pinned: nextPinned });
+  } catch (err) {
+    console.error("Failed to toggle pin:", err);
+    res.status(500).json({ error: "Failed to toggle pin" });
+  }
+});
+
+// REST API: Report message (user moderation flag)
+app.post("/api/messages/:id/report", async (req, res) => {
+  try {
+    const messageId = normalizeMessageReference(req.params.id);
+    if (!messageId) {
+      res.status(400).json({ error: "Invalid message id" });
+      return;
+    }
+    const noteRaw = (req.body as Record<string, unknown> | undefined)?.note;
+    const note = typeof noteRaw === "string" ? noteRaw.trim().slice(0, 500) : null;
+    const update = await query<{ id: string }>(
+      `UPDATE messages
+       SET reported = true,
+           report_note = $1
+       WHERE id = $2
+       RETURNING id`,
+      [note || null, messageId],
+    );
+    if (update.rows.length === 0) {
+      res.status(404).json({ error: "Message not found" });
+      return;
+    }
+    res.json({ messageId, reported: true, reportNote: note || null });
+  } catch (err) {
+    console.error("Failed to report message:", err);
+    res.status(500).json({ error: "Failed to report message" });
+  }
+});
+
+// REST API: Delete single message
+app.delete("/api/messages/:id", async (req, res) => {
+  try {
+    const messageId = normalizeMessageReference(req.params.id);
+    if (!messageId) {
+      res.status(400).json({ error: "Invalid message id" });
+      return;
+    }
+    const deleted = await query<{ id: string }>(
+      "DELETE FROM messages WHERE id = $1 RETURNING id",
+      [messageId],
+    );
+    if (deleted.rows.length === 0) {
+      res.status(404).json({ error: "Message not found" });
+      return;
+    }
+    res.json({ deleted: true, messageId });
+  } catch (err) {
+    console.error("Failed to delete message:", err);
+    res.status(500).json({ error: "Failed to delete message" });
+  }
+});
+
+// REST API: Bulk delete messages
+app.post("/api/messages/bulk-delete", async (req, res) => {
+  try {
+    const idsRaw = (req.body as Record<string, unknown> | undefined)?.ids;
+    const ids = Array.isArray(idsRaw)
+      ? idsRaw
+        .map((value) => normalizeMessageReference(value))
+        .filter((value): value is string => Boolean(value))
+        .slice(0, 200)
+      : [];
+    if (ids.length === 0) {
+      res.status(400).json({ error: "No valid message IDs" });
+      return;
+    }
+    const deleted = await query<{ id: string }>(
+      "DELETE FROM messages WHERE id = ANY($1) RETURNING id",
+      [ids],
+    );
+    res.json({ deleted: deleted.rows.length, ids: deleted.rows.map((row) => row.id) });
+  } catch (err) {
+    console.error("Failed bulk delete messages:", err);
+    res.status(500).json({ error: "Failed bulk delete messages" });
+  }
+});
+
+// REST API: Toggle a message reaction (per actor)
+app.post("/api/messages/:id/reactions", async (req, res) => {
+  try {
+    const messageId = normalizeMessageReference(req.params.id);
+    if (!messageId) {
+      res.status(400).json({ error: "Invalid message id" });
+      return;
+    }
+    const emoji = normalizeReactionEmoji((req.body as Record<string, unknown> | undefined)?.emoji);
+    if (!emoji) {
+      res.status(400).json({ error: "Missing or invalid emoji" });
+      return;
+    }
+    const actorId = normalizeReactionActorId((req.body as Record<string, unknown> | undefined)?.actorId);
+
+    const lookup = await query<{ id: string; reactions: unknown }>(
+      `SELECT id, reactions
+       FROM messages
+       WHERE id = $1
+       LIMIT 1`,
+      [messageId],
+    );
+    if (lookup.rows.length === 0) {
+      res.status(404).json({ error: "Message not found" });
+      return;
+    }
+
+    const reactions = normalizeMessageReactions(lookup.rows[0].reactions);
+    const actors = new Set(reactions[emoji] || []);
+    let reacted = false;
+    if (actors.has(actorId)) {
+      actors.delete(actorId);
+    } else {
+      actors.add(actorId);
+      reacted = true;
+    }
+
+    if (actors.size > 0) reactions[emoji] = [...actors];
+    else delete reactions[emoji];
+
+    await query(
+      "UPDATE messages SET reactions = $1 WHERE id = $2",
+      [serializeMessageReactions(reactions), messageId],
+    );
+
+    res.json({
+      messageId,
+      emoji,
+      reacted,
+      reactions,
+    });
+  } catch (err) {
+    console.error("Failed to toggle message reaction:", err);
+    res.status(500).json({ error: "Failed to toggle reaction" });
   }
 });
 
@@ -1832,7 +3132,11 @@ app.get("/api/agents", async (_req, res) => {
     const result = await query(
       "SELECT id, name, description, system_prompt, model, enabled, skills, config FROM agents ORDER BY name",
     );
-    res.json({ agents: result.rows });
+    const agents = result.rows.map((agent) => ({
+      ...agent,
+      skills: normalizeAgentSkills(String(agent.id), (agent.skills as string[] | null | undefined) ?? null),
+    }));
+    res.json({ agents });
   } catch (err) {
     console.error("Failed to list agents:", err);
     res.status(500).json({ error: "Failed to list agents" });
@@ -1859,8 +3163,24 @@ app.put("/api/agents/:id", async (req, res) => {
     }
 
     if (req.body.skills !== undefined) {
+      if (req.body.skills === null) {
+        res.status(400).json({
+          error: "skills must be an explicit array; null (unrestricted/all-tools) is disabled.",
+        });
+        return;
+      }
+      if (!Array.isArray(req.body.skills)) {
+        res.status(400).json({ error: "skills must be an array of tool names." });
+        return;
+      }
+      const normalizedSkills = [...new Set(
+        req.body.skills
+          .filter((item: unknown): item is string => typeof item === "string")
+          .map((item: string) => item.trim())
+          .filter((item: string) => item.length > 0),
+      )];
       updates.push(`skills = $${idx++}`);
-      params.push(req.body.skills);
+      params.push(normalizedSkills);
     }
 
     // JSONB merge for config — partial updates don't clobber existing keys
@@ -2584,8 +3904,21 @@ app.put("/api/services/watchdog/mode", (req, res) => {
 
 // GET /api/settings — returns current config (API keys masked)
 app.get("/api/settings", (_req, res) => {
+  const miniHomeIp = (process.env.JOI_MINI_HOME_IP || "").trim();
+  const miniRoadIp = (process.env.JOI_MINI_ROAD_IP || "").trim();
+  const miniActiveIp = (process.env.JOI_MINI_ACTIVE_IP || "").trim();
+  const livekitEnvMode = normalizeLiveKitNetworkMode(process.env.JOI_LIVEKIT_NETWORK_MODE ?? process.env.JOI_ROAD_MODE);
+  const runtimeMode = normalizeLiveKitNetworkMode(process.env.JOI_MINI_ACTIVE_MODE);
+
   const masked = {
     ...config,
+    network: {
+      homeIp: isIpv4Literal(miniHomeIp) ? miniHomeIp : null,
+      roadIp: isIpv4Literal(miniRoadIp) ? miniRoadIp : null,
+      activeIp: isIpv4Literal(miniActiveIp) ? miniActiveIp : null,
+      activeMode: runtimeMode || "auto",
+      configuredMode: livekitEnvMode || "auto",
+    },
     auth: {
       anthropicApiKey: config.auth.anthropicApiKey ? "sk-ant-***" + config.auth.anthropicApiKey.slice(-4) : null,
       openrouterApiKey: config.auth.openrouterApiKey ? "sk-or-***" + config.auth.openrouterApiKey.slice(-4) : null,
@@ -2602,6 +3935,7 @@ app.get("/api/settings", (_req, res) => {
       url: config.livekit.url || "",
       apiKey: config.livekit.apiKey ? "***" + config.livekit.apiKey.slice(-4) : null,
       apiSecret: config.livekit.apiSecret ? "***" + config.livekit.apiSecret.slice(-4) : null,
+      language: config.livekit.language || "en",
       sttProvider: config.livekit.sttProvider,
       sttModel: config.livekit.sttModel,
       ttsProvider: config.livekit.ttsProvider,
@@ -2637,9 +3971,19 @@ app.get("/api/gateway/webhook-base", (req, res) => {
 });
 
 // PUT /api/settings — update config sections
-app.put("/api/settings", (req, res) => {
+app.put("/api/settings", async (req, res) => {
   try {
     const updates = req.body;
+    let livekitLanguageForChannels: string | null = null;
+    let applyLanguageToAllChannels = false;
+    let autodevRuntimeRestarted = false;
+    let autodevRuntimeRestartReason: string | null = null;
+    let autodevRuntimeUpdate: {
+      executorMode?: "auto" | "claude-code" | "gemini-cli" | "codex-cli";
+      parallelExecution?: boolean;
+      discussionMode?: boolean;
+      discussionMaxTurns?: number;
+    } | null = null;
 
     // Merge updates into current config
     if (updates.auth) {
@@ -2673,6 +4017,41 @@ app.put("/api/settings", (req, res) => {
       Object.assign((config as any).models, updates.models);
     }
 
+    if (updates.tasks) {
+      if (!(config as any).tasks) (config as any).tasks = {};
+      Object.assign((config as any).tasks, updates.tasks);
+    }
+
+    if (updates.autodev) {
+      if (!(config as any).autodev) (config as any).autodev = {};
+      const current = (config as any).autodev as Record<string, unknown>;
+      const next: Record<string, unknown> = { ...current };
+      const incoming = updates.autodev as Record<string, unknown>;
+
+      if (incoming.executorMode !== undefined) {
+        const mode = String(incoming.executorMode || "").trim().toLowerCase();
+        if (mode === "auto" || mode === "claude-code" || mode === "gemini-cli" || mode === "codex-cli") {
+          next.executorMode = mode;
+        }
+      }
+      if (incoming.parallelExecution !== undefined) next.parallelExecution = incoming.parallelExecution === true;
+      if (incoming.discussionMode !== undefined) next.discussionMode = incoming.discussionMode === true;
+      if (incoming.discussionMaxTurns !== undefined) {
+        const turns = Number(incoming.discussionMaxTurns);
+        if (Number.isFinite(turns)) next.discussionMaxTurns = Math.min(5, Math.max(1, Math.floor(turns)));
+      }
+
+      (config as any).autodev = next;
+      autodevRuntimeUpdate = {
+        executorMode: typeof next.executorMode === "string"
+          ? next.executorMode as "auto" | "claude-code" | "gemini-cli" | "codex-cli"
+          : undefined,
+        parallelExecution: typeof next.parallelExecution === "boolean" ? next.parallelExecution : undefined,
+        discussionMode: typeof next.discussionMode === "boolean" ? next.discussionMode : undefined,
+        discussionMaxTurns: typeof next.discussionMaxTurns === "number" ? next.discussionMaxTurns : undefined,
+      };
+    }
+
     if (updates.telegram) {
       if (updates.telegram.botToken && !updates.telegram.botToken.includes("***")) {
         (config as any).telegram.botToken = updates.telegram.botToken;
@@ -2690,6 +4069,11 @@ app.put("/api/settings", (req, res) => {
       if (lk.url !== undefined) (config as any).livekit.url = lk.url;
       if (lk.apiKey && !lk.apiKey.includes("***")) (config as any).livekit.apiKey = lk.apiKey;
       if (lk.apiSecret && !lk.apiSecret.includes("***")) (config as any).livekit.apiSecret = lk.apiSecret;
+      if (lk.language !== undefined) {
+        const normalizedLanguage = String(lk.language || "en").trim() || "en";
+        (config as any).livekit.language = normalizedLanguage;
+        livekitLanguageForChannels = normalizedLanguage;
+      }
       if (lk.sttProvider !== undefined) (config as any).livekit.sttProvider = lk.sttProvider;
       if (lk.sttModel !== undefined) (config as any).livekit.sttModel = lk.sttModel;
       if (lk.ttsProvider !== undefined) (config as any).livekit.ttsProvider = lk.ttsProvider;
@@ -2713,6 +4097,19 @@ app.put("/api/settings", (req, res) => {
       if (lk.ttsCacheRedisTtlSec !== undefined) (config as any).livekit.ttsCacheRedisTtlSec = lk.ttsCacheRedisTtlSec;
       if (lk.ttsCachePrefix !== undefined) (config as any).livekit.ttsCachePrefix = lk.ttsCachePrefix;
       if (lk.ttsCacheRedisUrl !== undefined) (config as any).livekit.ttsCacheRedisUrl = lk.ttsCacheRedisUrl;
+      applyLanguageToAllChannels = lk.applyLanguageToAllChannels === true;
+    }
+
+    if (applyLanguageToAllChannels && livekitLanguageForChannels) {
+      try {
+        await query(
+          "UPDATE channel_configs SET language = $1, updated_at = NOW()",
+          [livekitLanguageForChannels],
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[settings] failed to apply language to all channels: ${message}`);
+      }
     }
 
     // Reset cached API clients so they pick up new keys
@@ -2721,7 +4118,47 @@ app.put("/api/settings", (req, res) => {
     // Save to disk
     saveConfig(config);
 
-    res.json({ saved: true });
+    // Apply AutoDev settings immediately without restart
+    if (autodevRuntimeUpdate) {
+      autoDevProxy.sendToWorker("autodev.configure", autodevRuntimeUpdate);
+
+      // Compatibility guard: if the connected worker is from an older runtime that
+      // doesn't expose discussion fields, force a restart so toggles apply reliably.
+      const status = autoDevProxy.getStatus();
+      const systemInfo = (status.systemInfo && typeof status.systemInfo === "object")
+        ? status.systemInfo as Record<string, unknown>
+        : null;
+      const supportsDiscussionRuntime = systemInfo !== null
+        && typeof systemInfo.discussionMode === "boolean"
+        && typeof systemInfo.discussionMaxTurns === "number";
+
+      if (!supportsDiscussionRuntime) {
+        const state = status.state;
+        if (state === "working") {
+          autodevRuntimeRestartReason = "worker appears outdated but is currently working; restart skipped";
+          console.warn("[settings] AutoDev worker appears outdated but is currently working; restart skipped.");
+        } else {
+          for (const pat of ["scripts/dev-autodev.sh", "src/autodev/worker.ts"]) {
+            try { execFileSync("pkill", ["-f", pat], { stdio: "ignore" }); } catch { /* ignore */ }
+          }
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          const restart = startServiceDetached("autodev");
+          autodevRuntimeRestarted = restart.ok && (restart.started || restart.alreadyRunning);
+          autodevRuntimeRestartReason = restart.detail;
+          if (!autodevRuntimeRestarted) {
+            console.warn(`[settings] AutoDev worker restart fallback failed: ${restart.detail}`);
+          } else {
+            console.warn("[settings] AutoDev worker restart fallback applied after settings update.");
+          }
+        }
+      }
+    }
+
+    res.json({
+      saved: true,
+      autodevRuntimeRestarted,
+      autodevRuntimeRestartReason,
+    });
   } catch (err) {
     console.error("Failed to save settings:", err);
     res.status(500).json({ error: "Failed to save settings" });
@@ -2767,6 +4204,7 @@ app.post("/api/settings/ollama/pull-llm", async (req, res) => {
 app.get("/api/settings/model-routes", async (_req, res) => {
   const defaultRoutes = [
     { task: "chat", model: "claude-sonnet-4-20250514", provider: "anthropic" },
+    { task: "lightweight", model: "openai/gpt-4o-mini", provider: "openrouter" },
     { task: "tool", model: "openai/gpt-4o-mini", provider: "openrouter" },
     { task: "utility", model: "anthropic/claude-haiku-3-20240307", provider: "openrouter" },
     { task: "triage", model: "openai/gpt-4o-mini", provider: "openrouter" },
@@ -4684,6 +6122,139 @@ app.put("/api/skills/:name/content", async (req, res) => {
   }
 });
 
+// ─── Humanizer API ───
+
+app.get("/api/humanizer/overview", async (_req, res) => {
+  try {
+    const overview = await getHumanizerOverview();
+    res.json({ overview, summary: summarizeHumanizerAudit(overview) });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
+  }
+});
+
+app.post("/api/humanizer/audit", async (req, res) => {
+  try {
+    const triggeredBy = typeof req.body?.triggeredBy === "string"
+      ? req.body.triggeredBy
+      : "api_manual";
+    const overview = await runHumanizerAudit(triggeredBy);
+    res.json({ ok: true, overview, summary: summarizeHumanizerAudit(overview) });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
+  }
+});
+
+app.get("/api/humanizer/templates", async (req, res) => {
+  try {
+    const templates = await listHumanizerTemplates({
+      stage: typeof req.query.stage === "string" ? req.query.stage : undefined,
+      channel: typeof req.query.channel === "string" ? req.query.channel : undefined,
+      language: typeof req.query.language === "string" ? req.query.language : undefined,
+      enabled: typeof req.query.enabled === "string"
+        ? req.query.enabled === "true"
+        : undefined,
+      agentId: typeof req.query.agentId === "string" ? req.query.agentId : undefined,
+    });
+    res.json({ templates, count: templates.length });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
+  }
+});
+
+app.put("/api/humanizer/templates/:id", async (req, res) => {
+  try {
+    const template = await updateHumanizerTemplate(req.params.id, {
+      ...(req.body.name !== undefined ? { name: req.body.name } : {}),
+      ...(req.body.stage !== undefined ? { stage: req.body.stage } : {}),
+      ...(req.body.channel !== undefined ? { channel: req.body.channel } : {}),
+      ...(req.body.language !== undefined ? { language: req.body.language } : {}),
+      ...(req.body.agentId !== undefined ? { agentId: req.body.agentId } : {}),
+      ...(req.body.skillName !== undefined ? { skillName: req.body.skillName } : {}),
+      ...(req.body.toolPattern !== undefined ? { toolPattern: req.body.toolPattern } : {}),
+      ...(req.body.template !== undefined ? { template: req.body.template } : {}),
+      ...(req.body.weight !== undefined ? { weight: Number(req.body.weight) } : {}),
+      ...(req.body.allowEmoji !== undefined ? { allowEmoji: Boolean(req.body.allowEmoji) } : {}),
+      ...(req.body.enabled !== undefined ? { enabled: Boolean(req.body.enabled) } : {}),
+      ...(req.body.metadata !== undefined ? { metadata: req.body.metadata } : {}),
+    });
+    if (!template) {
+      res.status(404).json({ error: "Template not found" });
+      return;
+    }
+    res.json({ updated: true, template });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
+  }
+});
+
+app.get("/api/humanizer/profile", (_req, res) => {
+  try {
+    res.json({ profile: getCachedHumanizerProfile() });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
+  }
+});
+
+app.put("/api/humanizer/profile", async (req, res) => {
+  try {
+    const profile = await updateHumanizerProfile({
+      ...(req.body.enabled !== undefined ? { enabled: Boolean(req.body.enabled) } : {}),
+      ...(req.body.avoidRepeatWindow !== undefined ? { avoidRepeatWindow: Number(req.body.avoidRepeatWindow) } : {}),
+      ...(req.body.emojiProbability !== undefined ? { emojiProbability: Number(req.body.emojiProbability) } : {}),
+      ...(req.body.allowEmojisInChat !== undefined ? { allowEmojisInChat: Boolean(req.body.allowEmojisInChat) } : {}),
+      ...(req.body.maxEmojis !== undefined ? { maxEmojis: Number(req.body.maxEmojis) } : {}),
+      ...(req.body.config !== undefined ? { config: req.body.config } : {}),
+    });
+    res.json({ updated: true, profile });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
+  }
+});
+
+app.post("/api/humanizer/filler", (req, res) => {
+  try {
+    const channel = req.body?.channel === "voice" ? "voice" : "chat";
+    const stage = typeof req.body?.stage === "string" ? req.body.stage : "chat_streaming";
+    const allowedStages = new Set([
+      "tool_announcement",
+      "pre_tool_start",
+      "pre_tool_progress",
+      "tool_start",
+      "tool_progress",
+      "tool_long",
+      "chat_streaming",
+    ]);
+    if (!allowedStages.has(stage)) {
+      res.status(400).json({ error: `Invalid stage: ${stage}` });
+      return;
+    }
+    const result = selectHumanizedLine({
+      channel,
+      stage: stage as Parameters<typeof selectHumanizedLine>[0]["stage"],
+      language: typeof req.body?.language === "string" ? req.body.language : "en",
+      conversationId: typeof req.body?.conversationId === "string" ? req.body.conversationId : null,
+      agentId: typeof req.body?.agentId === "string" ? req.body.agentId : null,
+      skillName: typeof req.body?.skillName === "string" ? req.body.skillName : null,
+      toolName: typeof req.body?.toolName === "string" ? req.body.toolName : null,
+      toolInput: req.body?.toolInput,
+      hint: typeof req.body?.hint === "string" ? req.body.hint : null,
+      allowEmoji: req.body?.allowEmoji !== false,
+      emitEvent: req.body?.emitEvent !== false,
+    });
+    res.json({ filler: result?.text || null, result });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
+  }
+});
+
 // ─── Claude Code Skills (on disk) ───
 
 app.get("/api/claude-skills", (_req, res) => {
@@ -4949,7 +6520,7 @@ app.get("/api/souls", async (_req, res) => {
         name: agent.name,
         description: agent.description,
         model: agent.model,
-        skills: agent.skills,
+        skills: normalizeAgentSkills(agent.id, agent.skills),
       });
       const validation = validateSoulDocument(soul.content);
       const activeVersion = await ensureSoulVersion(agent.id, soul.content);
@@ -4986,7 +6557,7 @@ app.get("/api/soul/:agentId", async (req, res) => {
       name: agent.name,
       description: agent.description,
       model: agent.model,
-      skills: agent.skills,
+      skills: normalizeAgentSkills(agent.id, agent.skills),
     });
     const validation = validateSoulDocument(soul.content);
     const activeVersion = await ensureSoulVersion(agent.id, soul.content);
@@ -5815,7 +7386,7 @@ app.post("/api/channels/:id/disconnect", async (req, res) => {
 
 // ─── Push Notifications API ───
 
-import { isAPNsConfigured } from "./notifications/apns.js";
+import { getAPNsRuntimeInfo, isAPNsConfigured } from "./notifications/apns.js";
 
 // POST /api/push/register — register a device token for push notifications
 app.post("/api/push/register", async (req, res) => {
@@ -5864,9 +7435,13 @@ app.delete("/api/push/unregister", async (req, res) => {
 app.get("/api/push/status", async (_req, res) => {
   try {
     const deviceCount = await getDeviceCount();
+    const runtime = getAPNsRuntimeInfo();
     res.json({
       apnsConfigured: isAPNsConfigured(),
       registeredDevices: deviceCount,
+      apnsTargetEnvironment: runtime?.targetEnvironment ?? null,
+      apnsTopicDevelopment: runtime?.topicDevelopment ?? null,
+      apnsTopicProduction: runtime?.topicProduction ?? null,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -5890,6 +7465,85 @@ app.get("/api/push/log", async (req, res) => {
 
 import { importAppleContacts } from "./contacts/import-apple-contacts.js";
 
+const CONTACT_NAME_KEY_SQL = `
+  COALESCE(
+    NULLIF(
+      lower(
+        regexp_replace(
+          trim(
+            concat_ws(
+              ' ',
+              regexp_replace(coalesce(c.first_name, ''), '\\s+\\d+$', '', 'g'),
+              regexp_replace(coalesce(c.last_name, ''), '\\s+\\d+$', '', 'g')
+            )
+          ),
+          '\\s+',
+          ' ',
+          'g'
+        )
+      ),
+      ''
+    ),
+    NULLIF(
+      lower(
+        regexp_replace(
+          trim(regexp_replace(coalesce(c.nickname, ''), '\\s+\\d+$', '', 'g')),
+          '\\s+',
+          ' ',
+          'g'
+        )
+      ),
+      ''
+    ),
+    ''
+  )
+`;
+
+const CONTACT_DEDUPE_KEY_SQL = `
+  COALESCE(
+    CASE
+      WHEN EXISTS (
+        SELECT 1
+        FROM unnest(c.emails) AS email
+        WHERE NULLIF(lower(trim(email)), '') IS NOT NULL
+      ) THEN 'email:' || array_to_string(
+        ARRAY(
+          SELECT DISTINCT lower(trim(email))
+          FROM unnest(c.emails) AS email
+          WHERE NULLIF(lower(trim(email)), '') IS NOT NULL
+          ORDER BY lower(trim(email))
+        ),
+        '|'
+      )
+      || '|name:' || (${CONTACT_NAME_KEY_SQL})
+      WHEN EXISTS (
+        SELECT 1
+        FROM unnest(c.phones) AS phone
+        WHERE NULLIF(regexp_replace(phone, '\\D', '', 'g'), '') IS NOT NULL
+      ) THEN 'phone:' || array_to_string(
+        ARRAY(
+          SELECT DISTINCT regexp_replace(phone, '\\D', '', 'g')
+          FROM unnest(c.phones) AS phone
+          WHERE NULLIF(regexp_replace(phone, '\\D', '', 'g'), '') IS NOT NULL
+          ORDER BY regexp_replace(phone, '\\D', '', 'g')
+        ),
+        '|'
+      )
+      || '|name:' || (${CONTACT_NAME_KEY_SQL})
+      ELSE NULL
+    END,
+    'id:' || c.id::text
+  )
+`;
+
+const CONTACT_COMPLETENESS_SQL = `
+  COALESCE(cardinality(c.emails), 0)
+  + COALESCE(cardinality(c.phones), 0)
+  + CASE WHEN c.notes IS NOT NULL AND btrim(c.notes) <> '' THEN 1 ELSE 0 END
+  + CASE WHEN c.company_id IS NOT NULL THEN 1 ELSE 0 END
+  + CASE WHEN c.job_title IS NOT NULL AND btrim(c.job_title) <> '' THEN 1 ELSE 0 END
+`;
+
 // POST /api/contacts/import-apple — trigger Apple Contacts import
 app.post("/api/contacts/import-apple", async (_req, res) => {
   try {
@@ -5906,10 +7560,51 @@ app.post("/api/contacts/import-apple", async (_req, res) => {
 app.get("/api/contacts/stats", async (_req, res) => {
   try {
     const [contactCount, companyCount, statusBreakdown, recentlyAdded] = await Promise.all([
-      query<{ count: number }>("SELECT count(*)::int AS count FROM contacts"),
+      query<{ count: number }>(
+        `WITH ranked AS (
+           SELECT
+             row_number() OVER (
+               PARTITION BY ${CONTACT_DEDUPE_KEY_SQL}
+               ORDER BY ${CONTACT_COMPLETENESS_SQL} DESC, c.updated_at DESC NULLS LAST, c.created_at DESC NULLS LAST, c.id DESC
+             ) AS rn
+           FROM contacts c
+         )
+         SELECT count(*)::int AS count
+         FROM ranked
+         WHERE rn = 1`,
+      ),
       query<{ count: number }>("SELECT count(*)::int AS count FROM companies"),
-      query<{ status: string; count: number }>("SELECT status, count(*)::int AS count FROM contacts GROUP BY status ORDER BY count DESC"),
-      query<{ count: number }>("SELECT count(*)::int AS count FROM contacts WHERE created_at > NOW() - interval '7 days'"),
+      query<{ status: string; count: number }>(
+        `WITH ranked AS (
+           SELECT
+             c.status,
+             row_number() OVER (
+               PARTITION BY ${CONTACT_DEDUPE_KEY_SQL}
+               ORDER BY ${CONTACT_COMPLETENESS_SQL} DESC, c.updated_at DESC NULLS LAST, c.created_at DESC NULLS LAST, c.id DESC
+             ) AS rn
+           FROM contacts c
+         )
+         SELECT status, count(*)::int AS count
+         FROM ranked
+         WHERE rn = 1
+         GROUP BY status
+         ORDER BY count DESC`,
+      ),
+      query<{ count: number }>(
+        `WITH ranked AS (
+           SELECT
+             c.created_at,
+             row_number() OVER (
+               PARTITION BY ${CONTACT_DEDUPE_KEY_SQL}
+               ORDER BY ${CONTACT_COMPLETENESS_SQL} DESC, c.updated_at DESC NULLS LAST, c.created_at DESC NULLS LAST, c.id DESC
+             ) AS rn
+           FROM contacts c
+         )
+         SELECT count(*)::int AS count
+         FROM ranked
+         WHERE rn = 1
+           AND created_at > NOW() - interval '7 days'`,
+      ),
     ]);
     res.json({
       contacts: contactCount.rows[0]?.count || 0,
@@ -5929,6 +7624,7 @@ app.get("/api/contacts", async (req, res) => {
     const status = req.query.status as string | undefined;
     const tag = req.query.tag as string | undefined;
     const companyId = req.query.company_id as string | undefined;
+    const dedupe = String(req.query.dedupe ?? "1") !== "0";
     const limit = Math.min(Number(req.query.limit) || 50, 200);
     const offset = Number(req.query.offset) || 0;
 
@@ -5957,32 +7653,112 @@ app.get("/api/contacts", async (req, res) => {
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const limitParam = params.length + 1;
+    const offsetParam = params.length + 2;
+    const pageParams = [...params, limit, offset];
 
     // Count query for stats
-    const countResult = await query<{ count: number }>(
-      `SELECT count(*)::int AS count FROM contacts c LEFT JOIN companies comp ON comp.id = c.company_id ${where}`,
-      params,
-    );
+    const countResult = dedupe
+      ? await query<{ count: number }>(
+        `WITH base AS (
+           SELECT
+             c.id,
+             c.updated_at,
+             c.created_at,
+             ${CONTACT_DEDUPE_KEY_SQL} AS dedupe_key,
+             ${CONTACT_COMPLETENESS_SQL} AS completeness
+           FROM contacts c
+           LEFT JOIN companies comp ON comp.id = c.company_id
+           ${where}
+         ),
+         ranked AS (
+           SELECT
+             id,
+             row_number() OVER (
+               PARTITION BY dedupe_key
+               ORDER BY completeness DESC, updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id DESC
+             ) AS rn
+           FROM base
+         )
+         SELECT count(*)::int AS count
+         FROM ranked
+         WHERE rn = 1`,
+        params,
+      )
+      : await query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM contacts c LEFT JOIN companies comp ON comp.id = c.company_id ${where}`,
+        params,
+      );
 
     // Status counts
-    const statusCounts = await query<{ status: string; count: number }>(
-      `SELECT status, count(*)::int AS count FROM contacts GROUP BY status ORDER BY status`,
-    );
+    const statusCounts = dedupe
+      ? await query<{ status: string; count: number }>(
+        `WITH ranked AS (
+           SELECT
+             c.status,
+             row_number() OVER (
+               PARTITION BY ${CONTACT_DEDUPE_KEY_SQL}
+               ORDER BY ${CONTACT_COMPLETENESS_SQL} DESC, c.updated_at DESC NULLS LAST, c.created_at DESC NULLS LAST, c.id DESC
+             ) AS rn
+           FROM contacts c
+         )
+         SELECT status, count(*)::int AS count
+         FROM ranked
+         WHERE rn = 1
+         GROUP BY status
+         ORDER BY status`,
+      )
+      : await query<{ status: string; count: number }>(
+        `SELECT status, count(*)::int AS count FROM contacts GROUP BY status ORDER BY status`,
+      );
 
-    params.push(limit, offset);
-    const result = await query(
-      `SELECT c.id, c.apple_id, c.first_name, c.last_name, c.nickname, c.emails, c.phones,
-              c.company_id, c.job_title, c.birthday, c.tags, c.status, c.notes,
-              c.telegram_username, c.slack_handle, c.avatar_url, c.last_contacted_at,
-              c.created_at, c.updated_at,
-              comp.name AS company_name
-       FROM contacts c
-       LEFT JOIN companies comp ON comp.id = c.company_id
-       ${where}
-       ORDER BY c.last_name ASC NULLS LAST, c.first_name ASC NULLS LAST
-       LIMIT $${idx++} OFFSET $${idx}`,
-      params,
-    );
+    const result = dedupe
+      ? await query(
+        `WITH base AS (
+           SELECT
+             c.id, c.apple_id, c.first_name, c.last_name, c.nickname, c.emails, c.phones,
+             c.company_id, c.job_title, c.birthday, c.tags, c.status, c.notes,
+             c.telegram_username, c.slack_handle, c.avatar_url, c.last_contacted_at,
+             c.created_at, c.updated_at,
+             comp.name AS company_name,
+             ${CONTACT_DEDUPE_KEY_SQL} AS dedupe_key,
+             ${CONTACT_COMPLETENESS_SQL} AS completeness
+           FROM contacts c
+           LEFT JOIN companies comp ON comp.id = c.company_id
+           ${where}
+         ),
+         ranked AS (
+           SELECT
+             *,
+             row_number() OVER (
+               PARTITION BY dedupe_key
+               ORDER BY completeness DESC, updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id DESC
+             ) AS rn
+           FROM base
+         )
+         SELECT id, apple_id, first_name, last_name, nickname, emails, phones,
+                company_id, job_title, birthday, tags, status, notes,
+                telegram_username, slack_handle, avatar_url, last_contacted_at,
+                created_at, updated_at, company_name
+         FROM ranked
+         WHERE rn = 1
+         ORDER BY last_name ASC NULLS LAST, first_name ASC NULLS LAST
+         LIMIT $${limitParam} OFFSET $${offsetParam}`,
+        pageParams,
+      )
+      : await query(
+        `SELECT c.id, c.apple_id, c.first_name, c.last_name, c.nickname, c.emails, c.phones,
+                c.company_id, c.job_title, c.birthday, c.tags, c.status, c.notes,
+                c.telegram_username, c.slack_handle, c.avatar_url, c.last_contacted_at,
+                c.created_at, c.updated_at,
+                comp.name AS company_name
+         FROM contacts c
+         LEFT JOIN companies comp ON comp.id = c.company_id
+         ${where}
+         ORDER BY c.last_name ASC NULLS LAST, c.first_name ASC NULLS LAST
+         LIMIT $${limitParam} OFFSET $${offsetParam}`,
+        pageParams,
+      );
 
     res.json({
       contacts: result.rows,
@@ -8092,6 +9868,9 @@ app.delete("/api/media/:id", async (req, res) => {
 });
 
 // ─── Quality Center API ───
+app.use("/api/quality", (_req, res) => {
+  res.status(410).json({ error: "Quality module removed" });
+});
 
 // Suites
 app.get("/api/quality/suites", async (_req, res) => {
@@ -8410,11 +10189,18 @@ app.post("/api/quality/live-captures", async (req, res) => {
     }
 
     if (!suite) {
-      const liveSuiteName = "Live Chat Captures";
-      const existingSuite = await query<{ id: string; name: string; agent_id: string }>(
+      const preferredSuiteName = "Chat Captures";
+      const legacySuiteName = "Live Chat Captures";
+      let existingSuite = await query<{ id: string; name: string; agent_id: string }>(
         "SELECT id, name, agent_id FROM qa_test_suites WHERE name = $1 LIMIT 1",
-        [liveSuiteName],
+        [preferredSuiteName],
       );
+      if (existingSuite.rows.length === 0) {
+        existingSuite = await query<{ id: string; name: string; agent_id: string }>(
+          "SELECT id, name, agent_id FROM qa_test_suites WHERE name = $1 LIMIT 1",
+          [legacySuiteName],
+        );
+      }
       if (existingSuite.rows.length > 0) {
         suite = existingSuite.rows[0];
       } else {
@@ -8423,10 +10209,10 @@ app.post("/api/quality/live-captures", async (req, res) => {
            VALUES ($1, $2, $3, $4)
            RETURNING id, name, agent_id`,
           [
-            liveSuiteName,
-            "Captured assistant responses from Quality Center Live Chat Lab.",
+            preferredSuiteName,
+            "Captured assistant responses from chat simulation.",
             assistantAgentId,
-            ["live-chat", "simulation", "captured"],
+            ["chat", "simulation", "captured"],
           ],
         );
         suite = insertedSuite.rows[0];
@@ -8441,7 +10227,7 @@ app.post("/api/quality/live-captures", async (req, res) => {
     };
 
     const caseDescriptionParts = [
-      "Captured from Quality Center Live Chat Lab.",
+      "Captured from chat simulation.",
       routeReason ? `Route reason: ${routeReason}` : null,
       routeConfidence !== null ? `Route confidence: ${(routeConfidence * 100).toFixed(1)}%` : null,
       normalizeString(assistant.conversationId) ? `Conversation: ${normalizeString(assistant.conversationId)}` : null,
@@ -8473,7 +10259,7 @@ app.post("/api/quality/live-captures", async (req, res) => {
     const totalLatencyMs = assistantLatencyMs !== null ? Math.max(0, Math.round(assistantLatencyMs)) : null;
 
     const runModelConfig = {
-      source: "quality-live-capture",
+      source: "chat-simulation-capture",
       executionMode,
       latencyProfile: latencyProfile || null,
       conversationId: conversationIdRaw || null,
@@ -8767,6 +10553,66 @@ app.post("/api/quality/prompt-versions/:id/activate", async (req, res) => {
   try {
     await activatePromptVersion(req.params.id);
     res.json({ activated: true });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ─── Quality Observer API ───
+
+app.get("/api/quality/analyses", async (req, res) => {
+  try {
+    const filters = {
+      agentId: req.query.agent as string | undefined,
+      status: req.query.status as string | undefined,
+      minScore: req.query.minScore ? parseFloat(req.query.minScore as string) : undefined,
+      maxScore: req.query.maxScore ? parseFloat(req.query.maxScore as string) : undefined,
+      since: req.query.since as string | undefined,
+      until: req.query.until as string | undefined,
+      limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
+      offset: req.query.offset ? parseInt(req.query.offset as string, 10) : undefined,
+    };
+    const analyses = await getAnalyses(filters);
+    res.json(analyses);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get("/api/quality/analyses/stats", async (req, res) => {
+  try {
+    const days = req.query.days ? parseInt(req.query.days as string, 10) : 7;
+    const stats = await getAnalysisStats(days);
+    res.json(stats);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get("/api/quality/analyses/:id", async (req, res) => {
+  try {
+    const analysis = await getAnalysisById(req.params.id);
+    if (!analysis) return res.status(404).json({ error: "Not found" });
+    res.json(analysis);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get("/api/quality/observer/status", async (_req, res) => {
+  try {
+    const config = await getObserverConfig();
+    res.json(config);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/api/quality/observer/toggle", async (req, res) => {
+  try {
+    const updates = req.body as Partial<{ enabled: boolean; quality_threshold: number; skip_dry_run: boolean; min_user_message_length: number }>;
+    const config = await setObserverConfig(updates);
+    res.json(config);
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
@@ -9305,8 +11151,55 @@ wss.on("connection", (ws) => {
       switch (msg.type) {
         case "chat.send": {
           const data = msg.data as ChatSendData;
-          if (!data?.content) {
-            ws.send(frame("chat.error", { error: "Missing content" }, msg.id));
+          let content = typeof data?.content === "string" ? data.content : "";
+          let runtimeAttachments = normalizeChatAttachments(data?.attachments, true);
+          let persistedAttachments = normalizeChatAttachments(data?.attachments, false);
+          const replyToMessageId = normalizeMessageReference(data?.replyToMessageId);
+          const forwardOfMessageId = normalizeMessageReference(data?.forwardOfMessageId);
+          let forwardingMetadata: Record<string, unknown> | null = null;
+
+          if (forwardOfMessageId) {
+            const sourceResult = await query<{
+              id: string;
+              role: string;
+              content: string | null;
+              attachments: unknown;
+              sender_id: string | null;
+              channel_id: string | null;
+              created_at: string;
+            }>(
+              `SELECT id, role, content, attachments, sender_id, channel_id, created_at
+               FROM messages
+               WHERE id = $1
+               LIMIT 1`,
+              [forwardOfMessageId],
+            );
+
+            if (sourceResult.rows.length > 0) {
+              const source = sourceResult.rows[0];
+              if (!content.trim() && typeof source.content === "string" && source.content.trim().length > 0) {
+                content = source.content;
+              }
+              if (runtimeAttachments.length === 0) {
+                runtimeAttachments = normalizeChatAttachments(source.attachments, true);
+              }
+              if (persistedAttachments.length === 0) {
+                persistedAttachments = normalizeChatAttachments(source.attachments, false);
+              }
+              forwardingMetadata = {
+                sourceMessageId: source.id,
+                sourceRole: source.role,
+                sourceSenderId: source.sender_id,
+                sourceChannelId: source.channel_id,
+                sourceCreatedAt: source.created_at,
+              };
+            }
+          }
+
+          const mentions = normalizeChatMentions(data?.mentions, content);
+
+          if (!content.trim() && runtimeAttachments.length === 0) {
+            ws.send(frame("chat.error", { error: "Missing content or attachments" }, msg.id));
             return;
           }
 
@@ -9351,6 +11244,8 @@ wss.on("connection", (ws) => {
           );
           const persistMessages = executionMode !== "dry_run";
           const emittedToolUseIds = new Set<string>();
+          const mentionedAgent = await resolveMentionedAgent(mentions);
+          const serializedMentions = mentions.length > 0 ? mentions : null;
 
           if (mode === "claude-code" && executionMode !== "live") {
             ws.send(frame("chat.error", {
@@ -9360,15 +11255,38 @@ wss.on("connection", (ws) => {
           }
 
           if (mode === "claude-code") {
+            if (runtimeAttachments.length > 0) {
+              ws.send(frame("chat.error", {
+                error: "Image/file analysis is available in API mode. Switch mode from claude-code to api.",
+              }, msg.id));
+              break;
+            }
+            const effectiveClaudeAgentId = mentionedAgent?.agentId || agentId;
             // ── Claude Code CLI mode (uses subscription, not API) ──
-            const convId = await ensureConversation(conversationId || undefined, agentId, !conversationId ? data.metadata : undefined);
+            const convId = await ensureConversation(conversationId || undefined, effectiveClaudeAgentId, !conversationId ? data.metadata : undefined);
 
             // Save user message to DB
-            await saveMessage(convId, "user", data.content, null, null, null, null);
+            await saveMessage(
+              convId,
+              "user",
+              content,
+              null,
+              null,
+              null,
+              null,
+              persistedAttachments.length > 0 ? persistedAttachments : null,
+              {
+                replyToMessageId,
+                forwardOfMessageId,
+                mentions: serializedMentions,
+                forwardingMetadata,
+              },
+            );
+            const conversationLanguage = await resolveConversationLanguage(convId);
 
             const startMs = Date.now();
             const result = await runClaudeCode({
-              userMessage: data.content,
+              userMessage: content,
               onStream: (delta) => {
                 ws.send(frame("chat.stream", {
                   conversationId: convId,
@@ -9378,7 +11296,10 @@ wss.on("connection", (ws) => {
               onToolUse: (name, input, id) => {
                 if (id && emittedToolUseIds.has(id)) return;
                 if (id) emittedToolUseIds.add(id);
-                const announcement = getToolAnnouncement(name, input);
+                const announcement = getToolAnnouncement(name, input, conversationLanguage, {
+                  conversationId: convId,
+                  agentId: effectiveClaudeAgentId,
+                });
                 if (announcement) {
                   ws.send(frame("chat.stream", {
                     conversationId: convId,
@@ -9414,7 +11335,7 @@ wss.on("connection", (ws) => {
               [convId],
             );
             if (countResult.rows[0].count <= 3) {
-              const title = data.content.slice(0, 80) + (data.content.length > 80 ? "..." : "");
+              const title = content.slice(0, 80) + (content.length > 80 ? "..." : "");
               await query(
                 "UPDATE conversations SET title = $1, updated_at = NOW() WHERE id = $2",
                 [title, convId],
@@ -9436,26 +11357,52 @@ wss.on("connection", (ws) => {
               latencyMs,
               costUsd: 0, // Claude Code uses subscription, not metered
             }, msg.id));
+            analyzeChatAsync(config, {
+              conversationId: convId, messageId, content: result.content,
+              agentId: agentId, model: result.model, provider: "claude-code",
+              latencyMs, costUsd: 0, executionMode,
+            }, wsBroadcast).catch(err => console.warn("[QA Observer]", err));
           } else {
             // ── API mode (OpenRouter / Anthropic) ──
             const apiStartMs = Date.now();
             // Classify intent using LLM (replaces all regex-based intent detection)
-            const chatClassification = await classifyIntent(data.content, config);
+            const classifierInput = content.trim() || "Analyze the attached image(s).";
+            const chatClassification = await classifyIntent(classifierInput, config);
 
-            // Intent routing — route specialist queries to the right agent
+            // Mention routing has priority over intent classifier routing.
             let effectiveAgentId = agentId;
             let routeDecision: RouteDecision | null = null;
-            const routeResult = await routeIntent(agentId, chatClassification.routeToAgent, chatClassification.confidence);
-            if (routeResult.routed) {
-              routeDecision = routeResult;
-              effectiveAgentId = routeResult.agentId;
-              console.log(`[chat.send] Intent router: ${agentId} → ${effectiveAgentId} (reason=${routeResult.reason}, confidence=${routeResult.confidence})`);
+
+            if (mentionedAgent && mentionedAgent.agentId !== agentId) {
+              effectiveAgentId = mentionedAgent.agentId;
+              routeDecision = {
+                routed: true,
+                agentId: mentionedAgent.agentId,
+                agentName: mentionedAgent.agentName || null,
+                confidence: 1,
+                reason: `mention:@${mentionedAgent.mentionValue}`,
+                matchedPattern: `@${mentionedAgent.mentionValue}`,
+                executionProfile: {
+                  includeSkillsPrompt: true,
+                  includeMemoryContext: true,
+                  historyLimit: 20,
+                },
+              };
+              console.log(`[chat.send] Mention router: ${agentId} → ${effectiveAgentId} (mention=@${mentionedAgent.mentionValue})`);
+            } else {
+              const routeResult = await routeIntent(agentId, chatClassification.routeToAgent, chatClassification.confidence);
+              if (routeResult.routed) {
+                routeDecision = routeResult;
+                effectiveAgentId = routeResult.agentId;
+                console.log(`[chat.send] Intent router: ${agentId} → ${effectiveAgentId} (reason=${routeResult.reason}, confidence=${routeResult.confidence})`);
+              }
             }
 
             // Ensure conversation exists BEFORE runAgent so all events use the real ID
             const convId = persistMessages
               ? await ensureConversation(conversationId || undefined, effectiveAgentId, !conversationId ? data.metadata : undefined)
               : (conversationId && conversationId.trim() ? conversationId : crypto.randomUUID());
+            const conversationLanguage = await resolveConversationLanguage(convId);
 
             // Emit chat.routed event if intent router selected a different agent
             const agentVisibility = process.env.JOI_AGENT_VISIBILITY === "1";
@@ -9469,19 +11416,37 @@ wss.on("connection", (ws) => {
                 matchedPattern: routeDecision.matchedPattern,
               }, msg.id));
             }
+            const lightweightChatTurn =
+              !chatClassification.needsTools
+              && !routeDecision
+              && effectiveAgentId === agentId
+              && runtimeAttachments.length === 0;
+            if (lightweightChatTurn) {
+              console.log("[chat.send] Lightweight turn detected: using lightweight chat route");
+            }
+
             const runOptions: Parameters<typeof runAgent>[0] = {
               conversationId: convId,
               agentId: effectiveAgentId,
-              userMessage: data.content,
+              userMessage: content,
+              replyToMessageId,
+              forwardOfMessageId,
+              mentions: serializedMentions,
+              forwardingMetadata,
+              attachments: runtimeAttachments.length > 0 ? runtimeAttachments : undefined,
               config,
               model: data.model,
               enableTools: chatClassification.needsTools,
+              chatTask: lightweightChatTurn ? "lightweight" : "chat",
               executionMode,
               persistMessages,
               latencyProfile,
               broadcast,
               onToolPlan: (toolCalls) => {
-                const steps = toolCalls.map((tc) => getToolPlanStep(tc.name, tc.input));
+                const steps = toolCalls.map((tc) => getToolPlanStep(tc.name, tc.input, conversationLanguage, {
+                  conversationId: convId,
+                  agentId: effectiveAgentId,
+                }));
                 if (steps.length > 0) {
                   ws.send(frame("chat.plan", {
                     conversationId: convId,
@@ -9498,7 +11463,10 @@ wss.on("connection", (ws) => {
               onToolUse: (name, input, id) => {
                 if (id && emittedToolUseIds.has(id)) return;
                 if (id) emittedToolUseIds.add(id);
-                const announcement = getToolAnnouncement(name, input);
+                const announcement = getToolAnnouncement(name, input, conversationLanguage, {
+                  conversationId: convId,
+                  agentId: effectiveAgentId,
+                });
                 if (announcement) {
                   ws.send(frame("chat.stream", {
                     conversationId: convId,
@@ -9559,6 +11527,12 @@ wss.on("connection", (ws) => {
                 } : undefined,
               } : {}),
             }, msg.id));
+            analyzeChatAsync(config, {
+              conversationId: convId, messageId: result.messageId, content: result.content,
+              agentId: result.agentId, agentName: result.agentName || routeDecision?.agentName || undefined,
+              model: result.model, provider: result.provider,
+              latencyMs: Date.now() - apiStartMs, costUsd: result.costUsd, executionMode,
+            }, wsBroadcast).catch(err => console.warn("[QA Observer]", err));
           }
 
           break;
@@ -9585,6 +11559,7 @@ wss.on("connection", (ws) => {
                     (SELECT content FROM messages m WHERE m.conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last_message,
                     c.updated_at
              FROM conversations c
+             WHERE EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id)
              ORDER BY c.updated_at DESC
              LIMIT 50`,
           );
@@ -9595,15 +11570,24 @@ wss.on("connection", (ws) => {
         case "session.load": {
           const loadData = msg.data as { conversationId: string };
           const result = await query(
-            `SELECT id, role, content, tool_calls, tool_results, model, token_usage, created_at
+            `SELECT id, role, content, tool_calls, tool_results, model, token_usage,
+                    attachments, reply_to_message_id, forward_of_message_id, mentions, forwarding_metadata,
+                    reactions, pinned, reported, report_note, created_at
              FROM messages
              WHERE conversation_id = $1
              ORDER BY created_at ASC`,
             [loadData.conversationId],
           );
+          const rows = result.rows.map((row: any) => ({
+            ...row,
+            reactions: normalizeMessageReactions(row.reactions),
+            pinned: Boolean(row.pinned),
+            reported: Boolean(row.reported),
+            report_note: typeof row.report_note === "string" ? row.report_note : null,
+          }));
           ws.send(frame("session.data", {
             conversationId: loadData.conversationId,
-            messages: result.rows,
+            messages: rows,
           }, msg.id));
           break;
         }
@@ -9827,6 +11811,11 @@ wss.on("connection", (ws) => {
 
         case "autodev.stop-current": {
           autoDevProxy.sendToWorker("autodev.stop-current");
+          break;
+        }
+
+        case "autodev.configure": {
+          autoDevProxy.sendToWorker("autodev.configure", msg.data);
           break;
         }
 
@@ -10168,6 +12157,15 @@ If everything looks normal, do NOT create a review item.`],
      ON CONFLICT (name) DO NOTHING`,
   );
 
+  // Daily humanizer audit - validates variation coverage and repetition health
+  await query(
+    `INSERT INTO cron_jobs (agent_id, name, description, schedule_kind, schedule_cron_expr,
+       schedule_cron_tz, session_target, payload_kind, payload_text, enabled)
+     VALUES ('system', 'daily-humanizer-audit', 'Daily audit for chat/voice humanizer variation and coverage',
+       'cron', '20 4 * * *', 'Europe/Vienna', 'isolated', 'system_event', 'humanizer_audit', true)
+     ON CONFLICT (name) DO NOTHING`,
+  );
+
   // ─── Bookmark sync — every 30 minutes ───
   await query(
     `INSERT INTO cron_jobs (agent_id, name, description, schedule_kind, schedule_cron_expr,
@@ -10206,6 +12204,9 @@ server.listen(port, host, () => {
       console.warn("[Server] Failed to register built-in cron jobs:", err),
     );
   }
+
+  // Warm DB-backed humanizer cache (non-blocking).
+  kickoffHumanizerCacheRefresh(true);
 
   // Start Obsidian vault watcher if configured
   if (config.obsidian.syncEnabled && config.obsidian.vaultPath) {

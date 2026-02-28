@@ -12,9 +12,13 @@ interface APNsConfig {
   keyPath: string;      // Path to .p8 auth key file
   keyId: string;        // Key ID from Apple Developer portal
   teamId: string;       // Team ID from Apple Developer portal
-  bundleId: string;     // App bundle ID (com.joi.app)
-  production: boolean;  // true = production APNs, false = sandbox
+  bundleId: string;     // Default app bundle ID (topic)
+  bundleIdDevelopment?: string; // Optional dev-specific topic
+  bundleIdProduction?: string;  // Optional prod-specific topic
+  production: boolean;  // true = production server mode, false = development server mode
 }
+
+type APNsEnvironment = "development" | "production";
 
 interface APNsPayload {
   aps: {
@@ -38,7 +42,7 @@ interface APNsResponse {
 
 let config: APNsConfig | null = null;
 let cachedJWT: { token: string; expires: number } | null = null;
-let h2Session: http2.ClientHttp2Session | null = null;
+const h2Sessions: Partial<Record<APNsEnvironment, http2.ClientHttp2Session>> = {};
 
 const APNS_HOST_PROD = "api.push.apple.com";
 const APNS_HOST_DEV = "api.sandbox.push.apple.com";
@@ -55,11 +59,29 @@ export function configureAPNs(opts: APNsConfig): void {
     return;
   }
   config = { ...opts, keyPath: resolvedPath };
-  console.log(`[APNs] Configured (${opts.production ? "production" : "sandbox"}, bundle: ${opts.bundleId})`);
+  const topicDevelopment = opts.bundleIdDevelopment || opts.bundleId;
+  const topicProduction = opts.bundleIdProduction || opts.bundleId;
+  const targetEnvironment = opts.production ? "production" : "development";
+  console.log(
+    `[APNs] Configured target=${targetEnvironment} topic.dev=${topicDevelopment} topic.prod=${topicProduction}`,
+  );
 }
 
 export function isAPNsConfigured(): boolean {
   return config !== null;
+}
+
+export function getAPNsRuntimeInfo(): {
+  targetEnvironment: APNsEnvironment;
+  topicDevelopment: string;
+  topicProduction: string;
+} | null {
+  if (!config) return null;
+  return {
+    targetEnvironment: defaultTargetEnvironment(),
+    topicDevelopment: config.bundleIdDevelopment || config.bundleId,
+    topicProduction: config.bundleIdProduction || config.bundleId,
+  };
 }
 
 function getJWT(): string {
@@ -96,43 +118,73 @@ function getJWT(): string {
   return token;
 }
 
-function getH2Session(): http2.ClientHttp2Session {
-  if (h2Session && !h2Session.closed && !h2Session.destroyed) {
-    return h2Session;
+function normalizeEnvironment(raw: string | null | undefined): APNsEnvironment {
+  return String(raw || "").trim().toLowerCase() === "production" ? "production" : "development";
+}
+
+function defaultTargetEnvironment(): APNsEnvironment {
+  return config?.production ? "production" : "development";
+}
+
+function hostForEnvironment(environment: APNsEnvironment): string {
+  return environment === "production" ? APNS_HOST_PROD : APNS_HOST_DEV;
+}
+
+function topicForEnvironment(environment: APNsEnvironment): string {
+  if (!config) throw new Error("APNs not configured");
+  if (environment === "production") {
+    return config.bundleIdProduction || config.bundleId;
+  }
+  return config.bundleIdDevelopment || config.bundleId;
+}
+
+function getH2Session(environment: APNsEnvironment): http2.ClientHttp2Session {
+  const cached = h2Sessions[environment];
+  if (cached && !cached.closed && !cached.destroyed) {
+    return cached;
   }
 
-  const host = config!.production ? APNS_HOST_PROD : APNS_HOST_DEV;
-  h2Session = http2.connect(`https://${host}:443`);
+  const host = hostForEnvironment(environment);
+  const session = http2.connect(`https://${host}:443`);
+  h2Sessions[environment] = session;
 
-  h2Session.on("error", (err) => {
-    console.error("[APNs] HTTP/2 session error:", err.message);
-    h2Session = null;
+  session.on("error", (err) => {
+    console.error(`[APNs] HTTP/2 session error (${environment}):`, err.message);
+    h2Sessions[environment] = undefined;
   });
 
-  h2Session.on("close", () => {
-    h2Session = null;
+  session.on("close", () => {
+    h2Sessions[environment] = undefined;
   });
 
-  return h2Session;
+  return session;
 }
 
 export async function sendPush(
   deviceToken: string,
   payload: APNsPayload,
-  opts?: { expiration?: number; priority?: number; collapseId?: string; pushType?: string },
+  opts?: {
+    expiration?: number;
+    priority?: number;
+    collapseId?: string;
+    pushType?: string;
+    environment?: APNsEnvironment;
+  },
 ): Promise<APNsResponse> {
   if (!config) {
     return { statusCode: 0, reason: "APNs not configured" };
   }
 
-  const session = getH2Session();
+  const environment = normalizeEnvironment(opts?.environment || defaultTargetEnvironment());
+  const session = getH2Session(environment);
   const jwt = getJWT();
+  const topic = topicForEnvironment(environment);
 
   const headers: http2.OutgoingHttpHeaders = {
     ":method": "POST",
     ":path": `/3/device/${deviceToken}`,
     "authorization": `bearer ${jwt}`,
-    "apns-topic": config.bundleId,
+    "apns-topic": topic,
     "apns-push-type": opts?.pushType ?? "alert",
     "apns-priority": String(opts?.priority ?? 10),
   };
@@ -180,21 +232,31 @@ export async function pushToAllDevices(
 ): Promise<void> {
   if (!config) return;
 
+  const targetEnvironment = defaultTargetEnvironment();
   const result = await query<{ device_token: string; environment: string }>(
-    "SELECT device_token, environment FROM push_tokens WHERE enabled = true",
+    "SELECT device_token, environment FROM push_tokens WHERE enabled = true AND LOWER(environment) = $1",
+    [targetEnvironment],
   );
 
   for (const row of result.rows) {
-    const res = await sendPush(row.device_token, payload, opts);
+    const tokenEnvironment = normalizeEnvironment(row.environment);
+    const res = await sendPush(row.device_token, payload, {
+      ...opts,
+      environment: tokenEnvironment,
+    });
 
     if (res.statusCode === 200) {
-      console.log(`[APNs] Sent to ${row.device_token.slice(0, 8)}... (${res.apnsId})`);
+      console.log(
+        `[APNs] Sent (${tokenEnvironment}) to ${row.device_token.slice(0, 8)}... (${res.apnsId})`,
+      );
     } else if (res.statusCode === 410 || res.reason === "Unregistered") {
       // Token is no longer valid — disable it
       await query("UPDATE push_tokens SET enabled = false, updated_at = NOW() WHERE device_token = $1", [row.device_token]);
       console.warn(`[APNs] Token expired, disabled: ${row.device_token.slice(0, 8)}...`);
     } else {
-      console.error(`[APNs] Failed (${res.statusCode}): ${res.reason} — token: ${row.device_token.slice(0, 8)}...`);
+      console.error(
+        `[APNs] Failed (${tokenEnvironment}, ${res.statusCode}): ${res.reason} — token: ${row.device_token.slice(0, 8)}...`,
+      );
     }
 
     // Log delivery
@@ -216,7 +278,10 @@ export async function pushToAllDevices(
 }
 
 export function closeAPNs(): void {
-  h2Session?.close();
-  h2Session = null;
+  for (const environment of ["development", "production"] as const) {
+    const session = h2Sessions[environment];
+    session?.close();
+    h2Sessions[environment] = undefined;
+  }
   cachedJWT = null;
 }

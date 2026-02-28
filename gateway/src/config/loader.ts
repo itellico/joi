@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import dotenv from "dotenv";
 import { JoiConfigSchema, type JoiConfig } from "./schema.js";
 
@@ -10,6 +11,38 @@ const CONFIG_DIR = path.join(
 );
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 
+function applyMiniRuntimeEnvOverrides(): void {
+  const scriptPath = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../../../scripts/mini-runtime-env.sh",
+  );
+  if (!fs.existsSync(scriptPath)) return;
+
+  const result = spawnSync(scriptPath, ["--plain"], {
+    encoding: "utf-8",
+    env: process.env,
+  });
+  if (result.error || result.status !== 0) {
+    const reason = result.error?.message || result.stderr?.trim() || `exit ${result.status ?? "unknown"}`;
+    console.warn(`mini-runtime-env override skipped: ${reason}`);
+    return;
+  }
+
+  const lines = (result.stdout || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  for (const line of lines) {
+    const equalIndex = line.indexOf("=");
+    if (equalIndex <= 0) continue;
+    const key = line.slice(0, equalIndex).trim();
+    const value = line.slice(equalIndex + 1);
+    if (!key) continue;
+    process.env[key] = value;
+  }
+}
+
 export function loadConfig(): JoiConfig {
   // Load .env from repo root (stable regardless of process cwd)
   const envPath = path.resolve(
@@ -17,6 +50,7 @@ export function loadConfig(): JoiConfig {
     "../../../.env",
   );
   dotenv.config({ path: envPath, override: true });
+  applyMiniRuntimeEnvOverrides();
 
   let raw: Record<string, unknown> = {};
 
@@ -85,6 +119,8 @@ export function loadConfig(): JoiConfig {
   if (process.env.APNS_KEY_ID) apns.keyId = process.env.APNS_KEY_ID;
   if (process.env.APNS_TEAM_ID) apns.teamId = process.env.APNS_TEAM_ID;
   if (process.env.APNS_BUNDLE_ID) apns.bundleId = process.env.APNS_BUNDLE_ID;
+  if (process.env.APNS_BUNDLE_ID_DEVELOPMENT) apns.bundleIdDevelopment = process.env.APNS_BUNDLE_ID_DEVELOPMENT;
+  if (process.env.APNS_BUNDLE_ID_PRODUCTION) apns.bundleIdProduction = process.env.APNS_BUNDLE_ID_PRODUCTION;
   if (process.env.APNS_PRODUCTION) apns.production = process.env.APNS_PRODUCTION === "true";
 
   // Merge env vars into LiveKit config
@@ -133,6 +169,36 @@ export function loadConfig(): JoiConfig {
   }
   if (process.env.JOI_TTS_CACHE_PREFIX && lk.ttsCachePrefix === undefined) lk.ttsCachePrefix = process.env.JOI_TTS_CACHE_PREFIX;
   if (process.env.JOI_TTS_CACHE_REDIS_URL && lk.ttsCacheRedisUrl === undefined) lk.ttsCacheRedisUrl = process.env.JOI_TTS_CACHE_REDIS_URL;
+
+  // Merge env vars into tasks config
+  if (!raw.tasks) raw.tasks = {};
+  const tasks = raw.tasks as Record<string, unknown>;
+  if (process.env.JOI_REMINDER_SYNC_MODE) tasks.reminderSyncMode = process.env.JOI_REMINDER_SYNC_MODE;
+  if (process.env.JOI_COMPLETED_REMINDER_RETENTION_DAYS) {
+    const n = Number(process.env.JOI_COMPLETED_REMINDER_RETENTION_DAYS);
+    if (Number.isFinite(n)) tasks.completedReminderRetentionDays = Math.floor(n);
+  }
+  if (process.env.JOI_PROJECT_LOGBOOK_PAGE_SIZE) {
+    const n = Number(process.env.JOI_PROJECT_LOGBOOK_PAGE_SIZE);
+    if (Number.isFinite(n)) tasks.projectLogbookPageSize = Math.floor(n);
+  }
+
+  // Merge env vars into AutoDev config
+  if (!raw.autodev) raw.autodev = {};
+  const autodev = raw.autodev as Record<string, unknown>;
+  if (process.env.JOI_AUTODEV_EXECUTOR_MODE) autodev.executorMode = process.env.JOI_AUTODEV_EXECUTOR_MODE;
+  if (process.env.JOI_AUTODEV_PARALLEL_EXECUTION) {
+    autodev.parallelExecution = process.env.JOI_AUTODEV_PARALLEL_EXECUTION !== "0"
+      && process.env.JOI_AUTODEV_PARALLEL_EXECUTION.toLowerCase() !== "false";
+  }
+  if (process.env.JOI_AUTODEV_DISCUSSION_MODE) {
+    autodev.discussionMode = process.env.JOI_AUTODEV_DISCUSSION_MODE !== "0"
+      && process.env.JOI_AUTODEV_DISCUSSION_MODE.toLowerCase() !== "false";
+  }
+  if (process.env.JOI_AUTODEV_DISCUSSION_MAX_TURNS) {
+    const n = Number(process.env.JOI_AUTODEV_DISCUSSION_MAX_TURNS);
+    if (Number.isFinite(n)) autodev.discussionMaxTurns = Math.floor(n);
+  }
 
   const result = JoiConfigSchema.safeParse(raw);
   if (!result.success) {

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Start web frontend after gateway is ready. Safe to run in any order.
 set -euo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPTS_DIR")"
