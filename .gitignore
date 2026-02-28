@@ -73,8 +73,7 @@ pnpm-debug.log*
 tmp/
 .cache/
 
-# JOI runtime/generated artifacts
-JOIGateway.app/
+# JOI compiled binaries (track source, ignore compiled output)
 bin/joi-messages-query
 !bin/joi-messages-query.c
 app/.artifacts/
