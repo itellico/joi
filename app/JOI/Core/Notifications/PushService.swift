@@ -1,6 +1,7 @@
 import Foundation
 import UserNotifications
 import OSLog
+import Security
 #if canImport(UIKit)
 import UIKit
 #elseif canImport(AppKit)
@@ -10,10 +11,16 @@ import AppKit
 @MainActor
 @Observable
 final class PushService: NSObject, Sendable {
+    private enum PushRegistrationRuntime {
+        case supported
+        case unsupported(String)
+    }
+
     private(set) var isRegistered = false
     private(set) var deviceToken: String?
     private(set) var permissionGranted = false
     private(set) var lastError: String?
+    private(set) var pushCapabilityAvailable = true
 
     private let logger = Logger(subsystem: "com.joi.app", category: "Push")
 
@@ -38,6 +45,27 @@ final class PushService: NSObject, Sendable {
 
     // Register with APNs
     private func registerForRemoteNotifications() {
+        switch pushRuntimeAvailability() {
+        case .unsupported(let reason):
+            pushCapabilityAvailable = false
+            isRegistered = false
+            lastError = reason
+            logger.warning("Skipping APNs registration: \(reason, privacy: .public)")
+            return
+        case .supported:
+            break
+        }
+
+        guard hasAPNsEntitlement() else {
+            pushCapabilityAvailable = false
+            isRegistered = false
+            lastError = "Push Notifications entitlement is missing for this signing profile."
+            logger.warning("Skipping APNs registration: aps-environment entitlement is missing for this signing profile")
+            return
+        }
+
+        pushCapabilityAvailable = true
+        lastError = nil
         #if canImport(UIKit)
         UIApplication.shared.registerForRemoteNotifications()
         #elseif canImport(AppKit)
@@ -60,15 +88,14 @@ final class PushService: NSObject, Sendable {
 
     // Called by AppDelegate when registration fails
     func didFailToRegisterForRemoteNotifications(error: Error) {
-        lastError = error.localizedDescription
+        lastError = normalizeAPNsRegistrationError(error)
         isRegistered = false
-        logger.error("APNs registration failed: \(error.localizedDescription)")
+        logger.error("APNs registration failed: \(self.lastError ?? error.localizedDescription)")
     }
 
     // Send device token to JOI gateway
     private func registerTokenWithGateway(token: String) async {
-        let gatewayURL = UserDefaults.standard.string(forKey: "gatewayURL")
-            ?? "ws://localhost:3100/ws"
+        let gatewayURL = GatewayURLResolver.configuredGatewayURL()
 
         // Convert ws:// URL to http:// for REST API
         let baseURL = gatewayURL
@@ -140,5 +167,68 @@ final class PushService: NSObject, Sendable {
 
     private func appVersion() -> String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+    }
+
+    private func normalizeAPNsRegistrationError(_ error: Error) -> String {
+        #if targetEnvironment(simulator)
+        return "APNs registration is unavailable on iOS Simulator. Use a physical iPhone for real push."
+        #else
+        let nsError = error as NSError
+
+        #if canImport(UIKit)
+        if #available(iOS 14.0, *), ProcessInfo.processInfo.isiOSAppOnMac {
+            return "APNs registration is unavailable when running the iOS app on macOS. Use a physical iPhone for real push."
+        }
+        #endif
+
+        if nsError.domain == NSOSStatusErrorDomain, nsError.code == 13 {
+            return "APNs registration failed (OSStatus 13). Verify the app is signed with Push Notifications entitlement."
+        }
+        return error.localizedDescription
+        #endif
+    }
+
+    private func pushRuntimeAvailability() -> PushRegistrationRuntime {
+        #if targetEnvironment(simulator)
+        return .unsupported("APNs registration is unavailable on iOS Simulator. Use a physical iPhone for real push.")
+        #elseif canImport(UIKit)
+        if #available(iOS 14.0, *), ProcessInfo.processInfo.isiOSAppOnMac {
+            return .unsupported("APNs registration is unavailable when running the iOS app on macOS. Use a physical iPhone for real push.")
+        }
+        return .supported
+        #else
+        return .supported
+        #endif
+    }
+
+    private func hasAPNsEntitlement() -> Bool {
+        #if os(macOS) && !targetEnvironment(macCatalyst)
+        if let task = SecTaskCreateFromSelf(nil) {
+            let entitlementKeys = [
+                "com.apple.developer.aps-environment",
+                "aps-environment",
+            ]
+            for key in entitlementKeys {
+                if let value = SecTaskCopyValueForEntitlement(task, key as CFString, nil) {
+                    if let env = value as? String {
+                        return !env.isEmpty
+                    }
+                    if let env = value as? NSString {
+                        return env.length > 0
+                    }
+                    return true
+                }
+            }
+            return false
+        }
+        #endif
+
+        guard let profilePath = Bundle.main.path(forResource: "embedded", ofType: "mobileprovision") else {
+            return false
+        }
+        guard let profile = try? String(contentsOfFile: profilePath, encoding: .ascii) else {
+            return false
+        }
+        return profile.contains("<key>aps-environment</key>")
     }
 }

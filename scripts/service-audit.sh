@@ -37,6 +37,30 @@ proc_status() {
   fi
 }
 
+watchdog_status() {
+  local pid=""
+  if [ -f "$PID_FILE" ]; then
+    pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+    case "$pid" in
+      ''|*[!0-9]*)
+        pid=""
+        ;;
+    esac
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      line "watchdog" "RUNNING (pid: $pid)"
+      return
+    fi
+  fi
+
+  local pids
+  pids="$(pgrep -f "watchdog.sh" 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+  if [ -n "$pids" ]; then
+    line "watchdog" "RUNNING (pid: $pids)"
+  else
+    line "watchdog" "DOWN"
+  fi
+}
+
 port_status() {
   local label="$1" host="$2" port="$3"
   if [ -z "$host" ] || [ -z "$port" ]; then
@@ -95,7 +119,7 @@ web_pattern="$PROJECT_ROOT/web.*vite"
 autodev_pattern="$PROJECT_ROOT/gateway.*autodev/worker"
 livekit_pattern="$PROJECT_ROOT/infra/livekit-worker"
 
-proc_status "watchdog" "$watchdog_pattern"
+watchdog_status
 proc_status "gateway" "$gateway_pattern"
 proc_status "web" "$web_pattern"
 autodev_err="$(pgrep -f "$autodev_pattern" 2>&1 || true)"
