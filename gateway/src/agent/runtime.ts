@@ -1,5 +1,10 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type OpenAI from "openai";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import { readFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type { JoiConfig } from "../config/schema.js";
 import { query } from "../db/client.js";
 import { buildSystemPrompt, buildCachedSystemBlocks } from "./system-prompt.js";
@@ -20,12 +25,14 @@ import { recordUsage, estimateCost } from "./usage-tracker.js";
 import { logError, logWarn } from "../logging.js";
 import { readSoulDocumentForAgent } from "./soul-documents.js";
 import { chooseSoulForConversation, persistConversationSoulSelection } from "./soul-rollouts.js";
+import { transcribeAudioFile } from "../youtube/transcriber.js";
 import {
   maybeSimulateLatency,
   normalizeExecutionMode,
   type AgentExecutionMode,
   type AgentLatencyProfile,
 } from "./execution-mode.js";
+import { isLegacyUnrestrictedSkills, normalizeAgentSkills } from "./skill-policy.js";
 
 /** Strip <think>...</think> reasoning tags from model output (e.g., Qwen 3.5) */
 function stripThinkTags(text: string): string {
@@ -80,11 +87,444 @@ function summarizeProviderError(err: unknown): string {
 // The caller passes enableTools based on the classification result.
 const HISTORY_CONTENT_MAX_CHARS = 1400;
 const HISTORY_TOOL_RESULT_MAX_CHARS = 1800;
+const VISION_MAX_ATTACHMENTS = Math.max(
+  1,
+  Number.parseInt(process.env.JOI_VISION_MAX_ATTACHMENTS || "4", 10) || 4,
+);
+const VISION_MAX_IMAGE_BYTES = Math.max(
+  256_000,
+  Number.parseInt(process.env.JOI_VISION_MAX_IMAGE_BYTES || String(8 * 1024 * 1024), 10) || (8 * 1024 * 1024),
+);
+const ATTACHMENT_TEXT_MAX_CHARS = Math.max(
+  2_000,
+  Number.parseInt(process.env.JOI_ATTACHMENT_TEXT_MAX_CHARS || "12000", 10) || 12000,
+);
+const ATTACHMENT_TEXT_PER_FILE_MAX_CHARS = Math.max(
+  1_000,
+  Number.parseInt(process.env.JOI_ATTACHMENT_TEXT_PER_FILE_MAX_CHARS || "4000", 10) || 4000,
+);
+const ATTACHMENT_AUDIO_MAX_BYTES = Math.max(
+  1_000_000,
+  Number.parseInt(process.env.JOI_ATTACHMENT_AUDIO_MAX_BYTES || String(25 * 1024 * 1024), 10) || (25 * 1024 * 1024),
+);
 
 function compactHistoryText(text: string | null | undefined, maxChars: number): string {
   const source = typeof text === "string" ? text : "";
   if (source.length <= maxChars) return source;
   return `${source.slice(0, maxChars)}\n\n[truncated ${source.length - maxChars} chars]`;
+}
+
+export interface UserAttachmentInput {
+  type: string;
+  url?: string;
+  data?: string;
+  name?: string;
+  mimeType?: string;
+  mediaId?: string;
+  size?: number;
+}
+
+type ResolvedImageAttachment = {
+  mediaType: string;
+  base64Data: string;
+  label: string;
+};
+
+function normalizeImageMediaType(mimeType: string | null | undefined): string | null {
+  if (!mimeType) return null;
+  const normalized = mimeType.trim().toLowerCase().replace(/;.*$/, "");
+  if (!normalized.startsWith("image/")) return null;
+  return normalized === "image/jpg" ? "image/jpeg" : normalized;
+}
+
+function isImageAttachment(att: UserAttachmentInput): boolean {
+  if (normalizeImageMediaType(att.mimeType)) return true;
+  if (att.type === "photo") return true;
+  if (typeof att.data === "string" && att.data.trim().startsWith("data:image/")) return true;
+  if (typeof att.url === "string" && /(\.png|\.jpe?g|\.gif|\.webp|\.bmp|\.heic|\.heif)(\?|$)/i.test(att.url)) return true;
+  return false;
+}
+
+function attachmentLabel(att: UserAttachmentInput, index: number): string {
+  return att.name?.trim() || att.type || `attachment-${index + 1}`;
+}
+
+function parseImageDataUrl(raw: string, fallbackMimeType?: string): { mediaType: string; base64Data: string } | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  const dataUrlMatch = /^data:([^;,]+);base64,(.+)$/s.exec(trimmed);
+  if (dataUrlMatch) {
+    const mediaType = normalizeImageMediaType(dataUrlMatch[1]);
+    if (!mediaType) return null;
+    const base64Data = dataUrlMatch[2].replace(/\s+/g, "");
+    if (!base64Data) return null;
+    return { mediaType, base64Data };
+  }
+
+  const fallback = normalizeImageMediaType(fallbackMimeType);
+  if (!fallback) return null;
+  return { mediaType: fallback, base64Data: trimmed.replace(/\s+/g, "") };
+}
+
+function estimateBase64Bytes(base64Data: string): number {
+  const cleaned = base64Data.replace(/\s+/g, "");
+  const padding = cleaned.endsWith("==") ? 2 : cleaned.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor((cleaned.length * 3) / 4) - padding);
+}
+
+function extractMediaIdFromAttachment(att: UserAttachmentInput): string | null {
+  if (att.mediaId && att.mediaId.trim().length > 0) return att.mediaId.trim();
+  if (!att.url) return null;
+  const match = /\/api\/media\/([^/]+)\/file(?:\?|$)/.exec(att.url);
+  return match?.[1] || null;
+}
+
+function trimAttachmentsForStorage(attachments: UserAttachmentInput[] | undefined): UserAttachmentInput[] | null {
+  if (!attachments || attachments.length === 0) return null;
+  const trimmed = attachments
+    .slice(0, 16)
+    .map((att) => {
+      const next: UserAttachmentInput = { type: att.type || "unknown" };
+      if (att.url) next.url = att.url;
+      if (att.name) next.name = att.name.slice(0, 256);
+      if (att.mimeType) next.mimeType = att.mimeType.slice(0, 128);
+      if (att.mediaId) next.mediaId = att.mediaId;
+      if (typeof att.size === "number" && Number.isFinite(att.size) && att.size > 0) {
+        next.size = Math.floor(att.size);
+      }
+      return next;
+    })
+    .filter((att) => att.type.trim().length > 0);
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+async function resolveImageAttachment(
+  att: UserAttachmentInput,
+  config: JoiConfig,
+  index: number,
+): Promise<ResolvedImageAttachment | null> {
+  const label = attachmentLabel(att, index);
+
+  if (typeof att.data === "string" && att.data.trim().length > 0) {
+    const parsed = parseImageDataUrl(att.data, att.mimeType);
+    if (!parsed) return null;
+    if (estimateBase64Bytes(parsed.base64Data) > VISION_MAX_IMAGE_BYTES) return null;
+    return { mediaType: parsed.mediaType, base64Data: parsed.base64Data, label };
+  }
+
+  const mediaId = extractMediaIdFromAttachment(att);
+  if (!mediaId) return null;
+
+  const mediaResult = await query<{ storage_path: string; mime_type: string | null }>(
+    `SELECT storage_path, mime_type
+     FROM media
+     WHERE id = $1 AND status = 'ready'
+     LIMIT 1`,
+    [mediaId],
+  );
+  const mediaRow = mediaResult.rows[0];
+  if (!mediaRow) return null;
+
+  const mediaType = normalizeImageMediaType(mediaRow.mime_type || att.mimeType);
+  if (!mediaType) return null;
+
+  const filePath = path.join(config.media.storagePath, mediaRow.storage_path);
+  const fileBytes = await readFile(filePath);
+  if (fileBytes.length > VISION_MAX_IMAGE_BYTES) return null;
+
+  return {
+    mediaType,
+    base64Data: fileBytes.toString("base64"),
+    label,
+  };
+}
+
+async function resolveImageAttachments(
+  attachments: UserAttachmentInput[] | undefined,
+  config: JoiConfig,
+): Promise<{ images: ResolvedImageAttachment[]; skipped: string[] }> {
+  if (!attachments || attachments.length === 0) {
+    return { images: [], skipped: [] };
+  }
+
+  const images: ResolvedImageAttachment[] = [];
+  const skipped: string[] = [];
+  for (let i = 0; i < attachments.length; i += 1) {
+    if (images.length >= VISION_MAX_ATTACHMENTS) {
+      skipped.push(`${attachments.length - i} additional image(s) skipped`);
+      break;
+    }
+    const att = attachments[i];
+    if (!isImageAttachment(att)) {
+      skipped.push(`${attachmentLabel(att, i)} (unsupported type: ${att.type || "unknown"})`);
+      continue;
+    }
+    try {
+      const resolved = await resolveImageAttachment(att, config, i);
+      if (resolved) {
+        images.push(resolved);
+      } else {
+        skipped.push(`${attachmentLabel(att, i)} (unavailable image data)`);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      skipped.push(`${attachmentLabel(att, i)} (${message})`);
+    }
+  }
+
+  return { images, skipped };
+}
+
+function isAudioAttachment(att: UserAttachmentInput): boolean {
+  const mime = att.mimeType?.trim().toLowerCase() || "";
+  if (mime.startsWith("audio/")) return true;
+  return att.type === "audio" || att.type === "voice";
+}
+
+function isDocumentAttachment(att: UserAttachmentInput): boolean {
+  const mime = att.mimeType?.trim().toLowerCase() || "";
+  if (mime.startsWith("text/")) return true;
+  if (mime === "application/pdf") return true;
+  if (mime === "application/json") return true;
+  if (mime === "application/xml") return true;
+  return att.type === "document";
+}
+
+function parseAnyDataUrl(raw: string): { mimeType: string | null; bytes: Buffer } | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const dataUrlMatch = /^data:([^;,]+)?(?:;charset=[^;,]+)?(;base64)?,([\s\S]+)$/i.exec(trimmed);
+  if (!dataUrlMatch) return null;
+  const mimeType = dataUrlMatch[1] ? dataUrlMatch[1].trim().toLowerCase() : null;
+  const isBase64 = Boolean(dataUrlMatch[2]);
+  const payload = dataUrlMatch[3] || "";
+  try {
+    if (isBase64) {
+      return { mimeType, bytes: Buffer.from(payload.replace(/\s+/g, ""), "base64") };
+    }
+    return { mimeType, bytes: Buffer.from(decodeURIComponent(payload), "utf8") };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveAttachmentBuffer(
+  att: UserAttachmentInput,
+  config: JoiConfig,
+): Promise<{ bytes: Buffer; mimeType: string | null } | null> {
+  if (typeof att.data === "string" && att.data.trim().length > 0) {
+    const parsed = parseAnyDataUrl(att.data);
+    if (parsed) {
+      return {
+        bytes: parsed.bytes,
+        mimeType: parsed.mimeType || (att.mimeType ? att.mimeType.trim().toLowerCase() : null),
+      };
+    }
+  }
+
+  const mediaId = extractMediaIdFromAttachment(att);
+  if (!mediaId) return null;
+
+  const mediaResult = await query<{ storage_path: string; mime_type: string | null }>(
+    `SELECT storage_path, mime_type
+     FROM media
+     WHERE id = $1 AND status = 'ready'
+     LIMIT 1`,
+    [mediaId],
+  );
+  const mediaRow = mediaResult.rows[0];
+  if (!mediaRow) return null;
+
+  const filePath = path.join(config.media.storagePath, mediaRow.storage_path);
+  const bytes = await readFile(filePath);
+  return { bytes, mimeType: mediaRow.mime_type || att.mimeType || null };
+}
+
+function clampAttachmentText(raw: string): string {
+  const compact = raw.replace(/\u0000/g, "").replace(/\r\n/g, "\n").trim();
+  if (compact.length <= ATTACHMENT_TEXT_PER_FILE_MAX_CHARS) return compact;
+  return `${compact.slice(0, ATTACHMENT_TEXT_PER_FILE_MAX_CHARS)}\n...[truncated]`;
+}
+
+function tryDecodePlainText(bytes: Buffer): string | null {
+  if (bytes.length === 0) return null;
+  const text = bytes.toString("utf8");
+  const cleaned = text.replace(/\u0000/g, "").trim();
+  if (!cleaned) return null;
+  return clampAttachmentText(cleaned);
+}
+
+function extractPdfText(bytes: Buffer): string | null {
+  if (bytes.length === 0) return null;
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "joi-pdf-"));
+  const pdfPath = path.join(tmpDir, "attachment.pdf");
+  try {
+    fs.writeFileSync(pdfPath, bytes);
+    const output = execFileSync(
+      "pdftotext",
+      ["-layout", "-nopgbrk", pdfPath, "-"],
+      { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 },
+    );
+    const cleaned = output.replace(/\u0000/g, "").trim();
+    if (!cleaned) return null;
+    return clampAttachmentText(cleaned);
+  } catch {
+    return null;
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+function audioExtensionForMime(mimeType: string | null | undefined): string {
+  const normalized = (mimeType || "").trim().toLowerCase();
+  if (normalized.includes("wav")) return ".wav";
+  if (normalized.includes("mp4") || normalized.includes("m4a")) return ".m4a";
+  if (normalized.includes("mpeg") || normalized.includes("mp3")) return ".mp3";
+  if (normalized.includes("ogg") || normalized.includes("opus")) return ".ogg";
+  if (normalized.includes("webm")) return ".webm";
+  return ".wav";
+}
+
+async function transcribeAudioBytes(
+  bytes: Buffer,
+  mimeType: string | null | undefined,
+  transcriberModel?: string,
+): Promise<string | null> {
+  if (bytes.length === 0 || bytes.length > ATTACHMENT_AUDIO_MAX_BYTES) return null;
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "joi-audio-"));
+  const ext = audioExtensionForMime(mimeType);
+  const audioPath = path.join(tmpDir, `attachment${ext}`);
+  try {
+    fs.writeFileSync(audioPath, bytes);
+    const result = await transcribeAudioFile(audioPath, "auto", transcriberModel);
+    const text = result.text?.trim() || "";
+    if (!text) return null;
+    return clampAttachmentText(text);
+  } catch {
+    return null;
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+async function resolveAttachmentTextBlocks(
+  attachments: UserAttachmentInput[] | undefined,
+  config: JoiConfig,
+  transcriberModel?: string,
+): Promise<{ blocks: string[]; skipped: string[] }> {
+  if (!attachments || attachments.length === 0) return { blocks: [], skipped: [] };
+
+  const blocks: string[] = [];
+  const skipped: string[] = [];
+  let totalChars = 0;
+
+  for (let i = 0; i < attachments.length; i += 1) {
+    const att = attachments[i];
+    if (isImageAttachment(att)) continue;
+    const label = attachmentLabel(att, i);
+    const mime = att.mimeType?.trim().toLowerCase() || "unknown";
+
+    let text: string | null = null;
+    if (isAudioAttachment(att) || isDocumentAttachment(att)) {
+      try {
+        const payload = await resolveAttachmentBuffer(att, config);
+        if (!payload) {
+          skipped.push(`${label} (unavailable attachment data)`);
+          continue;
+        }
+        const payloadMime = (payload.mimeType || mime || "").trim().toLowerCase();
+        if (payloadMime === "application/pdf" || /\.pdf$/i.test(att.name || "")) {
+          text = extractPdfText(payload.bytes);
+          if (!text) {
+            skipped.push(`${label} (could not extract PDF text; install pdftotext for best results)`);
+            continue;
+          }
+        } else if (payloadMime.startsWith("audio/") || isAudioAttachment(att)) {
+          text = await transcribeAudioBytes(payload.bytes, payloadMime, transcriberModel);
+          if (!text) {
+            skipped.push(`${label} (audio transcription failed or file too large)`);
+            continue;
+          }
+        } else {
+          text = tryDecodePlainText(payload.bytes);
+          if (!text) {
+            skipped.push(`${label} (unsupported document format)`);
+            continue;
+          }
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        skipped.push(`${label} (${message})`);
+        continue;
+      }
+    } else {
+      skipped.push(`${label} (unsupported type: ${att.type || "unknown"})`);
+      continue;
+    }
+
+    if (!text) continue;
+    const block = `Attachment "${label}" (${mime}):\n${text}`;
+    const projected = totalChars + block.length;
+    if (projected > ATTACHMENT_TEXT_MAX_CHARS) {
+      skipped.push(`${label} (text truncated due to context limit)`);
+      break;
+    }
+    blocks.push(block);
+    totalChars = projected;
+  }
+
+  return { blocks, skipped };
+}
+
+function buildUserTurnContent(
+  userMessage: string,
+  images: ResolvedImageAttachment[],
+  attachmentTextBlocks: string[],
+  skipped: string[],
+): Anthropic.MessageParam["content"] {
+  if (images.length === 0 && attachmentTextBlocks.length === 0 && skipped.length === 0) return userMessage;
+
+  const blocks: Anthropic.ContentBlockParam[] = [];
+  const textParts: string[] = [];
+  const trimmed = userMessage.trim();
+  if (trimmed.length > 0) textParts.push(trimmed);
+
+  if (images.length > 0) {
+    if (trimmed.length === 0) {
+      textParts.push("Please analyze the attached image(s).");
+    }
+    textParts.push(`Image count: ${images.length}.`);
+  }
+
+  if (attachmentTextBlocks.length > 0) {
+    if (trimmed.length === 0 && images.length === 0) {
+      textParts.push("Please analyze the attached file(s).");
+    }
+    textParts.push("Attachment extracts:");
+    textParts.push(attachmentTextBlocks.join("\n\n---\n\n"));
+  }
+
+  if (skipped.length > 0) {
+    textParts.push(`Unavailable attachments: ${skipped.join("; ")}`);
+  }
+
+  if (textParts.length > 0) {
+    blocks.push({ type: "text", text: textParts.join("\n") } as Anthropic.TextBlockParam);
+  }
+
+  for (const image of images) {
+    blocks.push({
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: image.mediaType,
+        data: image.base64Data,
+      },
+    } as unknown as Anthropic.ContentBlockParam);
+  }
+
+  return blocks;
 }
 
 const OPENAI_TOOL_MAX = Math.max(
@@ -224,7 +664,7 @@ function messagesToOpenAI(
       if (typeof msg.content === "string") {
         result.push({ role: "user", content: msg.content });
       } else if (Array.isArray(msg.content)) {
-        const textParts: string[] = [];
+        const userContentParts: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }> = [];
         const toolResults: Array<{ tool_use_id: string; content: string }> = [];
         for (const block of msg.content) {
           if (block.type === "tool_result") {
@@ -237,7 +677,24 @@ function messagesToOpenAI(
             }
             // Skip orphaned tool_results — no matching tool_call in preceding assistant message
           } else if (block.type === "text") {
-            textParts.push((block as { text: string }).text);
+            userContentParts.push({ type: "text", text: (block as { text: string }).text });
+          } else if (block.type === "image") {
+            const imageBlock = block as {
+              source?: {
+                type?: string;
+                media_type?: string;
+                data?: string;
+              };
+            };
+            const src = imageBlock.source;
+            if (src?.type === "base64" && typeof src.media_type === "string" && typeof src.data === "string") {
+              userContentParts.push({
+                type: "image_url",
+                image_url: {
+                  url: `data:${src.media_type};base64,${src.data}`,
+                },
+              });
+            }
           }
         }
         // Emit tool results as proper OpenAI "tool" role messages
@@ -248,9 +705,14 @@ function messagesToOpenAI(
             content: tr.content,
           } as OpenAI.ChatCompletionToolMessageParam);
         }
-        // Emit any remaining text as user messages
-        if (textParts.length > 0) {
-          result.push({ role: "user", content: textParts.join("\n") });
+        // Emit user multimodal message (text + optional images)
+        if (userContentParts.length === 1 && userContentParts[0].type === "text") {
+          result.push({ role: "user", content: userContentParts[0].text });
+        } else if (userContentParts.length > 0) {
+          result.push({
+            role: "user",
+            content: userContentParts as unknown as OpenAI.ChatCompletionUserMessageParam["content"],
+          } as OpenAI.ChatCompletionUserMessageParam);
         }
       }
     } else if (msg.role === "assistant") {
@@ -396,6 +858,12 @@ export interface AgentRunOptions {
   conversationId: string;
   agentId: string;
   userMessage: string;
+  replyToMessageId?: string | null;
+  forwardOfMessageId?: string | null;
+  mentions?: unknown[] | null;
+  forwardingMetadata?: Record<string, unknown> | null;
+  attachments?: UserAttachmentInput[];
+  transcriberModel?: string;
   config: JoiConfig;
   model?: string;   // Client-requested model override (highest priority)
   toolTask?: ModelTask; // Model route for tool loop (default: "tool")
@@ -439,6 +907,20 @@ export interface AgentRunResult {
     cacheReadTokens?: number;
     cacheWriteTokens?: number;
   };
+  assistantUsage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  };
+  toolUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  };
+  assistantCostUsd: number;
+  toolCostUsd: number;
   costUsd: number;
   timings: AgentTimings;
   agentId?: string;
@@ -452,6 +934,13 @@ export interface AgentRunResult {
     durationMs: number;
     status: "success" | "error";
   }>;
+}
+
+export interface MessageRelationsInput {
+  replyToMessageId?: string | null;
+  forwardOfMessageId?: string | null;
+  mentions?: unknown[] | null;
+  forwardingMetadata?: Record<string, unknown> | null;
 }
 
 async function loadConversationHistory(
@@ -518,10 +1007,33 @@ export async function saveMessage(
   toolCalls: unknown[] | null,
   toolResults: unknown[] | null,
   tokenUsage: unknown | null,
+  attachments?: UserAttachmentInput[] | null,
+  relations?: MessageRelationsInput | null,
 ): Promise<string> {
+  const relationPayload = relations || null;
+  const mentions = Array.isArray(relationPayload?.mentions) && relationPayload.mentions.length > 0
+    ? relationPayload.mentions
+    : null;
+  const forwardingMetadata = relationPayload?.forwardingMetadata
+    && typeof relationPayload.forwardingMetadata === "object"
+    ? relationPayload.forwardingMetadata
+    : null;
   const result = await query<{ id: string }>(
-    `INSERT INTO messages (conversation_id, role, content, model, tool_calls, tool_results, token_usage)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO messages (
+       conversation_id,
+       role,
+       content,
+       model,
+       tool_calls,
+       tool_results,
+       token_usage,
+       attachments,
+       reply_to_message_id,
+       forward_of_message_id,
+       mentions,
+       forwarding_metadata
+     )
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
      RETURNING id`,
     [
       conversationId,
@@ -531,6 +1043,11 @@ export async function saveMessage(
       toolCalls ? JSON.stringify(toolCalls) : null,
       toolResults ? JSON.stringify(toolResults) : null,
       tokenUsage ? JSON.stringify(tokenUsage) : null,
+      attachments ? JSON.stringify(attachments) : null,
+      relationPayload?.replyToMessageId || null,
+      relationPayload?.forwardOfMessageId || null,
+      mentions ? JSON.stringify(mentions) : null,
+      forwardingMetadata ? JSON.stringify(forwardingMetadata) : null,
     ],
   );
   return result.rows[0].id;
@@ -563,6 +1080,12 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     conversationId: inputConvId,
     agentId,
     userMessage,
+    replyToMessageId = null,
+    forwardOfMessageId = null,
+    mentions = null,
+    forwardingMetadata = null,
+    attachments,
+    transcriberModel,
     config,
     model: clientModel,
     toolTask = "tool",
@@ -586,6 +1109,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   const executionMode = normalizeExecutionMode(rawExecutionMode, "live");
   const persistMessages = rawPersistMessages ?? executionMode !== "dry_run";
   const shouldPersistMessages = persistMessages && executionMode !== "dry_run";
+  const persistedAttachments = trimAttachmentsForStorage(attachments);
   const runStartedAt = Date.now();
   const timings = { setupMs: 0, memoryMs: 0, promptMs: 0, historyMs: 0, llmMs: 0, totalMs: 0 };
   let tMark = runStartedAt;
@@ -598,7 +1122,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   console.log(`[runAgent] conversationId=${conversationId}`);
 
   // Load channel language (conversation → channel_id → language)
-  let channelLanguage = "en";
+  let channelLanguage = config.livekit?.language || "en";
   let conversationScope = "personal";
   let conversationScopeMetadata: Record<string, unknown> = {};
   let conversationCompanyId: string | undefined;
@@ -616,13 +1140,28 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     if (chId) {
       const chRow = await query<{ language: string | null }>(
         "SELECT language FROM channel_configs WHERE id = $1", [chId]);
-      channelLanguage = chRow.rows[0]?.language || "en";
+      channelLanguage = chRow.rows[0]?.language || config.livekit?.language || "en";
     }
   } catch { /* non-critical */ }
 
   // Save user message
   if (shouldPersistMessages) {
-    await saveMessage(conversationId, "user", userMessage, null, null, null, null);
+    await saveMessage(
+      conversationId,
+      "user",
+      userMessage,
+      null,
+      null,
+      null,
+      null,
+      persistedAttachments,
+      {
+        replyToMessageId,
+        forwardOfMessageId,
+        mentions,
+        forwardingMetadata,
+      },
+    );
   }
 
   // Load agent config from DB
@@ -674,9 +1213,17 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     allowGlobalDataAccess,
   });
 
-  // Get tool definitions (filtered by agent skills, or all if skills is null).
+  // Get tool definitions (strict policy: null skills are normalized to explicit lists).
   // Tool gating is now handled by the LLM intent classifier (caller passes enableTools).
-  const agentSkills = agentRow?.skills ?? null;
+  const rawAgentSkills = agentRow?.skills;
+  const agentSkills = normalizeAgentSkills(promptAgentId, rawAgentSkills);
+  if (isLegacyUnrestrictedSkills(rawAgentSkills)) {
+    logWarn(
+      "agent",
+      `[runAgent] Agent "${promptAgentId}" had legacy NULL skills; normalized to explicit list (${agentSkills.length} tools).`,
+      { agentId: promptAgentId, normalizedToolCount: agentSkills.length },
+    );
+  }
   let tools = enableTools ? getToolDefinitions(agentSkills) : [];
   if (!enableTools) {
     console.log("[runAgent] Tools disabled by intent classifier for this turn");
@@ -815,6 +1362,20 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   // Load history (reduce for lightweight turns — full history is unnecessary)
   const effectiveHistoryLimit = !enableTools ? 10 : historyLimit;
   const history = await loadConversationHistory(conversationId, effectiveHistoryLimit);
+  const visionCapableProvider = provider !== "ollama";
+  const { images: resolvedImages, skipped: skippedAttachments } = await resolveImageAttachments(
+    visionCapableProvider ? attachments : undefined,
+    config,
+  );
+  const { blocks: attachmentTextBlocks, skipped: skippedTextAttachments } = await resolveAttachmentTextBlocks(
+    attachments,
+    config,
+    transcriberModel,
+  );
+  skippedAttachments.push(...skippedTextAttachments);
+  if (!visionCapableProvider && attachments?.some((att) => isImageAttachment(att))) {
+    skippedAttachments.push("image analysis is not supported for Ollama models in JOI yet");
+  }
 
   // Pre-compaction memory flush (fire-and-forget)
   if (config.memory.autoLearn && shouldPersistMessages && executionMode === "live") {
@@ -827,12 +1388,33 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
 
   // Tool use loop (max 10 iterations)
   let messages = [...history];
+  const compactCurrentUser = compactHistoryText(userMessage, HISTORY_CONTENT_MAX_CHARS);
+  if (messages.length > 0) {
+    const lastMsg = messages[messages.length - 1];
+    if (lastMsg.role === "user" && typeof lastMsg.content === "string" && lastMsg.content === compactCurrentUser) {
+      messages = messages.slice(0, -1);
+    }
+  }
+  messages.push({
+    role: "user",
+    content: buildUserTurnContent(userMessage, resolvedImages, attachmentTextBlocks, skippedAttachments),
+  });
   let fullContent = "";
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCacheReadTokens = 0;
   let totalCacheWriteTokens = 0;
+  let assistantInputTokens = 0;
+  let assistantOutputTokens = 0;
+  let assistantCacheReadTokens = 0;
+  let assistantCacheWriteTokens = 0;
+  let toolInputTokens = 0;
+  let toolOutputTokens = 0;
+  let toolCacheReadTokens = 0;
+  let toolCacheWriteTokens = 0;
   let totalCostUsd = 0;
+  let assistantCostUsd = 0;
+  let toolCostUsd = 0;
   const toolInteractions: ToolInteraction[] = [];
   const delegations: Array<{ delegationId: string; agentId: string; task: string; durationMs: number; status: "success" | "error" }> = [];
   let toolsWereCalled = false;
@@ -844,6 +1426,8 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     let toolCalls: Array<{ id: string; name: string; input: unknown }> = [];
     let iterInputTokens = 0;
     let iterOutputTokens = 0;
+    let iterCacheReadTokens = 0;
+    let iterCacheWriteTokens = 0;
     let stopReason: string = "end_turn";
     const forceToolsThisIteration = forceToolUse && !toolsWereCalled;
 
@@ -879,7 +1463,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       toolCalls = result.toolCalls;
       iterInputTokens = result.inputTokens;
       iterOutputTokens = result.outputTokens;
-      if (result.cacheReadTokens) totalCacheReadTokens += result.cacheReadTokens;
+      if (result.cacheReadTokens) iterCacheReadTokens += result.cacheReadTokens;
       stopReason = result.stopReason;
     } else {
       // Use Anthropic SDK (direct or OpenRouter with anthropic/* models)
@@ -905,10 +1489,10 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       // Capture cache tokens from Anthropic response
       const usage = response.usage as unknown as Record<string, unknown>;
       if (typeof usage.cache_read_input_tokens === "number") {
-        totalCacheReadTokens += usage.cache_read_input_tokens as number;
+        iterCacheReadTokens += usage.cache_read_input_tokens as number;
       }
       if (typeof usage.cache_creation_input_tokens === "number") {
-        totalCacheWriteTokens += usage.cache_creation_input_tokens as number;
+        iterCacheWriteTokens += usage.cache_creation_input_tokens as number;
       }
       stopReason = response.stop_reason || "end_turn";
 
@@ -923,14 +1507,30 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
 
     totalInputTokens += iterInputTokens;
     totalOutputTokens += iterOutputTokens;
+    totalCacheReadTokens += iterCacheReadTokens;
+    totalCacheWriteTokens += iterCacheWriteTokens;
 
     // Record usage and accumulate cost
-    totalCostUsd += estimateCost(provider as ModelProvider, model, iterInputTokens, iterOutputTokens);
+    const iterCostUsd = estimateCost(provider as ModelProvider, model, iterInputTokens, iterOutputTokens);
+    totalCostUsd += iterCostUsd;
+    if (isTwoPhase) {
+      toolInputTokens += iterInputTokens;
+      toolOutputTokens += iterOutputTokens;
+      toolCacheReadTokens += iterCacheReadTokens;
+      toolCacheWriteTokens += iterCacheWriteTokens;
+      toolCostUsd += iterCostUsd;
+    } else {
+      assistantInputTokens += iterInputTokens;
+      assistantOutputTokens += iterOutputTokens;
+      assistantCacheReadTokens += iterCacheReadTokens;
+      assistantCacheWriteTokens += iterCacheWriteTokens;
+      assistantCostUsd += iterCostUsd;
+    }
     if (executionMode === "live") {
       recordUsage({
         provider,
         model,
-        task: isTwoPhase ? (toolTask === "voice" ? "voice" : "tool") : (chatTask === "voice" ? "voice" : "chat"),
+        task: isTwoPhase ? (toolTask === "voice" ? "voice" : "tool") : chatTask,
         inputTokens: iterInputTokens,
         outputTokens: iterOutputTokens,
         conversationId,
@@ -955,6 +1555,16 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
             {
               inputTokens: iterInputTokens,
               outputTokens: iterOutputTokens,
+              cacheReadTokens: iterCacheReadTokens || undefined,
+              cacheWriteTokens: iterCacheWriteTokens || undefined,
+              assistantUsage: {
+                inputTokens: iterInputTokens,
+                outputTokens: iterOutputTokens,
+                cacheReadTokens: iterCacheReadTokens || undefined,
+                cacheWriteTokens: iterCacheWriteTokens || undefined,
+              },
+              assistantCostUsd: iterCostUsd,
+              costUsd: iterCostUsd,
               latencyMs: Date.now() - runStartedAt,
             },
           );
@@ -1132,6 +1742,8 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     let finalText = "";
     let finalInputTokens = 0;
     let finalOutputTokens = 0;
+    let finalCacheReadTokens = 0;
+    let finalCacheWriteTokens = 0;
 
     if (chatProvider === "ollama") {
       const ollamaUrl = getOllamaUrl(config);
@@ -1160,7 +1772,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       finalText = result.text;
       finalInputTokens = result.inputTokens;
       finalOutputTokens = result.outputTokens;
-      if (result.cacheReadTokens) totalCacheReadTokens += result.cacheReadTokens;
+      if (result.cacheReadTokens) finalCacheReadTokens += result.cacheReadTokens;
     } else {
       const useFinalBlocks = cachedSystemBlocks && isAnthropicModel(chatModel);
       const stream = chatClient!.messages.stream({
@@ -1182,16 +1794,24 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       // Capture cache tokens from two-phase final response
       const finalUsage = response.usage as unknown as Record<string, unknown>;
       if (typeof finalUsage.cache_read_input_tokens === "number") {
-        totalCacheReadTokens += finalUsage.cache_read_input_tokens as number;
+        finalCacheReadTokens += finalUsage.cache_read_input_tokens as number;
       }
       if (typeof finalUsage.cache_creation_input_tokens === "number") {
-        totalCacheWriteTokens += finalUsage.cache_creation_input_tokens as number;
+        finalCacheWriteTokens += finalUsage.cache_creation_input_tokens as number;
       }
     }
 
     totalInputTokens += finalInputTokens;
     totalOutputTokens += finalOutputTokens;
-    totalCostUsd += estimateCost(chatProvider as ModelProvider, chatModel, finalInputTokens, finalOutputTokens);
+    totalCacheReadTokens += finalCacheReadTokens;
+    totalCacheWriteTokens += finalCacheWriteTokens;
+    const finalCostUsd = estimateCost(chatProvider as ModelProvider, chatModel, finalInputTokens, finalOutputTokens);
+    totalCostUsd += finalCostUsd;
+    assistantInputTokens += finalInputTokens;
+    assistantOutputTokens += finalOutputTokens;
+    assistantCacheReadTokens += finalCacheReadTokens;
+    assistantCacheWriteTokens += finalCacheWriteTokens;
+    assistantCostUsd += finalCostUsd;
     finalText = stripThinkTags(finalText);
     fullContent = finalText; // Replace with chat model's response
 
@@ -1199,7 +1819,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       recordUsage({
         provider: chatProvider,
         model: chatModel,
-        task: chatTask === "voice" ? "voice" : "chat",
+        task: chatTask,
         inputTokens: finalInputTokens,
         outputTokens: finalOutputTokens,
         conversationId,
@@ -1219,6 +1839,25 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         {
           inputTokens: finalInputTokens,
           outputTokens: finalOutputTokens,
+          cacheReadTokens: finalCacheReadTokens || undefined,
+          cacheWriteTokens: finalCacheWriteTokens || undefined,
+          assistantUsage: {
+            inputTokens: finalInputTokens,
+            outputTokens: finalOutputTokens,
+            cacheReadTokens: finalCacheReadTokens || undefined,
+            cacheWriteTokens: finalCacheWriteTokens || undefined,
+          },
+          toolUsage: toolInputTokens > 0 || toolOutputTokens > 0 || toolCacheReadTokens > 0 || toolCacheWriteTokens > 0
+            ? {
+                inputTokens: toolInputTokens,
+                outputTokens: toolOutputTokens,
+                cacheReadTokens: toolCacheReadTokens || undefined,
+                cacheWriteTokens: toolCacheWriteTokens || undefined,
+              }
+            : undefined,
+          assistantCostUsd: finalCostUsd,
+          toolCostUsd,
+          costUsd: finalCostUsd + toolCostUsd,
           latencyMs: Date.now() - runStartedAt,
         },
       );
@@ -1238,9 +1877,12 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       [conversationId],
     );
     if (Number(msgCount.rows[0].count) <= 3) {
-      const title = userMessage.length > 50
-        ? userMessage.substring(0, 50) + "..."
-        : userMessage;
+      const titleSeed = userMessage.trim().length > 0
+        ? userMessage
+        : (persistedAttachments && persistedAttachments.length > 0 ? "Image analysis" : "New conversation");
+      const title = titleSeed.length > 50
+        ? titleSeed.substring(0, 50) + "..."
+        : titleSeed;
       await query(
         "UPDATE conversations SET title = $1, updated_at = NOW() WHERE id = $2",
         [title, conversationId],
@@ -1287,6 +1929,22 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       cacheReadTokens: totalCacheReadTokens || undefined,
       cacheWriteTokens: totalCacheWriteTokens || undefined,
     },
+    assistantUsage: {
+      inputTokens: assistantInputTokens,
+      outputTokens: assistantOutputTokens,
+      cacheReadTokens: assistantCacheReadTokens || undefined,
+      cacheWriteTokens: assistantCacheWriteTokens || undefined,
+    },
+    toolUsage: toolInputTokens > 0 || toolOutputTokens > 0 || toolCacheReadTokens > 0 || toolCacheWriteTokens > 0
+      ? {
+          inputTokens: toolInputTokens,
+          outputTokens: toolOutputTokens,
+          cacheReadTokens: toolCacheReadTokens || undefined,
+          cacheWriteTokens: toolCacheWriteTokens || undefined,
+        }
+      : undefined,
+    assistantCostUsd,
+    toolCostUsd,
     costUsd: totalCostUsd,
     timings,
     agentId,

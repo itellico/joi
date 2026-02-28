@@ -1,20 +1,36 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 struct SettingsView: View {
     @Environment(WebSocketClient.self) private var webSocket
     @Environment(PushService.self) private var pushService
     @Environment(VoiceEngine.self) private var voiceEngine
-    @AppStorage("gatewayURL") private var gatewayURL = "ws://localhost:3100/ws"
+    @AppStorage("gatewayURL") private var gatewayURL = ""
+    @AppStorage("livekitNetworkMode") private var livekitNetworkMode = "auto"
     @AppStorage("recordingWindowStyle") private var recordingWindowStyle = "classic"
     @AppStorage("talkingStyle") private var talkingStyle = "default"
     @AppStorage("voiceAutoGainEnabled") private var voiceAutoGainEnabled = true
     @AppStorage("voiceNoiseSuppressionEnabled") private var voiceNoiseSuppressionEnabled = true
     @AppStorage("voiceSilenceRemovalEnabled") private var voiceSilenceRemovalEnabled = true
     @AppStorage("globalToggleShortcut") private var globalToggleShortcut = "Command+UpArrow"
+    @AppStorage(ChatViewModel.audioTranscriberModelDefaultsKey)
+    private var audioTranscriberModel = ChatViewModel.defaultAudioTranscriberModel
     @State private var editingURL = ""
     @State private var livekitConfig: LiveKitConfigInfo?
     @State private var livekitError: String?
     @State private var customPronunciations: [LocalVocabularyRule] = []
+    @State private var isReconnectingGateway = false
+    @State private var isRefreshingLiveKitConfig = false
+    @State private var isStartingVoiceEngine = false
+    @State private var isRequestingNotifications = false
+    @State private var gatewayBusyMessage: String?
+    #if os(iOS)
+    @State private var connectivityDiagnostics: GatewayURLResolver.ConnectivityDiagnostics?
+    @State private var isRunningConnectivityCheck = false
+    @State private var connectivityActionMessage: String?
+    #endif
 
     #if os(iOS)
     @Environment(\.dismiss) private var dismiss
@@ -33,13 +49,47 @@ struct SettingsView: View {
             #endif
         }
         .onAppear {
-            editingURL = gatewayURL
+            if !audioTranscriberModelChoices.contains(audioTranscriberModel) {
+                audioTranscriberModel = ChatViewModel.defaultAudioTranscriberModel
+            }
+            if livekitNetworkMode.lowercased() != "auto" {
+                livekitNetworkMode = "auto"
+            }
             enforceLiveKitEngine()
             customPronunciations = LocalVocabularyStore.load()
-            Task { await fetchLiveKitConfig() }
+            let immediateGatewayURL = GatewayURLResolver.configuredGatewayURL()
+            if gatewayURL != immediateGatewayURL {
+                gatewayURL = immediateGatewayURL
+                GatewayURLResolver.persistGatewayURL(immediateGatewayURL)
+            }
+            editingURL = gatewayURL
+            Task { @MainActor in
+                let resolvedGatewayURL = await GatewayURLResolver.resolveStartupGatewayURL()
+                if gatewayURL != resolvedGatewayURL {
+                    gatewayURL = resolvedGatewayURL
+                    GatewayURLResolver.persistGatewayURL(resolvedGatewayURL)
+                }
+                editingURL = gatewayURL
+                await fetchLiveKitConfig()
+                #if os(iOS)
+                await runConnectivityCheck()
+                #endif
+            }
         }
         .onChange(of: customPronunciations) { _, _ in
             LocalVocabularyStore.save(customPronunciations)
+        }
+        .onChange(of: livekitNetworkMode) { _, newValue in
+            if newValue.lowercased() != "auto" {
+                livekitNetworkMode = "auto"
+                return
+            }
+            Task {
+                await fetchLiveKitConfig()
+                #if os(iOS)
+                await runConnectivityCheck()
+                #endif
+            }
         }
     }
 
@@ -47,15 +97,255 @@ struct SettingsView: View {
     private var iosSettings: some View {
         NavigationStack {
             Form {
-                gatewaySection
-                voiceSection
-                liveKitSection
-                connectionSection
-                notificationSection
-                aboutSection
+                Section("Gateway") {
+                    TextField("ws://...", text: $editingURL)
+                        .font(.system(.body, design: .monospaced))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+
+                    LabeledContent("LiveKit Route", value: "Auto (device-detected)")
+                    Text("On iPhone, localhost is ignored. JOI uses Mini Home/Road endpoints automatically.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
+                    Button {
+                        Task { @MainActor in
+                            await reconnectGateway()
+                        }
+                    } label: {
+                        actionButtonLabel(isReconnectingGateway ? "Reconnecting..." : "Reconnect", isLoading: isReconnectingGateway)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isReconnectingGateway)
+
+                    Button {
+                        Task { @MainActor in
+                            await refreshLiveKitConfigFromButton()
+                        }
+                    } label: {
+                        actionButtonLabel(isRefreshingLiveKitConfig ? "Refreshing..." : "Refresh LiveKit Config", isLoading: isRefreshingLiveKitConfig)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isReconnectingGateway || isRefreshingLiveKitConfig)
+
+                    if let gatewayBusyMessage {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text(gatewayBusyMessage)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Section("Connectivity Assistant") {
+                    if let diagnostics = connectivityDiagnostics {
+                        LabeledContent("Detected", value: diagnostics.detectedPathLabel)
+                        LabeledContent("Recommended", value: diagnostics.recommendedMode.uppercased())
+                        LabeledContent("Home Route", value: diagnostics.homeReachable ? "Reachable" : "Unreachable")
+                        LabeledContent("Road Route", value: diagnostics.roadReachable ? "Reachable" : "Unreachable")
+                        Text(diagnostics.guidance)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Checking home/road connectivity...")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Button {
+                        Task { @MainActor in
+                            await runConnectivityCheck()
+                        }
+                    } label: {
+                        actionButtonLabel("Run Connectivity Check", isLoading: isRunningConnectivityCheck)
+                    }
+                    .disabled(isRunningConnectivityCheck)
+
+                    Button {
+                        Task { @MainActor in
+                            await applyRecommendedRoute()
+                        }
+                    } label: {
+                        actionButtonLabel("Apply Recommended Route", isLoading: isReconnectingGateway)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isReconnectingGateway)
+
+                    if connectivityNeedsRoadHelp {
+                        Button("Open Tailscale") {
+                            openTailscaleApp()
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button("Open VPN Settings") {
+                            openVPNSettings()
+                        }
+                        .buttonStyle(.bordered)
+                    }
+
+                    if let connectivityActionMessage {
+                        Text(connectivityActionMessage)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Section("Voice") {
+                    LabeledContent("Engine", value: "LiveKit")
+                    LabeledContent("Status", value: voiceEngine.statusText)
+                    LabeledContent("LiveKit", value: liveKitConnectionLabel)
+                    LabeledContent("Microphone", value: microphoneStatusLabel)
+                    if let message = voiceEngine.errorMessage,
+                       !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(message)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Picker("Voice Mode", selection: Binding(
+                        get: { voiceEngine.livekit.voiceMode },
+                        set: { voiceEngine.livekit.voiceMode = $0 }
+                    )) {
+                        Text("Always On").tag(LiveKitVoicePipeline.VoiceMode.alwaysOn)
+                        Text("Wake Word").tag(LiveKitVoicePipeline.VoiceMode.wakeWord)
+                    }
+                    .pickerStyle(.segmented)
+
+                    Button {
+                        Task { @MainActor in
+                            await toggleVoiceFromButton()
+                        }
+                    } label: {
+                        actionButtonLabel(
+                            voiceEngine.isActive ? "Stop Voice" : "Start Voice",
+                            isLoading: isStartingVoiceEngine
+                        )
+                    }
+                    .disabled(isStartingVoiceEngine)
+
+                    Button(voiceEngine.isMuted ? "Unmute" : "Mute") {
+                        if voiceEngine.isMuted {
+                            voiceEngine.unmute()
+                        } else {
+                            voiceEngine.mute()
+                        }
+                    }
+
+                    Picker("Talking Style", selection: $talkingStyle) {
+                        Text("Default").tag("default")
+                        Text("Transparent").tag("transparent")
+                        Text("Warm").tag("warm")
+                    }
+
+                    Picker("Audio Transcriber", selection: $audioTranscriberModel) {
+                        ForEach(audioTranscriberModelChoices, id: \.self) { model in
+                            Text(transcriberModelLabel(for: model)).tag(model)
+                        }
+                    }
+                    .pickerStyle(.menu)
+
+                    Text("Used for audio-file attachments from chat input.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("LiveKit") {
+                    Text("Reconnect/Refresh validates gateway route and config. Voice succeeds only when Start Voice connects to the LiveKit room.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    if let config = livekitConfig {
+                        LabeledContent("Server", value: config.url.isEmpty ? "Not configured" : config.url)
+                        if let mode = config.networkMode {
+                            LabeledContent("Route Mode", value: mode.capitalized)
+                        }
+                        if let target = config.networkTargetIp, !target.isEmpty {
+                            LabeledContent("Route Target", value: target)
+                        }
+                        LabeledContent("API Credentials", value: config.hasApiKey && config.hasApiSecret ? "Configured" : "Missing")
+                        LabeledContent("STT", value: "\(config.sttProvider.capitalized) / \(config.sttModel)")
+                        LabeledContent("Deepgram Key", value: config.hasDeepgramKey ? "Configured" : "Missing")
+                        LabeledContent("TTS", value: "\(config.ttsProvider.capitalized) / \(config.ttsModel)")
+                        LabeledContent("Cartesia Key", value: config.hasCartesiaKey ? "Configured" : "Missing")
+
+                        if !config.ttsVoice.isEmpty {
+                            LabeledContent("Voice ID", value: config.ttsVoice)
+                        }
+                        if let cacheEnabled = config.ttsCacheEnabled {
+                            LabeledContent("TTS Cache", value: cacheEnabled ? "Enabled" : "Disabled")
+                        }
+                        if let cachePrefix = config.ttsCachePrefix, !cachePrefix.isEmpty {
+                            LabeledContent("Cache Prefix", value: cachePrefix)
+                        }
+                        if let cacheTtl = config.ttsCacheRedisTtlSec {
+                            LabeledContent("Cache TTL", value: "\(cacheTtl)s")
+                        }
+                    } else if let livekitError {
+                        Text(livekitError)
+                            .foregroundStyle(.red)
+                    } else {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text("Loading configuration...")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Section("Connection") {
+                    LabeledContent("WebSocket", value: connectionStateLabel)
+                    if let error = webSocket.lastError, !error.isEmpty {
+                        Text(error)
+                            .foregroundStyle(.red)
+                    }
+                }
+
+                Section("Notifications") {
+                    LabeledContent("Permission", value: pushService.permissionGranted ? "Allowed" : "Not Allowed")
+                    LabeledContent(
+                        "APNs Registered",
+                        value: pushService.pushCapabilityAvailable
+                            ? (pushService.isRegistered ? "Yes" : "No")
+                            : "Not supported on this runtime")
+                    LabeledContent("Remote Push", value: pushService.pushCapabilityAvailable ? "Available" : "Unavailable")
+
+                    if !pushService.pushCapabilityAvailable {
+                        Text("Remote APNs is unavailable in this build/runtime. For production push, run JOI on a physical iPhone with push entitlements.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let token = pushService.deviceToken {
+                        LabeledContent("Token", value: String(token.prefix(20)) + "...")
+                    }
+
+                    if !pushService.permissionGranted {
+                        Button {
+                            Task { @MainActor in
+                                await requestNotificationPermissionFromButton()
+                            }
+                        } label: {
+                            actionButtonLabel("Enable Notifications", isLoading: isRequestingNotifications)
+                        }
+                        .disabled(isRequestingNotifications)
+                    }
+
+                    if let error = pushService.lastError, !error.isEmpty {
+                        Text(error)
+                            .foregroundStyle(.red)
+                    }
+                }
+
+                Section("About") {
+                    LabeledContent("App", value: "JOI")
+                    LabeledContent("Version", value: appVersion())
+                }
             }
-            .scrollContentBackground(.hidden)
-            .background(JOIColors.background)
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -63,6 +353,7 @@ struct SettingsView: View {
                     Button("Done") { dismiss() }
                 }
             }
+            .preferredColorScheme(.dark)
         }
     }
     #endif
@@ -122,20 +413,29 @@ struct SettingsView: View {
                 .autocorrectionDisabled()
 
             HStack(spacing: 10) {
-                Button("Reconnect") {
-                    gatewayURL = editingURL.trimmingCharacters(in: .whitespacesAndNewlines)
-                    webSocket.disconnect()
-                    webSocket.connect(to: gatewayURL)
-                    Task { await fetchLiveKitConfig() }
+                Button {
+                    Task { @MainActor in
+                        await reconnectGateway()
+                    }
+                } label: {
+                    actionButtonLabel(isReconnectingGateway ? "Reconnecting..." : "Reconnect", isLoading: isReconnectingGateway)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(JOIColors.primary)
+                .disabled(isReconnectingGateway)
 
-                Button("Refresh LiveKit Config") {
-                    Task { await fetchLiveKitConfig() }
+                Button {
+                    Task { @MainActor in
+                        await refreshLiveKitConfigFromButton()
+                    }
+                } label: {
+                    actionButtonLabel(isRefreshingLiveKitConfig ? "Refreshing..." : "Refresh LiveKit Config", isLoading: isRefreshingLiveKitConfig)
                 }
                 .buttonStyle(.bordered)
+                .disabled(isReconnectingGateway || isRefreshingLiveKitConfig)
             }
+
+            settingRow(label: "LiveKit Route", value: "Auto (device-detected)")
         }
     }
 
@@ -143,6 +443,8 @@ struct SettingsView: View {
         settingsCard(title: "Voice", subtitle: "LiveKit cloud voice") {
             settingRow(label: "Engine", value: "LiveKit")
             settingRow(label: "Status", value: voiceEngine.statusText)
+            settingRow(label: "LiveKit", value: liveKitConnectionLabel)
+            settingRow(label: "Microphone", value: microphoneStatusLabel)
 
             Picker("Voice Mode", selection: Binding(
                 get: { voiceEngine.livekit.voiceMode },
@@ -154,17 +456,19 @@ struct SettingsView: View {
             .pickerStyle(.segmented)
 
             HStack(spacing: 10) {
-                Button(voiceEngine.isActive ? "Stop Voice" : "Start Voice") {
-                    if voiceEngine.isActive {
-                        voiceEngine.stop()
-                    } else {
-                        Task { @MainActor in
-                            await voiceEngine.start()
-                        }
+                Button {
+                    Task { @MainActor in
+                        await toggleVoiceFromButton()
                     }
+                } label: {
+                    actionButtonLabel(
+                        voiceEngine.isActive ? "Stop Voice" : "Start Voice",
+                        isLoading: isStartingVoiceEngine
+                    )
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(JOIColors.primary)
+                .disabled(isStartingVoiceEngine)
 
                 Button(voiceEngine.isMuted ? "Unmute" : "Mute") {
                     if voiceEngine.isMuted {
@@ -186,6 +490,15 @@ struct SettingsView: View {
             #else
             .pickerStyle(.segmented)
             #endif
+
+            Picker("Audio Transcriber", selection: $audioTranscriberModel) {
+                ForEach(audioTranscriberModelChoices, id: \.self) { model in
+                    Text(transcriberModelLabel(for: model)).tag(model)
+                }
+            }
+            .pickerStyle(.menu)
+
+            settingRow(label: "Transcriber", value: transcriberModelLabel(for: audioTranscriberModel))
         }
     }
 
@@ -252,10 +565,15 @@ struct SettingsView: View {
                     .controlSize(.small)
             }
 
-            Button("Reload From Admin") {
-                Task { await fetchLiveKitConfig() }
+            Button {
+                Task { @MainActor in
+                    await refreshLiveKitConfigFromButton()
+                }
+            } label: {
+                actionButtonLabel("Reload From Admin", isLoading: isRefreshingLiveKitConfig)
             }
             .buttonStyle(.bordered)
+            .disabled(isReconnectingGateway || isRefreshingLiveKitConfig)
 
             Divider()
 
@@ -321,6 +639,12 @@ struct SettingsView: View {
         settingsCard(title: "LiveKit") {
             if let config = livekitConfig {
                 settingRow(label: "Server", value: config.url.isEmpty ? "Not configured" : config.url)
+                if let networkMode = config.networkMode {
+                    settingRow(label: "Route Mode", value: networkMode.capitalized)
+                }
+                if let networkTargetIp = config.networkTargetIp, !networkTargetIp.isEmpty {
+                    settingRow(label: "Route Target", value: networkTargetIp)
+                }
                 statusRow(label: "API Credentials", ok: config.hasApiKey && config.hasApiSecret)
                 settingRow(label: "STT", value: "\(config.sttProvider.capitalized) / \(config.sttModel)")
                 statusRow(label: "Deepgram Key", ok: config.hasDeepgramKey)
@@ -377,17 +701,29 @@ struct SettingsView: View {
     private var notificationSection: some View {
         settingsCard(title: "Notifications") {
             statusRow(label: "Permission", ok: pushService.permissionGranted)
-            statusRow(label: "APNs Registered", ok: pushService.isRegistered)
+            if pushService.pushCapabilityAvailable {
+                statusRow(label: "APNs Registered", ok: pushService.isRegistered)
+            } else {
+                settingRow(label: "APNs Registered", value: "Not supported on this runtime")
+            }
+            settingRow(
+                label: "Remote Push",
+                value: pushService.pushCapabilityAvailable ? "Available" : "Unavailable")
 
             if let token = pushService.deviceToken {
                 settingRow(label: "Token", value: String(token.prefix(20)) + "...")
             }
 
             if !pushService.permissionGranted {
-                Button("Enable Notifications") {
-                    Task { await pushService.requestPermission() }
+                Button {
+                    Task { @MainActor in
+                        await requestNotificationPermissionFromButton()
+                    }
+                } label: {
+                    actionButtonLabel("Enable Notifications", isLoading: isRequestingNotifications)
                 }
                 .buttonStyle(.bordered)
+                .disabled(isRequestingNotifications)
             }
 
             if let error = pushService.lastError, !error.isEmpty {
@@ -483,17 +819,261 @@ struct SettingsView: View {
         }
     }
 
+    @MainActor
+    private func reconnectGateway() async {
+        guard !isReconnectingGateway else { return }
+        isReconnectingGateway = true
+        gatewayBusyMessage = "Reconnecting gateway..."
+        let startedAt = Date()
+        defer {
+            gatewayBusyMessage = nil
+            isReconnectingGateway = false
+        }
+
+        let manualURL = editingURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let normalized = GatewayURLResolver.normalizedManualGatewayURL(manualURL) {
+            gatewayURL = normalized
+        } else {
+            gatewayURL = GatewayURLResolver.configuredGatewayURL()
+        }
+        GatewayURLResolver.persistGatewayURL(gatewayURL)
+        editingURL = gatewayURL
+        webSocket.disconnect()
+        webSocket.connect(to: gatewayURL)
+        await fetchLiveKitConfig()
+        #if os(iOS)
+        await runConnectivityCheck()
+        #endif
+        await ensureMinimumBusyTime(since: startedAt)
+    }
+
+    @MainActor
+    private func refreshLiveKitConfigFromButton() async {
+        guard !isRefreshingLiveKitConfig else { return }
+        isRefreshingLiveKitConfig = true
+        gatewayBusyMessage = "Refreshing LiveKit config..."
+        let startedAt = Date()
+        defer {
+            gatewayBusyMessage = nil
+            isRefreshingLiveKitConfig = false
+        }
+        await fetchLiveKitConfig()
+        #if os(iOS)
+        await runConnectivityCheck()
+        #endif
+        await ensureMinimumBusyTime(since: startedAt)
+    }
+
+    @MainActor
+    private func toggleVoiceFromButton() async {
+        if voiceEngine.isActive {
+            voiceEngine.stop()
+            return
+        }
+        guard !isStartingVoiceEngine else { return }
+        isStartingVoiceEngine = true
+        defer { isStartingVoiceEngine = false }
+        await voiceEngine.start()
+    }
+
+    @MainActor
+    private func requestNotificationPermissionFromButton() async {
+        guard !isRequestingNotifications else { return }
+        isRequestingNotifications = true
+        let startedAt = Date()
+        defer { isRequestingNotifications = false }
+        await pushService.requestPermission()
+        await ensureMinimumBusyTime(since: startedAt)
+    }
+
+    @MainActor
     private func fetchLiveKitConfig() async {
         livekitError = nil
         do {
-            livekitConfig = try await LiveKitConfigService.fetchConfig(gatewayURL: gatewayURL)
+            livekitConfig = try await LiveKitConfigService.fetchConfig(
+                gatewayURL: gatewayURL,
+                networkMode: livekitNetworkMode
+            )
         } catch {
             livekitError = error.localizedDescription
         }
     }
 
+    #if os(iOS)
+    private var connectivityNeedsRoadHelp: Bool {
+        guard let diagnostics = connectivityDiagnostics else { return false }
+        switch diagnostics.recommendation {
+        case .enableTailscale:
+            return true
+        default:
+            return false
+        }
+    }
+
+    @MainActor
+    private func runConnectivityCheck() async {
+        guard !isRunningConnectivityCheck else { return }
+        isRunningConnectivityCheck = true
+        defer { isRunningConnectivityCheck = false }
+        connectivityDiagnostics = await GatewayURLResolver.diagnoseConnectivity()
+    }
+
+    @MainActor
+    private func applyRecommendedRoute() async {
+        guard !isReconnectingGateway else { return }
+        if connectivityDiagnostics == nil {
+            await runConnectivityCheck()
+        }
+        guard let diagnostics = connectivityDiagnostics else { return }
+
+        isReconnectingGateway = true
+        gatewayBusyMessage = "Applying \(diagnostics.recommendedMode.uppercased()) route..."
+        let startedAt = Date()
+        defer {
+            gatewayBusyMessage = nil
+            isReconnectingGateway = false
+        }
+
+        gatewayURL = diagnostics.recommendedGatewayURL
+        editingURL = gatewayURL
+        GatewayURLResolver.persistGatewayURL(gatewayURL)
+        webSocket.disconnect()
+        webSocket.connect(to: gatewayURL)
+        await fetchLiveKitConfig()
+        await runConnectivityCheck()
+        if let latest = connectivityDiagnostics {
+            connectivityActionMessage = "Using \(latest.recommendedMode.uppercased()) route: \(latest.detectedPathLabel)"
+        }
+        await ensureMinimumBusyTime(since: startedAt)
+    }
+
+    @MainActor
+    private func openTailscaleApp() {
+        Task { @MainActor in
+            let opened = await openFirstAvailableURL(from: [
+                "tailscale://",
+                "tailscale://up",
+                "https://apps.apple.com/app/tailscale/id1475387142",
+            ])
+            if opened {
+                connectivityActionMessage = "Opened Tailscale."
+            } else {
+                connectivityActionMessage = "Could not open Tailscale. Install it from the App Store."
+            }
+        }
+    }
+
+    @MainActor
+    private func openVPNSettings() {
+        Task { @MainActor in
+            let opened = await openFirstAvailableURL(from: [
+                "App-Prefs:root=VPN",
+                "App-Prefs:root=General&path=VPN",
+                "prefs:root=VPN",
+                "prefs:root=General&path=VPN",
+            ])
+            if opened {
+                connectivityActionMessage = "Opened iOS settings. Enable Tailscale VPN and return to JOI."
+            } else {
+                connectivityActionMessage = "Open iOS Settings > VPN manually, then return and run connectivity check."
+            }
+        }
+    }
+
+    @MainActor
+    private func openFirstAvailableURL(from rawURLs: [String]) async -> Bool {
+        for raw in rawURLs {
+            guard let url = URL(string: raw) else { continue }
+            let opened = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                UIApplication.shared.open(url, options: [:]) { success in
+                    continuation.resume(returning: success)
+                }
+            }
+            if opened {
+                return true
+            }
+        }
+        return false
+    }
+    #endif
+
+    @ViewBuilder
+    private func actionButtonLabel(_ title: String, isLoading: Bool) -> some View {
+        HStack(spacing: 8) {
+            if isLoading {
+                ProgressView()
+                    .controlSize(.small)
+            }
+            Text(title)
+        }
+    }
+
+    private var liveKitConnectionLabel: String {
+        switch voiceEngine.state {
+        case "connecting":
+            return "Connecting"
+        case "active", "speaking":
+            return "Connected"
+        case "error":
+            return "Error"
+        default:
+            return "Offline"
+        }
+    }
+
+    private var microphoneStatusLabel: String {
+        if voiceEngine.isMuted {
+            return "Off"
+        }
+        return (voiceEngine.state == "active" || voiceEngine.state == "speaking" || voiceEngine.state == "connecting")
+            ? "On"
+            : "Off"
+    }
+
+    private var audioTranscriberModelChoices: [String] {
+        [
+            "mlx-community/whisper-small-mlx",
+            "mlx-community/whisper-medium-mlx",
+            "mlx-community/whisper-large-v3-mlx",
+        ]
+    }
+
+    private func transcriberModelLabel(for model: String) -> String {
+        switch model {
+        case "mlx-community/whisper-small-mlx":
+            return "Whisper Small (MLX)"
+        case "mlx-community/whisper-medium-mlx":
+            return "Whisper Medium (MLX)"
+        case "mlx-community/whisper-large-v3-mlx":
+            return "Whisper Large V3 (MLX)"
+        default:
+            return model
+        }
+    }
+
+    @MainActor
+    private func ensureMinimumBusyTime(since startedAt: Date, minimumSeconds: TimeInterval = 0.7) async {
+        let elapsed = Date().timeIntervalSince(startedAt)
+        guard elapsed < minimumSeconds else { return }
+        let remaining = minimumSeconds - elapsed
+        try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
+    }
+
     private func appVersion() -> String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+    }
+
+    private var connectionStateLabel: String {
+        switch webSocket.state {
+        case .connected:
+            return "Connected"
+        case .connecting:
+            return "Connecting"
+        case .reconnecting:
+            return "Reconnecting"
+        case .disconnected:
+            return "Offline"
+        }
     }
 }
 
@@ -627,6 +1207,9 @@ private enum ShortcutPreset: String, CaseIterable {
 
 struct LiveKitConfigInfo: Codable {
     let url: String
+    let networkMode: String?
+    let networkTargetIp: String?
+    let networkClientIp: String?
     let sttProvider: String
     let sttModel: String
     let ttsProvider: String
@@ -649,7 +1232,7 @@ struct LiveKitPronunciationRule: Codable {
 }
 
 enum LiveKitConfigService {
-    static func fetchConfig(gatewayURL: String) async throws -> LiveKitConfigInfo {
+    static func fetchConfig(gatewayURL: String, networkMode: String = "auto") async throws -> LiveKitConfigInfo {
         var base = gatewayURL
             .replacingOccurrences(of: "wss://", with: "https://")
             .replacingOccurrences(of: "ws://", with: "http://")
@@ -657,7 +1240,14 @@ enum LiveKitConfigService {
             base = String(base.dropLast(3))
         }
 
-        guard let url = URL(string: "\(base)/api/livekit/config") else {
+        guard var components = URLComponents(string: "\(base)/api/livekit/config") else {
+            throw URLError(.badURL)
+        }
+        let normalizedMode = networkMode.lowercased()
+        if normalizedMode == "auto" || normalizedMode == "home" || normalizedMode == "road" {
+            components.queryItems = [URLQueryItem(name: "networkMode", value: normalizedMode)]
+        }
+        guard let url = components.url else {
             throw URLError(.badURL)
         }
 

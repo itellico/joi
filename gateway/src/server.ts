@@ -1823,13 +1823,52 @@ function getKnownMiniIpv4Set(): Set<string> {
   return knownIps;
 }
 
+function parseOptionalEnvBoolean(raw: string | undefined): boolean | null {
+  const value = (raw || "").trim().toLowerCase();
+  if (!value) return null;
+  if (["1", "true", "yes", "on", "enabled"].includes(value)) return true;
+  if (["0", "false", "no", "off", "disabled"].includes(value)) return false;
+  return null;
+}
+
+function getMiniHostnames(): Set<string> {
+  const values = new Set<string>();
+  const append = (raw: string) => {
+    const normalized = raw.trim().toLowerCase();
+    if (!normalized) return;
+    values.add(normalized);
+    const short = normalized.split(".")[0] || normalized;
+    if (short) values.add(short);
+  };
+  append(process.env.JOI_MINI_HOST_ALIAS || "mini");
+  append(process.env.JOI_MINI_HOSTNAME || "marcuss-mini");
+  return values;
+}
+
+function isCurrentHostMini(): boolean {
+  const host = os.hostname().trim().toLowerCase();
+  if (!host) return false;
+  const short = host.split(".")[0] || host;
+  const miniHosts = getMiniHostnames();
+  return miniHosts.has(host) || miniHosts.has(short);
+}
+
+function shouldRunLocalLiveKitWorker(): boolean {
+  const mode = (process.env.JOI_LIVEKIT_WORKER_MODE || "").trim().toLowerCase();
+  if (["local", "host", "enabled"].includes(mode)) return true;
+  if (["external", "remote", "container", "disabled"].includes(mode)) return false;
+
+  const explicit = parseOptionalEnvBoolean(process.env.JOI_LIVEKIT_LOCAL_WORKER);
+  if (explicit !== null) return explicit;
+
+  return isCurrentHostMini();
+}
+
 function shouldRewriteLiveKitHost(hostname: string): boolean {
   const normalized = hostname.trim().toLowerCase();
   if (!normalized) return false;
   if (isLocalHostname(normalized)) return true;
-  const alias = (process.env.JOI_MINI_HOST_ALIAS || "mini").trim().toLowerCase();
-  const miniHostname = (process.env.JOI_MINI_HOSTNAME || "marcuss-mini").trim().toLowerCase();
-  if (normalized === alias || normalized === miniHostname) return true;
+  if (getMiniHostnames().has(normalized)) return true;
   if (!isIpv4Literal(normalized)) return false;
   return getKnownMiniIpv4Set().has(normalized);
 }
@@ -2523,6 +2562,10 @@ app.post("/api/voice/chat", async (req, res) => {
       toolModel: result.toolModel,
       toolProvider: result.toolProvider,
       usage: result.usage,
+      assistantUsage: result.assistantUsage,
+      toolUsage: result.toolUsage,
+      assistantCostUsd: result.assistantCostUsd,
+      toolCostUsd: result.toolCostUsd,
       costUsd: result.costUsd,
       executionMode,
       latencyMs,
@@ -2550,6 +2593,10 @@ app.post("/api/voice/chat", async (req, res) => {
         toolModel: result.toolModel,
         toolProvider: result.toolProvider,
         usage: result.usage,
+        assistantUsage: result.assistantUsage,
+        toolUsage: result.toolUsage,
+        assistantCostUsd: result.assistantCostUsd,
+        toolCostUsd: result.toolCostUsd,
         costUsd: result.costUsd,
         latencyMs,
       })}\n\n`);
@@ -3523,6 +3570,9 @@ function isServiceRunning(service: StartableService): boolean {
       || isProcessPatternRunning("scripts/dev-autodev.sh");
   }
   // livekit
+  if (!shouldRunLocalLiveKitWorker()) {
+    return false;
+  }
   return isProcessPatternRunning("infra/livekit-worker/run.sh")
     || isProcessPatternRunning("livekit-worker");
 }
@@ -3534,6 +3584,15 @@ function startServiceDetached(service: StartableService): {
   detail: string;
   pid?: number;
 } {
+  if (service === "livekit" && !shouldRunLocalLiveKitWorker()) {
+    return {
+      ok: false,
+      started: false,
+      alreadyRunning: false,
+      detail: "LiveKit worker is managed externally on this host",
+    };
+  }
+
   if (isServiceRunning(service)) {
     return {
       ok: true,
@@ -3824,6 +3883,17 @@ app.post("/api/services/:service/start", async (req, res) => {
     return;
   }
 
+  if (service === "livekit" && !shouldRunLocalLiveKitWorker()) {
+    res.status(409).json({
+      service,
+      ok: false,
+      started: false,
+      alreadyRunning: false,
+      detail: "LiveKit worker is managed externally on this host",
+    });
+    return;
+  }
+
   const result = startServiceDetached(service);
   if (!result.ok) {
     res.status(500).json(result);
@@ -3853,6 +3923,18 @@ app.post("/api/services/:service/restart", async (req, res) => {
   if (service === "gateway") {
     res.json({ service, restarted: true, detail: "Exiting — watchdog will restart" });
     setTimeout(() => process.exit(0), 500);
+    return;
+  }
+
+  if (service === "livekit" && !shouldRunLocalLiveKitWorker()) {
+    res.status(409).json({
+      service,
+      restarted: false,
+      ok: false,
+      started: false,
+      alreadyRunning: false,
+      detail: "LiveKit worker is managed externally on this host",
+    });
     return;
   }
 
@@ -3909,6 +3991,9 @@ app.get("/api/settings", (_req, res) => {
   const miniActiveIp = (process.env.JOI_MINI_ACTIVE_IP || "").trim();
   const livekitEnvMode = normalizeLiveKitNetworkMode(process.env.JOI_LIVEKIT_NETWORK_MODE ?? process.env.JOI_ROAD_MODE);
   const runtimeMode = normalizeLiveKitNetworkMode(process.env.JOI_MINI_ACTIVE_MODE);
+  const webhookBase = normalizeWebhookBaseUrl(process.env.JOI_WEBHOOK_BASE_URL);
+  const webhookBaseHome = normalizeWebhookBaseUrl(process.env.JOI_WEBHOOK_BASE_URL_HOME);
+  const webhookBaseRoad = normalizeWebhookBaseUrl(process.env.JOI_WEBHOOK_BASE_URL_ROAD);
 
   const masked = {
     ...config,
@@ -3918,6 +4003,9 @@ app.get("/api/settings", (_req, res) => {
       activeIp: isIpv4Literal(miniActiveIp) ? miniActiveIp : null,
       activeMode: runtimeMode || "auto",
       configuredMode: livekitEnvMode || "auto",
+      webhookBaseUrl: webhookBase,
+      webhookBaseUrlHome: webhookBaseHome,
+      webhookBaseUrlRoad: webhookBaseRoad,
     },
     auth: {
       anthropicApiKey: config.auth.anthropicApiKey ? "sk-ant-***" + config.auth.anthropicApiKey.slice(-4) : null,
@@ -3976,6 +4064,9 @@ app.put("/api/settings", async (req, res) => {
     const updates = req.body;
     let livekitLanguageForChannels: string | null = null;
     let applyLanguageToAllChannels = false;
+    let hasLivekitUpdates = false;
+    let livekitRuntimeRestarted = false;
+    let livekitRuntimeRestartReason: string | null = null;
     let autodevRuntimeRestarted = false;
     let autodevRuntimeRestartReason: string | null = null;
     let autodevRuntimeUpdate: {
@@ -4065,6 +4156,7 @@ app.put("/api/settings", async (req, res) => {
     }
 
     if (updates.livekit) {
+      hasLivekitUpdates = true;
       const lk = updates.livekit;
       if (lk.url !== undefined) (config as any).livekit.url = lk.url;
       if (lk.apiKey && !lk.apiKey.includes("***")) (config as any).livekit.apiKey = lk.apiKey;
@@ -4118,6 +4210,20 @@ app.put("/api/settings", async (req, res) => {
     // Save to disk
     saveConfig(config);
 
+    // Restart LiveKit worker after livekit config updates so language/voice changes apply immediately.
+    if (hasLivekitUpdates) {
+      for (const pat of ["infra/livekit-worker/run.sh", "livekit-worker/agent.py"]) {
+        try { execFileSync("pkill", ["-f", pat], { stdio: "ignore" }); } catch { /* ignore */ }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      const restart = startServiceDetached("livekit");
+      livekitRuntimeRestarted = restart.ok && (restart.started || restart.alreadyRunning);
+      livekitRuntimeRestartReason = restart.detail;
+      if (!livekitRuntimeRestarted) {
+        console.warn(`[settings] LiveKit worker restart failed: ${restart.detail}`);
+      }
+    }
+
     // Apply AutoDev settings immediately without restart
     if (autodevRuntimeUpdate) {
       autoDevProxy.sendToWorker("autodev.configure", autodevRuntimeUpdate);
@@ -4156,6 +4262,8 @@ app.put("/api/settings", async (req, res) => {
 
     res.json({
       saved: true,
+      livekitRuntimeRestarted,
+      livekitRuntimeRestartReason,
       autodevRuntimeRestarted,
       autodevRuntimeRestartReason,
     });
@@ -11197,6 +11305,12 @@ wss.on("connection", (ws) => {
           }
 
           const mentions = normalizeChatMentions(data?.mentions, content);
+          const requestedTranscriberModel = typeof data?.transcriberModel === "string"
+            ? data.transcriberModel.trim()
+            : "";
+          const transcriberModel = requestedTranscriberModel
+            ? requestedTranscriberModel.slice(0, 120)
+            : undefined;
 
           if (!content.trim() && runtimeAttachments.length === 0) {
             ws.send(frame("chat.error", { error: "Missing content or attachments" }, msg.id));
@@ -11434,6 +11548,7 @@ wss.on("connection", (ws) => {
               mentions: serializedMentions,
               forwardingMetadata,
               attachments: runtimeAttachments.length > 0 ? runtimeAttachments : undefined,
+              transcriberModel,
               config,
               model: data.model,
               enableTools: chatClassification.needsTools,
@@ -11508,6 +11623,10 @@ wss.on("connection", (ws) => {
               toolModel: result.toolModel,
               toolProvider: result.toolProvider,
               usage: result.usage,
+              assistantUsage: result.assistantUsage,
+              toolUsage: result.toolUsage,
+              assistantCostUsd: result.assistantCostUsd,
+              toolCostUsd: result.toolCostUsd,
               costUsd: result.costUsd,
               executionMode,
               latencyMs: Date.now() - apiStartMs,

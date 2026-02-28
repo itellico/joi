@@ -25,7 +25,27 @@ export interface TranscriptResult {
   segmentCount: number;
 }
 
-const MLX_WHISPER_MODEL = "mlx-community/whisper-small-mlx";
+const FALLBACK_MLX_WHISPER_MODEL = "mlx-community/whisper-small-mlx";
+const SUPPORTED_MLX_WHISPER_MODELS = new Set([
+  "mlx-community/whisper-small-mlx",
+  "mlx-community/whisper-medium-mlx",
+  "mlx-community/whisper-large-v3-mlx",
+]);
+
+function resolveWhisperModel(requestedModel?: string | null): string {
+  const requested = (requestedModel || "").trim();
+  if (!requested) {
+    const fromEnv = (process.env.JOI_AUDIO_TRANSCRIBER_MODEL || "").trim();
+    if (fromEnv && SUPPORTED_MLX_WHISPER_MODELS.has(fromEnv)) {
+      return fromEnv;
+    }
+    return FALLBACK_MLX_WHISPER_MODEL;
+  }
+  if (SUPPORTED_MLX_WHISPER_MODELS.has(requested)) {
+    return requested;
+  }
+  return FALLBACK_MLX_WHISPER_MODEL;
+}
 
 function extractVideoId(input: string): string | null {
   // Handle plain video IDs
@@ -184,6 +204,7 @@ async function fetchViaYtDlp(videoId: string, lang: string): Promise<TranscriptR
 
 async function fetchViaWhisper(videoId: string, lang: string): Promise<TranscriptResult> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "yt-whisper-"));
+  const whisperModel = resolveWhisperModel();
 
   try {
     // Step 1: Download audio only via yt-dlp
@@ -216,7 +237,7 @@ async function fetchViaWhisper(videoId: string, lang: string): Promise<Transcrip
         "mlx_whisper",
         [
           audioPath,
-          "--model", MLX_WHISPER_MODEL,
+          "--model", whisperModel,
           "--output-format", "json",
           "--output-dir", tmpDir,
           ...(lang !== "auto" ? ["--language", lang] : []),
@@ -296,11 +317,13 @@ export async function transcribeYouTube(
 export async function transcribeAudioFile(
   filePath: string,
   language = "auto",
+  requestedModel?: string,
 ): Promise<{ text: string; segments: TranscriptSegment[]; language: string }> {
   if (!fs.existsSync(filePath)) throw new Error(`File not found: ${filePath}`);
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "whisper-file-"));
   const baseName = path.basename(filePath, path.extname(filePath));
+  const whisperModel = resolveWhisperModel(requestedModel);
 
   try {
     await new Promise<void>((resolve, reject) => {
@@ -308,7 +331,7 @@ export async function transcribeAudioFile(
         "mlx_whisper",
         [
           filePath,
-          "--model", MLX_WHISPER_MODEL,
+          "--model", whisperModel,
           "--output-format", "json",
           "--output-dir", tmpDir,
           ...(language !== "auto" ? ["--language", language] : []),

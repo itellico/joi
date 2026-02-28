@@ -42,6 +42,7 @@ export type FrameType =
   | "autodev.pause"      // Client → Gateway: pause auto developer
   | "autodev.resume"     // Client → Gateway: resume auto developer
   | "autodev.stop-current" // Client → Gateway: abort current task
+  | "autodev.configure"  // Client/Gateway → Worker: update runtime config
   | "autodev.status"     // Gateway → Client: status update
   | "autodev.log"        // Gateway → Client: streaming log output
   | "autodev.task_complete" // Gateway → Client: task completed
@@ -76,6 +77,20 @@ export interface ChatSendData {
     url?: string;
     data?: string;
     name?: string;
+    mimeType?: string;
+    mediaId?: string;
+    size?: number;
+  }>;
+  transcriberModel?: string;
+  replyToMessageId?: string;
+  forwardOfMessageId?: string;
+  mentions?: Array<{
+    id?: string;
+    value: string;
+    label?: string;
+    kind?: "agent" | "person" | "unknown";
+    start?: number;
+    end?: number;
   }>;
   metadata?: Record<string, unknown>;
 }
@@ -99,6 +114,20 @@ export interface ChatDoneData {
     cacheReadTokens?: number;
     cacheWriteTokens?: number;
   };
+  assistantUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  };
+  toolUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  };
+  assistantCostUsd?: number;
+  toolCostUsd?: number;
   agentId?: string;
   agentName?: string;
   routeReason?: string;
@@ -186,6 +215,10 @@ export interface SessionHistoryData {
     toolCalls?: unknown;
     toolResults?: unknown;
     model?: string;
+    reactions?: Record<string, string[]> | null;
+    pinned?: boolean;
+    reported?: boolean;
+    reportNote?: string | null;
     createdAt: string;
   }>;
 }
@@ -251,6 +284,13 @@ export interface AutoDevTaskCompleteData {
 export interface AutoDevErrorData {
   error: string;
   taskUuid?: string;
+}
+
+export interface AutoDevConfigureData {
+  executorMode?: "auto" | "claude-code" | "gemini-cli" | "codex-cli";
+  parallelExecution?: boolean;
+  discussionMode?: boolean;
+  discussionMaxTurns?: number;
 }
 
 // Helper to create frames

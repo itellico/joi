@@ -72,13 +72,29 @@ struct ChatSendData: Codable, Sendable {
     var mode: String?
     var proactive: Bool?
     var attachments: [ChatAttachment]?
+    var replyToMessageId: String?
+    var forwardOfMessageId: String?
+    var mentions: [ChatMention]?
+    var transcriberModel: String? = nil
 }
 
 struct ChatAttachment: Codable, Sendable {
     let type: String
-    var url: String?
-    var data: String?
-    var name: String?
+    var url: String? = nil
+    var data: String? = nil
+    var name: String? = nil
+    var mimeType: String? = nil
+    var mediaId: String? = nil
+    var size: Int? = nil
+}
+
+struct ChatMention: Codable, Sendable {
+    var id: String?
+    var value: String
+    var label: String?
+    var kind: String?
+    var start: Int?
+    var end: Int?
 }
 
 struct ChatStreamData: Codable, Sendable {
@@ -193,6 +209,15 @@ struct SessionMessage: Codable, Sendable {
     var toolModel: String?
     var toolProvider: String?
     var tokenUsage: ChatUsage?
+    var attachments: [ChatAttachment]?
+    var replyToMessageId: String?
+    var forwardOfMessageId: String?
+    var mentions: [ChatMention]?
+    var forwardingMetadata: AnyCodable?
+    var reactions: [String: [String]]?
+    var pinned: Bool?
+    var reported: Bool?
+    var reportNote: String?
     var latencyMs: Int?
     var costUsd: Double?
     let createdAt: String
@@ -208,6 +233,15 @@ struct SessionMessage: Codable, Sendable {
         case toolModel = "tool_model"
         case toolProvider = "tool_provider"
         case tokenUsage = "token_usage"
+        case attachments
+        case replyToMessageId = "reply_to_message_id"
+        case forwardOfMessageId = "forward_of_message_id"
+        case mentions
+        case forwardingMetadata = "forwarding_metadata"
+        case reactions
+        case pinned
+        case reported
+        case reportNote = "report_note"
         case latencyMs = "latency_ms"
         case costUsd = "cost_usd"
         case createdAt = "created_at"

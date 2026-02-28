@@ -28,6 +28,15 @@ struct ChatUIMessage: Identifiable {
     var ttftMs: Int?
     var streamStartedAt: Date?
     var costUsd: Double?
+    var attachments: [ChatAttachment] = []
+    var replyToMessageId: String?
+    var forwardOfMessageId: String?
+    var mentions: [ChatMention] = []
+    var forwardingMetadata: AnyCodable?
+    var reactions: [String: [String]] = [:]
+    var pinned: Bool = false
+    var reported: Bool = false
+    var reportNote: String?
     var isStreaming: Bool
     var isError: Bool
     let createdAt: Date
@@ -35,17 +44,38 @@ struct ChatUIMessage: Identifiable {
     var gatewayMessageId: String?
 }
 
+struct ChatComposerTarget {
+    let messageId: String
+    let role: String
+    let preview: String
+}
+
 @MainActor
 @Observable
 final class ChatViewModel {
+    static let reactionActorId = "joi-user"
+    static let quickReactionEmojis = ["❤️", "🔥", "👍", "😂", "👎", "🥰"]
+    static let audioTranscriberModelDefaultsKey = "audioTranscriberModel"
+    static let defaultAudioTranscriberModel = "mlx-community/whisper-small-mlx"
+
     var messages: [ChatUIMessage] = []
     var activeConversationId: String?
     var isStreaming = false
     var inputText = ""
+    var replyTarget: ChatComposerTarget?
+    var forwardTarget: ChatComposerTarget?
+    var pendingAttachmentPreviewData: Data?
+    var pendingAttachmentName: String?
+    var selectedMessageIds: Set<String> = []
 
     private struct PendingChatSend {
         let conversationId: String?
         let content: String
+        let attachments: [ChatAttachment]?
+        let replyToMessageId: String?
+        let forwardOfMessageId: String?
+        let mentions: [ChatMention]?
+        let transcriberModel: String?
     }
 
     private var webSocket: WebSocketClient?
@@ -57,6 +87,17 @@ final class ChatViewModel {
     private var streamStartedAt: Date?
     private var firstTokenMs: Int?
     private var pendingSends: [PendingChatSend] = []
+    private var pendingAttachment: ChatAttachment?
+
+    private struct ReactionToggleResponse: Decodable {
+        let messageId: String
+        let reactions: [String: [String]]?
+    }
+
+    private struct PinToggleResponse: Decodable {
+        let messageId: String
+        let pinned: Bool
+    }
 
     func attach(webSocket: WebSocketClient, router: FrameRouter, modelContext: ModelContext) {
         self.webSocket = webSocket
@@ -90,31 +131,165 @@ final class ChatViewModel {
 
     func send() {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        let attachment = pendingAttachment
+        let replyTo = replyTarget?.messageId
+        let forwardOf = forwardTarget?.messageId
+        let mentionPayload = extractMentions(from: text)
+        let selectedTranscriberModel = normalizedTranscriberModel(
+            UserDefaults.standard.string(forKey: Self.audioTranscriberModelDefaultsKey)
+        )
+        guard !text.isEmpty || attachment != nil || forwardOf != nil else { return }
         guard let webSocket else { return }
         inputText = ""
 
         log.info("Sending message: '\(text.prefix(50))' (ws=\(webSocket.isConnected))")
 
         // Optimistic user bubble
+        let displayText: String
+        if text.isEmpty {
+            if forwardOf != nil {
+                displayText = "Forwarded message."
+            } else if let attachment {
+                let label = attachmentDisplayLabel(for: attachment)
+                if let pendingAttachmentName {
+                    displayText = "Sent \(label): \(pendingAttachmentName)."
+                } else {
+                    displayText = "Sent \(label)."
+                }
+            } else {
+                displayText = pendingAttachmentName.map { "Sent attachment: \($0)" } ?? "Sent an attachment."
+            }
+        } else if let pendingAttachmentName {
+            displayText = "\(text)\n\n[Attachment: \(pendingAttachmentName)]"
+        } else {
+            displayText = text
+        }
+
         let userMsg = ChatUIMessage(
             id: UUID().uuidString,
             role: "user",
-            content: text,
+            content: displayText,
+            attachments: attachment.map { [$0] } ?? [],
+            replyToMessageId: replyTo,
+            forwardOfMessageId: forwardOf,
+            mentions: mentionPayload,
             isStreaming: false,
             isError: false,
             createdAt: .now)
         messages.append(userMsg)
 
+        let outgoingContent: String
+        if text.isEmpty, let attachment {
+            outgoingContent = defaultPrompt(for: attachment, transcriberModel: selectedTranscriberModel)
+        } else {
+            outgoingContent = text
+        }
+        let outgoingTranscriberModel: String?
+        if let attachment,
+           attachment.type.lowercased().contains("audio") || attachment.type.lowercased().contains("voice") {
+            outgoingTranscriberModel = selectedTranscriberModel
+        } else {
+            outgoingTranscriberModel = nil
+        }
+
         pendingSends.append(PendingChatSend(
             conversationId: activeConversationId,
-            content: text))
+            content: outgoingContent,
+            attachments: attachment.map { [$0] },
+            replyToMessageId: replyTo,
+            forwardOfMessageId: forwardOf,
+            mentions: mentionPayload.isEmpty ? nil : mentionPayload,
+            transcriberModel: outgoingTranscriberModel))
+
+        pendingAttachment = nil
+        pendingAttachmentPreviewData = nil
+        pendingAttachmentName = nil
+        replyTarget = nil
+        forwardTarget = nil
 
         if webSocket.isConnected {
             flushPendingSendsIfPossible()
         } else {
             log.warning("Queued send while websocket is \(String(describing: webSocket.state))")
             appendConnectionError("JOI is reconnecting. Message queued and will send automatically.")
+        }
+    }
+
+    func setReplyTarget(from message: ChatUIMessage) {
+        forwardTarget = nil
+        replyTarget = ChatComposerTarget(
+            messageId: message.id,
+            role: message.role,
+            preview: summarizedMessage(message))
+    }
+
+    func setForwardTarget(from message: ChatUIMessage) {
+        replyTarget = nil
+        forwardTarget = ChatComposerTarget(
+            messageId: message.id,
+            role: message.role,
+            preview: summarizedMessage(message))
+    }
+
+    func clearReplyTarget() {
+        replyTarget = nil
+    }
+
+    func clearForwardTarget() {
+        forwardTarget = nil
+    }
+
+    func toggleReaction(messageId: String, emoji: String) {
+        let normalizedEmoji = emoji.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedEmoji.isEmpty else { return }
+
+        Task { [weak self] in
+            await self?.sendReactionToggle(messageId: messageId, emoji: normalizedEmoji)
+        }
+    }
+
+    func togglePin(messageId: String) {
+        Task { [weak self] in
+            await self?.sendPinToggle(messageId: messageId)
+        }
+    }
+
+    func reportMessage(messageId: String, note: String?) {
+        Task { [weak self] in
+            await self?.sendReport(messageId: messageId, note: note)
+        }
+    }
+
+    func deleteMessage(messageId: String) {
+        Task { [weak self] in
+            await self?.sendDeleteMessage(messageId: messageId)
+        }
+    }
+
+    func toggleMessageSelection(_ messageId: String) {
+        if selectedMessageIds.contains(messageId) {
+            selectedMessageIds.remove(messageId)
+        } else {
+            selectedMessageIds.insert(messageId)
+        }
+    }
+
+    func clearSelectedMessages() {
+        selectedMessageIds.removeAll()
+    }
+
+    func selectOnly(messageId: String) {
+        selectedMessageIds = [messageId]
+    }
+
+    func deleteSelectedMessages() {
+        let ids = selectedMessageIds
+        guard !ids.isEmpty else { return }
+        selectedMessageIds.removeAll()
+        Task { [weak self] in
+            for messageId in ids {
+                await self?.sendDeleteMessage(messageId: messageId)
+            }
         }
     }
 
@@ -135,6 +310,9 @@ final class ChatViewModel {
         voiceSyncTask?.cancel()
         voiceSyncTask = nil
         pendingSends.removeAll()
+        replyTarget = nil
+        forwardTarget = nil
+        selectedMessageIds.removeAll()
         activeConversationId = id
         messages = []
         resetStreamingState()
@@ -174,9 +352,49 @@ final class ChatViewModel {
         voiceSyncTask?.cancel()
         voiceSyncTask = nil
         pendingSends.removeAll()
+        replyTarget = nil
+        forwardTarget = nil
+        pendingAttachment = nil
+        pendingAttachmentPreviewData = nil
+        pendingAttachmentName = nil
+        selectedMessageIds.removeAll()
         activeConversationId = nil
         messages = []
         resetStreamingState()
+    }
+
+    func setPendingImageAttachment(data: Data, mimeType: String, fileName: String, previewData: Data) {
+        setPendingAttachment(
+            type: "image",
+            data: data,
+            mimeType: mimeType,
+            fileName: fileName,
+            previewData: previewData
+        )
+    }
+
+    func setPendingAttachment(
+        type: String,
+        data: Data,
+        mimeType: String,
+        fileName: String,
+        previewData: Data? = nil
+    ) {
+        pendingAttachment = ChatAttachment(
+            type: type,
+            data: "data:\(mimeType);base64,\(data.base64EncodedString())",
+            name: fileName,
+            mimeType: mimeType,
+            size: data.count
+        )
+        pendingAttachmentPreviewData = previewData
+        pendingAttachmentName = fileName
+    }
+
+    func clearPendingAttachment() {
+        pendingAttachment = nil
+        pendingAttachmentPreviewData = nil
+        pendingAttachmentName = nil
     }
 
     func handleConnectionStateChange(_ state: WebSocketClient.ConnectionState) {
@@ -383,11 +601,21 @@ final class ChatViewModel {
                     ttftMs: nil,
                     streamStartedAt: nil,
                     costUsd: msg.costUsd,
+                    attachments: msg.attachments ?? [],
+                    replyToMessageId: msg.replyToMessageId,
+                    forwardOfMessageId: msg.forwardOfMessageId,
+                    mentions: msg.mentions ?? [],
+                    forwardingMetadata: msg.forwardingMetadata,
+                    reactions: msg.reactions ?? [:],
+                    pinned: msg.pinned ?? false,
+                    reported: msg.reported ?? false,
+                    reportNote: msg.reportNote,
                     isStreaming: false,
                     isError: false,
                     createdAt: parseDate(msg.createdAt),
                     gatewayMessageId: msg.id)
         }
+        selectedMessageIds.removeAll()
         resetStreamingState()
         isStreaming = false
     }
@@ -423,9 +651,52 @@ final class ChatViewModel {
         let next = pendingSends.removeFirst()
         let payload = ChatSendData(
             conversationId: next.conversationId,
-            content: next.content)
+            content: next.content,
+            attachments: next.attachments,
+            replyToMessageId: next.replyToMessageId,
+            forwardOfMessageId: next.forwardOfMessageId,
+            mentions: next.mentions,
+            transcriberModel: next.transcriberModel)
         webSocket.send(type: .chatSend, data: payload)
         startStreamingTurn()
+    }
+
+    private func attachmentDisplayLabel(for attachment: ChatAttachment) -> String {
+        let type = attachment.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if type.contains("image") || type.contains("photo") {
+            return "image"
+        }
+        if type.contains("audio") || type.contains("voice") {
+            return "audio"
+        }
+        if type.contains("pdf") || type.contains("doc") || type.contains("text") {
+            return "document"
+        }
+        return "attachment"
+    }
+
+    private func defaultPrompt(for attachment: ChatAttachment, transcriberModel: String?) -> String {
+        let type = attachment.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if type.contains("image") || type.contains("photo") {
+            return "Please analyze the attached image."
+        }
+        if type.contains("audio") || type.contains("voice") {
+            if let transcriberModel {
+                return "Please transcribe and summarize the attached audio using \(transcriberModel)."
+            }
+            return "Please transcribe and summarize the attached audio."
+        }
+        return "Please analyze the attached file."
+    }
+
+    private func normalizedTranscriberModel(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.count > 120 {
+            return String(trimmed.prefix(120))
+        }
+        return trimmed
     }
 
     private func resetStreamingState() {
@@ -527,6 +798,52 @@ final class ChatViewModel {
         return try? decoder.decode(SessionHistoryData.self, from: jsonData)
     }
 
+    private func extractMentions(from text: String) -> [ChatMention] {
+        let source = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !source.isEmpty else { return [] }
+        guard let regex = try? NSRegularExpression(pattern: "(^|\\s)@([A-Za-z0-9._-]{2,64})") else {
+            return []
+        }
+
+        let nsSource = source as NSString
+        let fullRange = NSRange(location: 0, length: nsSource.length)
+        var mentions: [ChatMention] = []
+        var seen = Set<String>()
+        regex.enumerateMatches(in: source, options: [], range: fullRange) { match, _, stop in
+            guard let match else { return }
+            guard match.numberOfRanges >= 3 else { return }
+            let handleRange = match.range(at: 2)
+            guard handleRange.location != NSNotFound else { return }
+            let value = nsSource.substring(with: handleRange).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { return }
+            let key = value.lowercased()
+            guard !seen.contains(key) else { return }
+            seen.insert(key)
+            let mentionStart = max(0, handleRange.location - 1)
+            mentions.append(ChatMention(
+                id: nil,
+                value: value,
+                label: nil,
+                kind: "unknown",
+                start: mentionStart,
+                end: handleRange.location + handleRange.length))
+            if mentions.count >= 32 {
+                stop.pointee = true
+            }
+        }
+        return mentions
+    }
+
+    private func summarizedMessage(_ message: ChatUIMessage) -> String {
+        let source = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !source.isEmpty else {
+            return message.role == "assistant" ? "Assistant message" : "Message"
+        }
+        let compact = source.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        if compact.count <= 120 { return compact }
+        return "\(compact.prefix(117))..."
+    }
+
     private func decodeToolCalls(
         _ raw: AnyCodable?,
         resultMap: [String: AnyCodable]
@@ -582,6 +899,123 @@ final class ChatViewModel {
             return parsed
         }
         return .now
+    }
+
+    private func sendReactionToggle(messageId: String, emoji: String) async {
+        let gatewayWSURL = GatewayURLResolver.configuredGatewayURL()
+        let baseURL = gatewayWSURL
+            .replacingOccurrences(of: "ws://", with: "http://")
+            .replacingOccurrences(of: "wss://", with: "https://")
+            .replacingOccurrences(of: "/ws", with: "")
+
+        guard let url = URL(string: "\(baseURL)/api/messages/\(messageId)/reactions") else {
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let payload: [String: String] = [
+            "emoji": emoji,
+            "actorId": Self.reactionActorId,
+        ]
+        request.httpBody = try? JSONEncoder().encode(payload)
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                return
+            }
+            let decoded = try JSONDecoder().decode(ReactionToggleResponse.self, from: data)
+            let nextReactions = decoded.reactions ?? [:]
+            if let idx = messages.firstIndex(where: { $0.id == decoded.messageId || $0.gatewayMessageId == decoded.messageId }) {
+                messages[idx].reactions = nextReactions
+            }
+        } catch {
+            // Keep reaction toggles best-effort and non-blocking for chat flow.
+        }
+    }
+
+    private func sendPinToggle(messageId: String) async {
+        let gatewayWSURL = GatewayURLResolver.configuredGatewayURL()
+        let baseURL = gatewayWSURL
+            .replacingOccurrences(of: "ws://", with: "http://")
+            .replacingOccurrences(of: "wss://", with: "https://")
+            .replacingOccurrences(of: "/ws", with: "")
+        guard let url = URL(string: "\(baseURL)/api/messages/\(messageId)/pin") else { return }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { return }
+            let decoded = try JSONDecoder().decode(PinToggleResponse.self, from: data)
+            if let idx = messages.firstIndex(where: { $0.id == decoded.messageId || $0.gatewayMessageId == decoded.messageId }) {
+                messages[idx].pinned = decoded.pinned
+            }
+        } catch {
+            // Keep pin toggles best-effort and non-blocking for chat flow.
+        }
+    }
+
+    private func sendReport(messageId: String, note: String?) async {
+        let gatewayWSURL = GatewayURLResolver.configuredGatewayURL()
+        let baseURL = gatewayWSURL
+            .replacingOccurrences(of: "ws://", with: "http://")
+            .replacingOccurrences(of: "wss://", with: "https://")
+            .replacingOccurrences(of: "/ws", with: "")
+        guard let url = URL(string: "\(baseURL)/api/messages/\(messageId)/report") else { return }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let trimmedNote = note?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let payload: [String: String] = trimmedNote.isEmpty ? [:] : ["note": trimmedNote]
+        request.httpBody = try? JSONEncoder().encode(payload)
+
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { return }
+            if let idx = messages.firstIndex(where: { $0.id == messageId || $0.gatewayMessageId == messageId }) {
+                messages[idx].reported = true
+                if !trimmedNote.isEmpty {
+                    messages[idx].reportNote = trimmedNote
+                }
+            }
+        } catch {
+            // Keep report actions best-effort and non-blocking for chat flow.
+        }
+    }
+
+    private func sendDeleteMessage(messageId: String) async {
+        let gatewayWSURL = GatewayURLResolver.configuredGatewayURL()
+        let baseURL = gatewayWSURL
+            .replacingOccurrences(of: "ws://", with: "http://")
+            .replacingOccurrences(of: "wss://", with: "https://")
+            .replacingOccurrences(of: "/ws", with: "")
+        guard let url = URL(string: "\(baseURL)/api/messages/\(messageId)") else { return }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { return }
+            let removedIds = messages
+                .filter { $0.id == messageId || $0.gatewayMessageId == messageId }
+                .map(\.id)
+            messages.removeAll { message in
+                message.id == messageId || message.gatewayMessageId == messageId
+            }
+            for id in removedIds {
+                selectedMessageIds.remove(id)
+            }
+            selectedMessageIds.remove(messageId)
+        } catch {
+            // Keep delete actions best-effort and non-blocking for chat flow.
+        }
     }
 
     private func isToolErrorPayload(_ value: Any) -> Bool {
