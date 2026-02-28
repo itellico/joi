@@ -1,19 +1,37 @@
 import type { ReactNode, CSSProperties } from "react";
+import JoiOrb from "../JoiOrb";
 
 interface PageHeaderProps {
   title: string;
   subtitle?: ReactNode;
   actions?: ReactNode;
+  showOrb?: boolean;
 }
 
-export function PageHeader({ title, subtitle, actions }: PageHeaderProps) {
+export function PageHeader({ title, subtitle, actions, showOrb = true }: PageHeaderProps) {
   return (
     <div className="page-header">
       <div>
         <h2>{title}</h2>
         {subtitle && <p className="mt-1">{subtitle}</p>}
       </div>
-      {actions && <div className="page-header-actions">{actions}</div>}
+      {(actions || showOrb) && (
+        <div className="page-header-actions">
+          {actions}
+          {showOrb && (
+            <JoiOrb
+              className="page-header-orb"
+              size={30}
+              active
+              intensity={0.3}
+              variant="firestorm"
+              rings={3}
+              animated
+              ariaLabel="JOI"
+            />
+          )}
+        </div>
+      )}
     </div>
   );
 }

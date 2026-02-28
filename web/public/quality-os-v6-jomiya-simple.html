@@ -1,0 +1,855 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Jomiya Quality OS v6 — Simple Mockup</title>
+    <style>
+      :root {
+        --ink: #1f2a37;
+        --muted: #5b6b7d;
+        --line: #d6e0ec;
+        --bg: #f2f6fb;
+        --panel: #ffffff;
+        --brand: #0f6fff;
+        --ok: #138a4d;
+        --warn: #c5740a;
+        --bad: #c62828;
+        --soft-ok: #e9f8ef;
+        --soft-warn: #fff5e7;
+        --soft-bad: #fdecec;
+        --radius: 14px;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        font-family: "Avenir Next", "SF Pro Text", "Segoe UI", sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(58rem 42rem at 0% -15%, #e6f1ff 0%, transparent 68%),
+          radial-gradient(62rem 46rem at 100% -25%, #eff7ff 0%, transparent 70%),
+          var(--bg);
+      }
+
+      .wrap {
+        width: min(1180px, calc(100% - 28px));
+        margin: 18px auto 34px;
+        display: grid;
+        gap: 14px;
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 14px;
+      }
+
+      .hero {
+        display: flex;
+        gap: 12px;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .hero h1 {
+        margin: 0;
+        font-size: 28px;
+        letter-spacing: -0.02em;
+      }
+
+      .hero p {
+        margin: 4px 0 0;
+        color: var(--muted);
+      }
+
+      .chips {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .chip {
+        border-radius: 999px;
+        padding: 7px 10px;
+        font-size: 12px;
+        font-weight: 600;
+        border: 1px solid transparent;
+      }
+
+      .chip.ok { background: var(--soft-ok); color: var(--ok); border-color: #bee8cf; }
+      .chip.warn { background: var(--soft-warn); color: var(--warn); border-color: #f0d2a0; }
+      .chip.bad { background: var(--soft-bad); color: var(--bad); border-color: #f3c1c1; }
+
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .stat {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 10px;
+        background: #fbfdff;
+      }
+
+      .stat small {
+        display: block;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+      }
+
+      .stat b {
+        display: block;
+        margin-top: 4px;
+        font-size: 24px;
+      }
+
+      .title-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+
+      .title-row h2 {
+        margin: 0;
+        font-size: 21px;
+        letter-spacing: -0.01em;
+      }
+
+      .title-row p {
+        margin: 2px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .queue {
+        display: grid;
+        gap: 8px;
+      }
+
+      .queue-row {
+        display: grid;
+        grid-template-columns: 96px 1.3fr 1.1fr 1fr 90px 110px 120px;
+        gap: 8px;
+        align-items: center;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 8px;
+      }
+
+      .sev {
+        font-size: 12px;
+        font-weight: 700;
+        border-radius: 999px;
+        padding: 6px 8px;
+        text-align: center;
+      }
+
+      .sev.bad { background: var(--soft-bad); color: var(--bad); }
+      .sev.warn { background: var(--soft-warn); color: var(--warn); }
+
+      .owner {
+        font-size: 12px;
+        font-weight: 700;
+        padding: 6px 8px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: #f7fbff;
+        text-align: center;
+      }
+
+      .btn {
+        border: 1px solid var(--brand);
+        background: var(--brand);
+        color: #fff;
+        border-radius: 9px;
+        padding: 7px 9px;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .btn.secondary {
+        background: #fff;
+        color: var(--brand);
+      }
+
+      .agents {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .agent {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 10px;
+        display: grid;
+        gap: 8px;
+      }
+
+      .agent-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .score {
+        min-width: 52px;
+        min-height: 52px;
+        border-radius: 999px;
+        display: grid;
+        place-items: center;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .score.bad { background: var(--soft-bad); color: var(--bad); border: 1px solid #f0c0c0; }
+      .score.warn { background: var(--soft-warn); color: var(--warn); border: 1px solid #f0d2a0; }
+      .score.ok { background: var(--soft-ok); color: var(--ok); border: 1px solid #bee8cf; }
+
+      .agent ul {
+        margin: 0;
+        padding-left: 18px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .agent-actions {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+
+      .matrix-wrap {
+        overflow-x: auto;
+      }
+
+      .matrix {
+        width: 100%;
+        min-width: 1040px;
+        border-collapse: collapse;
+      }
+
+      .matrix th, .matrix td {
+        border-bottom: 1px solid var(--line);
+        padding: 9px 8px;
+        text-align: left;
+        font-size: 13px;
+        vertical-align: middle;
+      }
+
+      .matrix th {
+        font-size: 11px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      .progress {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .bar {
+        width: 92px;
+        height: 8px;
+        border-radius: 999px;
+        background: #eaf0f7;
+        overflow: hidden;
+      }
+
+      .bar > span {
+        display: block;
+        height: 100%;
+      }
+
+      .bar.ok > span { background: var(--ok); }
+      .bar.warn > span { background: var(--warn); }
+      .bar.bad > span { background: var(--bad); }
+
+      .goal-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .detail-grid {
+        display: grid;
+        grid-template-columns: 1.15fr 1fr;
+        gap: 10px;
+      }
+
+      .detail-card {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 10px;
+        background: #fbfdff;
+        display: grid;
+        gap: 8px;
+      }
+
+      .mini {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      .mini th, .mini td {
+        border-bottom: 1px solid var(--line);
+        padding: 7px 6px;
+        text-align: left;
+        font-size: 12px;
+      }
+
+      .mini th {
+        font-size: 10px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      .goal-card {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 10px;
+        background: #fbfdff;
+        display: grid;
+        gap: 6px;
+      }
+
+      .goal-card h3 {
+        margin: 0;
+        font-size: 15px;
+      }
+
+      .pipeline {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .step {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 10px;
+        background: #fbfdff;
+      }
+
+      .step small {
+        display: block;
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      .step b {
+        display: block;
+        margin-top: 3px;
+        font-size: 22px;
+      }
+
+      .owners {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      .owners th, .owners td {
+        border-bottom: 1px solid var(--line);
+        padding: 9px 8px;
+        text-align: left;
+        font-size: 13px;
+      }
+
+      .owners th {
+        font-size: 11px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      details {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 10px;
+        background: #fbfdff;
+      }
+
+      summary {
+        cursor: pointer;
+        font-weight: 700;
+      }
+
+      .diag {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 10px;
+      }
+
+      .diag th, .diag td {
+        border-bottom: 1px solid var(--line);
+        padding: 8px 6px;
+        font-size: 12px;
+        text-align: left;
+      }
+
+      .muted { color: var(--muted); }
+
+      @media (max-width: 1080px) {
+        .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .agents { grid-template-columns: 1fr 1fr; }
+        .detail-grid { grid-template-columns: 1fr; }
+        .goal-grid { grid-template-columns: 1fr; }
+        .pipeline { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .queue-row {
+          grid-template-columns: 1fr;
+          gap: 6px;
+        }
+      }
+
+      @media (max-width: 700px) {
+        .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .agents { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <section class="panel hero">
+        <div>
+          <h1>Jomiya Quality OS</h1>
+          <p>Simple view: what is broken, why it matters, and how it maps to each agent goal.</p>
+        </div>
+        <div class="chips">
+          <span class="chip warn">Health 72 · Watch</span>
+          <span class="chip bad">3 Critical Blockers</span>
+          <span class="chip ok">4 Auto Fixes Running</span>
+        </div>
+      </section>
+
+      <section class="panel stats">
+        <div class="stat"><small>Action Queue</small><b>7</b></div>
+        <div class="stat"><small>Critical Open</small><b>3</b></div>
+        <div class="stat"><small>Tests Left</small><b>12</b></div>
+        <div class="stat"><small>Goal Alignment</small><b>68%</b></div>
+        <div class="stat"><small>AutoDev PRs</small><b>4</b></div>
+      </section>
+
+      <section class="panel">
+        <div class="title-row">
+          <div>
+            <h2>1) Action Queue</h2>
+            <p>This is the default. No raw logs, only decisions.</p>
+          </div>
+          <button class="btn secondary" aria-label="Open Full Queue">Open Full Queue</button>
+        </div>
+        <div class="queue">
+          <div class="queue-row">
+            <span class="sev bad">Critical</span>
+            <strong>Risk refusal missing for bmd-uploader</strong>
+            <span class="muted">Can execute risky instruction without hard refusal.</span>
+            <span class="muted">Approve patch P-224, run 3 targeted checks.</span>
+            <span class="owner">AutoDev</span>
+            <span class="muted">ETA 18m</span>
+            <button class="btn" aria-label="Open Patch">Open Patch</button>
+          </div>
+          <div class="queue-row">
+            <span class="sev bad">Critical</span>
+            <strong>Mission boundary mismatch in soul contract set</strong>
+            <span class="muted">Persona responses scored 0.00 by judge policy.</span>
+            <span class="muted">Retune judge prompt and re-verify 8 agents.</span>
+            <span class="owner">Codex</span>
+            <span class="muted">ETA 35m</span>
+            <button class="btn" aria-label="Open Task">Open Task</button>
+          </div>
+          <div class="queue-row">
+            <span class="sev warn">High</span>
+            <strong>4 skills still untested after new prompts</strong>
+            <span class="muted">Coverage gap blocks reliable score trust.</span>
+            <span class="muted">Generate missing checks from recent chat failures.</span>
+            <span class="owner">Gemini</span>
+            <span class="muted">ETA 22m</span>
+            <button class="btn" aria-label="Generate Checks">Generate</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="title-row">
+          <div>
+            <h2>2) Agent Overview Matrix</h2>
+            <p>All agents, their soul/OKR targets, skill coverage, and stress-tested depth.</p>
+          </div>
+          <button class="btn secondary" aria-label="Open Agent Overview">Open Agent Overview</button>
+        </div>
+        <div class="matrix-wrap">
+          <table class="matrix">
+            <thead>
+              <tr>
+                <th>Agent</th>
+                <th>Soul Target</th>
+                <th>OKR Progress</th>
+                <th>Skills Covered</th>
+                <th>Stress Tested</th>
+                <th>Quality</th>
+                <th>Gap to Target</th>
+                <th>Drill</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>bmd-uploader</strong></td>
+                <td>Upload safely with audit trail</td>
+                <td>42%</td>
+                <td>7 / 9</td>
+                <td>
+                  <span class="progress">
+                    <span class="bar bad"><span style="width: 34%;"></span></span>34%
+                  </span>
+                </td>
+                <td>61</td>
+                <td class="muted">-21 to target 82</td>
+                <td><button class="btn secondary">Skills / Tests</button></td>
+              </tr>
+              <tr>
+                <td><strong>personal</strong></td>
+                <td>Reliable orchestration across tools</td>
+                <td>63%</td>
+                <td>21 / 24</td>
+                <td>
+                  <span class="progress">
+                    <span class="bar warn"><span style="width: 62%;"></span></span>62%
+                  </span>
+                </td>
+                <td>74</td>
+                <td class="muted">-8 to target 82</td>
+                <td><button class="btn secondary">Skills / Tests</button></td>
+              </tr>
+              <tr>
+                <td><strong>store-auditor</strong></td>
+                <td>Correct store compliance decisions</td>
+                <td>86%</td>
+                <td>9 / 9</td>
+                <td>
+                  <span class="progress">
+                    <span class="bar ok"><span style="width: 88%;"></span></span>88%
+                  </span>
+                </td>
+                <td>91</td>
+                <td class="muted">+1 above target 90</td>
+                <td><button class="btn secondary">Skills / Tests</button></td>
+              </tr>
+              <tr>
+                <td><strong>knowledge-sync</strong></td>
+                <td>Keep docs/code parity</td>
+                <td>71%</td>
+                <td>12 / 14</td>
+                <td>
+                  <span class="progress">
+                    <span class="bar warn"><span style="width: 57%;"></span></span>57%
+                  </span>
+                </td>
+                <td>79</td>
+                <td class="muted">-5 to target 84</td>
+                <td><button class="btn secondary">Skills / Tests</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="title-row">
+          <div>
+            <h2>3) Agents At Risk</h2>
+            <p>Explainable score, reasons, and one-click next actions.</p>
+          </div>
+          <button class="btn secondary" aria-label="Jump to Matrix">Jump To Agent Matrix</button>
+        </div>
+        <div class="agents">
+          <article class="agent">
+            <div class="agent-head">
+              <strong>bmd-uploader</strong>
+              <span class="score bad">61</span>
+            </div>
+            <ul>
+              <li>2 critical issues open</li>
+              <li>1 untested skill (risk_refusal)</li>
+              <li>Pass rate dropped -14%</li>
+              <li>Stress-tested only 34%</li>
+            </ul>
+            <div class="agent-actions">
+              <button class="btn">Run Targeted Checks</button>
+              <button class="btn secondary">Open Blockers</button>
+              <button class="btn secondary">Add Missing Test</button>
+            </div>
+          </article>
+          <article class="agent">
+            <div class="agent-head">
+              <strong>personal</strong>
+              <span class="score warn">74</span>
+            </div>
+            <ul>
+              <li>5 failing checks in tool chain</li>
+              <li>Coverage healthy, quality inconsistent</li>
+              <li>2 regressions from last release</li>
+              <li>Stress-tested 62%</li>
+            </ul>
+            <div class="agent-actions">
+              <button class="btn">Run Targeted Checks</button>
+              <button class="btn secondary">Open Blockers</button>
+              <button class="btn secondary">Add Missing Test</button>
+            </div>
+          </article>
+          <article class="agent">
+            <div class="agent-head">
+              <strong>store-auditor</strong>
+              <span class="score ok">91</span>
+            </div>
+            <ul>
+              <li>No critical blockers</li>
+              <li>1 warning from judge consistency</li>
+              <li>Ready for next promotion</li>
+              <li>Stress-tested 88%</li>
+            </ul>
+            <div class="agent-actions">
+              <button class="btn secondary">Run Sanity Check</button>
+              <button class="btn secondary">Open History</button>
+              <button class="btn secondary">Promote</button>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="title-row">
+          <div>
+            <h2>4) Agent Drill-Down (Selected Agent)</h2>
+            <p>Work one agent end-to-end: soul, goals, problems, skills, tests, and plan.</p>
+          </div>
+          <button class="btn secondary" aria-label="Change Selected Agent">Change Agent</button>
+        </div>
+        <div class="detail-grid">
+          <article class="detail-card">
+            <div class="title-row" style="margin: 0;">
+              <div>
+                <strong>bmd-uploader · Deep View</strong>
+                <p class="muted" style="margin: 2px 0 0;">Quality 61 · Target 82 · Gap -21</p>
+              </div>
+              <span class="score bad" style="min-width: 46px; min-height: 46px;">61</span>
+            </div>
+            <div><strong>Soul:</strong> Upload invoices safely with traceable audit evidence and hard refusal on unsafe requests.</div>
+            <div><strong>Primary Goal:</strong> Zero high-risk actions without approval.</div>
+            <div><strong>OKRs:</strong> refusal compliance 99%, upload correctness 95%, audit trace completeness 100%.</div>
+            <div><strong>Main Problem Now:</strong> refusal text exists but tool call still executes in edge prompts.</div>
+            <div class="agent-actions">
+              <button class="btn">Run Only Refusal Suite</button>
+              <button class="btn secondary">Open All Skills</button>
+              <button class="btn secondary">Generate Missing Tests</button>
+            </div>
+          </article>
+
+          <article class="detail-card">
+            <strong>Skills + Test Stress</strong>
+            <table class="mini">
+              <thead>
+                <tr>
+                  <th>Skill</th>
+                  <th>Coverage</th>
+                  <th>Stress</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>risk_refusal</td>
+                  <td>2/6 tests</td>
+                  <td>18%</td>
+                  <td>critical</td>
+                </tr>
+                <tr>
+                  <td>upload_validation</td>
+                  <td>7/9 tests</td>
+                  <td>72%</td>
+                  <td>watch</td>
+                </tr>
+                <tr>
+                  <td>audit_trail</td>
+                  <td>5/5 tests</td>
+                  <td>90%</td>
+                  <td>healthy</td>
+                </tr>
+                <tr>
+                  <td>human_approval_gate</td>
+                  <td>1/4 tests</td>
+                  <td>12%</td>
+                  <td>critical</td>
+                </tr>
+              </tbody>
+            </table>
+            <strong>24h Plan</strong>
+            <ul style="margin: 0; padding-left: 18px; color: var(--muted); font-size: 13px;">
+              <li>Add 8 high-pressure refusal variants.</li>
+              <li>Patch refusal middleware to stop tool execution hard.</li>
+              <li>Re-run targeted suite and promote if score >= 82.</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="title-row">
+          <div>
+            <h2>5) Soul + OKR Alignment</h2>
+            <p>Quality decisions are tied to each agent soul and target outcome.</p>
+          </div>
+        </div>
+        <div class="goal-grid">
+          <article class="goal-card">
+            <h3>bmd-uploader</h3>
+            <div><strong>Soul:</strong> Accurate, safe financial upload with explicit refusal on risky actions.</div>
+            <div><strong>OKR:</strong> 99% safe refusal compliance; 95% upload correctness.</div>
+            <div><strong>Now:</strong> 61 quality, 34% stress coverage, refusal gaps open.</div>
+            <div><strong>Next improvement:</strong> Add 6 refusal variants + enforce hard stop before tool call.</div>
+          </article>
+          <article class="goal-card">
+            <h3>personal</h3>
+            <div><strong>Soul:</strong> Reliable coordinator that routes to the right tool/agent with clear reasoning.</div>
+            <div><strong>OKR:</strong> 90% tool-selection accuracy; 85% successful multi-turn outcomes.</div>
+            <div><strong>Now:</strong> 74 quality, multi-turn tool chain unstable.</div>
+            <div><strong>Next improvement:</strong> Add stress tests for long chains and fallback behavior.</div>
+          </article>
+          <article class="goal-card">
+            <h3>knowledge-sync</h3>
+            <div><strong>Soul:</strong> Keep source of truth synchronized and auditable.</div>
+            <div><strong>OKR:</strong> 98% sync freshness under 10 minutes.</div>
+            <div><strong>Now:</strong> 79 quality, 57% stress coverage.</div>
+            <div><strong>Next improvement:</strong> Add edge-case tests for partial failures and stale index.</div>
+          </article>
+          <article class="goal-card">
+            <h3>store-auditor</h3>
+            <div><strong>Soul:</strong> Preserve integrity of knowledge graph and compliance actions.</div>
+            <div><strong>OKR:</strong> 0 critical compliance regressions per release.</div>
+            <div><strong>Now:</strong> 91 quality, above target.</div>
+            <div><strong>Next improvement:</strong> Keep weekly canary stress sweep and auto-promote on pass.</div>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="title-row">
+          <div>
+            <h2>6) Self-Improving Pipeline</h2>
+            <p>Detect -> Cluster -> Generate Test -> Patch -> Verify -> Promote</p>
+          </div>
+        </div>
+        <div class="pipeline">
+          <div class="step"><small>Detect</small><b>18</b><span class="muted">new signals</span></div>
+          <div class="step"><small>Cluster</small><b>7</b><span class="muted">issue groups</span></div>
+          <div class="step"><small>Generate Test</small><b>5</b><span class="muted">pending</span></div>
+          <div class="step"><small>Patch</small><b>4</b><span class="muted">in progress</span></div>
+          <div class="step"><small>Verify</small><b>3</b><span class="muted">running</span></div>
+          <div class="step"><small>Promote</small><b>1</b><span class="muted">ready now</span></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="title-row">
+          <div>
+            <h2>7) Ownership</h2>
+            <p>Who is actually doing the work right now.</p>
+          </div>
+        </div>
+        <table class="owners">
+          <thead>
+            <tr>
+              <th>Owner</th>
+              <th>Current Work</th>
+              <th>Status</th>
+              <th>Link</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>AutoDev</strong></td>
+              <td>Patch P-224: refusal guardrail</td>
+              <td>in progress</td>
+              <td><a href="#">Task #8472</a></td>
+            </tr>
+            <tr>
+              <td><strong>Codex</strong></td>
+              <td>Judge policy retune for soul contracts</td>
+              <td>verifying</td>
+              <td><a href="#">PR #912</a></td>
+            </tr>
+            <tr>
+              <td><strong>Claude</strong></td>
+              <td>Boundary wording consistency checks</td>
+              <td>proposed</td>
+              <td><a href="#">Review #448</a></td>
+            </tr>
+            <tr>
+              <td><strong>Gemini</strong></td>
+              <td>Generate missing risk_refusal tests</td>
+              <td>in progress</td>
+              <td><a href="#">Batch #131</a></td>
+            </tr>
+            <tr>
+              <td><strong>Human</strong></td>
+              <td>Approve promote for store-auditor</td>
+              <td>waiting</td>
+              <td><a href="#">Approve</a></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="panel">
+        <details>
+          <summary>Diagnostics (Advanced)</summary>
+          <p class="muted">Raw telemetry is still available, but not the default workflow.</p>
+          <table class="diag">
+            <thead>
+              <tr>
+                <th>Check Group</th>
+                <th>Run Type</th>
+                <th>Source</th>
+                <th>Result</th>
+                <th>Cost</th>
+                <th>Time</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Soul Contract - bmd-uploader</td>
+                <td>Safe Replay (No Side Effects)</td>
+                <td>Real Chat Capture</td>
+                <td>1 pass / 2 fail</td>
+                <td>$0.004</td>
+                <td>2h ago</td>
+              </tr>
+              <tr>
+                <td>Core Agent Behavior</td>
+                <td>Safe Replay (No Side Effects)</td>
+                <td>Real Chat Capture</td>
+                <td>4 pass / 1 fail</td>
+                <td>$0.002</td>
+                <td>1h ago</td>
+              </tr>
+            </tbody>
+          </table>
+        </details>
+      </section>
+    </main>
+  </body>
+</html>

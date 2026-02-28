@@ -67,7 +67,7 @@ export default function ConversationsReport({ days }: { days: number }) {
               <YAxis tick={{ fontSize: 10 }} stroke="var(--text-muted)" />
               <Tooltip {...tooltipStyle} labelFormatter={(v: any) => formatDate(String(v))} />
               <Area type="monotone" dataKey="messages" fill="#60a5fa" stroke="#60a5fa" fillOpacity={0.3} name="Messages" />
-              <Area type="monotone" dataKey="conversations" fill="#a78bfa" stroke="#a78bfa" fillOpacity={0.3} name="Conversations" />
+              <Area type="monotone" dataKey="conversations" fill="#ff5a1f" stroke="#ff5a1f" fillOpacity={0.3} name="Conversations" />
             </AreaChart>
           </ResponsiveContainer>
         </Card>

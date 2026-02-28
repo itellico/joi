@@ -33,6 +33,15 @@ const TTS_MODELS: Record<string, ModelOption[]> = {
   ],
 };
 
+const SYSTEM_LANGUAGE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "en", label: "English" },
+  { value: "de", label: "Deutsch" },
+  { value: "fr", label: "Français" },
+  { value: "es", label: "Español" },
+  { value: "it", label: "Italiano" },
+  { value: "pt", label: "Português" },
+];
+
 interface VoiceTabProps {
   settings: SettingsData;
   livekitKeys: LiveKitKeys;
@@ -84,6 +93,16 @@ export default function VoiceTab({ settings, livekitKeys, setLivekitKeys, liveki
               />
               {settings.livekit.apiSecret && <Badge status="success">Active</Badge>}
             </div>
+          </FormField>
+          <FormField label="Default Language" hint="Global default for voice STT/TTS and non-channel chat responses">
+            <select
+              value={livekitEdits.language}
+              onChange={(e) => setLivekitEdits((p) => ({ ...p, language: e.target.value }))}
+            >
+              {SYSTEM_LANGUAGE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
           </FormField>
           <FormField label="STT Provider" hint="Speech-to-text engine">
             <select
@@ -182,6 +201,13 @@ export default function VoiceTab({ settings, livekitKeys, setLivekitKeys, liveki
             <Switch
               checked={livekitEdits.voiceIncludeMemory}
               onCheckedChange={(checked) => setLivekitEdits((p) => ({ ...p, voiceIncludeMemory: checked }))}
+            />
+          </FormField>
+
+          <FormField label="Wake Word Detection" hint="Say 'Hey JOI' to reconnect voice after disconnect">
+            <Switch
+              checked={livekitEdits.wakeWordEnabled}
+              onCheckedChange={(checked) => setLivekitEdits((p) => ({ ...p, wakeWordEnabled: checked }))}
             />
           </FormField>
 
@@ -320,6 +346,7 @@ export default function VoiceTab({ settings, livekitKeys, setLivekitKeys, liveki
       {/* Voice Selection */}
       <VoicePicker
         provider={livekitEdits.ttsProvider}
+        language={livekitEdits.language}
         selectedVoiceId={livekitEdits.ttsVoice}
         onSelect={(id) => setLivekitEdits((p) => ({ ...p, ttsVoice: id }))}
       />

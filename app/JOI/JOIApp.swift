@@ -15,6 +15,20 @@ struct JOIApp: App {
     @NSApplicationDelegateAdaptor(JOIAppDelegate.self) private var appDelegate
     #endif
 
+    init() {
+        UserDefaults.standard.register(defaults: [
+            "livekitNetworkMode": "auto",
+        ])
+        if UserDefaults.standard.string(forKey: "livekitNetworkMode")?.lowercased() != "auto" {
+            UserDefaults.standard.set("auto", forKey: "livekitNetworkMode")
+        }
+
+        // Normalize stale gateway defaults at startup (for example localhost saved
+        // from simulator/dev runs) so physical iPhone builds never stay pinned there.
+        let startupGatewayURL = GatewayURLResolver.configuredGatewayURL()
+        GatewayURLResolver.persistGatewayURL(startupGatewayURL)
+    }
+
     var body: some Scene {
         #if os(iOS)
         WindowGroup {
@@ -55,16 +69,17 @@ struct JOIApp: App {
         voiceEngine.attach(webSocket: webSocket, router: router)
         phoneWatchBridge.bind(voiceEngine: voiceEngine)
 
-        // Connect WebSocket
-        let gatewayURL = UserDefaults.standard.string(forKey: "gatewayURL")
-            ?? "ws://localhost:3100/ws"
-        webSocket.connect(to: gatewayURL)
-
-        // Wire push service to AppDelegate and request permission
-        appDelegate.pushService = pushService
+        // Connect WebSocket using an iOS-aware gateway resolver.
         Task {
-            await pushService.requestPermission()
+            let gatewayURL = await GatewayURLResolver.resolveStartupGatewayURL()
+            GatewayURLResolver.persistGatewayURL(gatewayURL)
+            webSocket.connect(to: gatewayURL)
         }
+
+        // Wire push service to AppDelegate. Notification permission is user-driven
+        // from Settings to avoid unexpected prompts and unsupported APNs warnings
+        // on personal signing profiles.
+        appDelegate.pushService = pushService
     }
     #endif
 }

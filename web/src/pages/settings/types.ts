@@ -45,6 +45,7 @@ export interface LiveKitSettings {
   url: string;
   apiKey: string | null;
   apiSecret: string | null;
+  language: string;
   sttProvider: string;
   sttModel: string;
   ttsProvider: string;
@@ -68,9 +69,17 @@ export interface LiveKitSettings {
   ttsCacheRedisTtlSec: number;
   ttsCachePrefix: string;
   ttsCacheRedisUrl: string;
+  wakeWordEnabled: boolean;
 }
 
 export interface SettingsData {
+  network?: {
+    homeIp: string | null;
+    roadIp: string | null;
+    activeIp: string | null;
+    activeMode: string;
+    configuredMode: string;
+  };
   auth: {
     anthropicApiKey: string | null;
     openrouterApiKey: string | null;
@@ -104,6 +113,18 @@ export interface SettingsData {
     botUsername: string | null;
     chatId: string | null;
   };
+  tasks: {
+    lockedProjects: string[];
+    reminderSyncMode: "cron_only" | "cron_plus_things";
+    completedReminderRetentionDays: number;
+    projectLogbookPageSize: number;
+  };
+  autodev: {
+    executorMode: "auto" | "claude-code" | "gemini-cli" | "codex-cli";
+    parallelExecution: boolean;
+    discussionMode: boolean;
+    discussionMaxTurns: number;
+  };
   livekit: LiveKitSettings;
 }
 
@@ -118,6 +139,7 @@ export interface LiveKitKeys {
 
 export interface LiveKitEdits {
   url: string;
+  language: string;
   sttProvider: string;
   sttModel: string;
   ttsProvider: string;
@@ -139,4 +161,5 @@ export interface LiveKitEdits {
   ttsCacheRedisTtlSec: number;
   ttsCachePrefix: string;
   ttsCacheRedisUrl: string;
+  wakeWordEnabled: boolean;
 }

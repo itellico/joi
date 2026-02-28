@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Quality OS v7 — Overview</title>
+    <style>
+      :root {
+        --ink: #172230;
+        --muted: #607186;
+        --line: #d6e0ed;
+        --panel: #ffffff;
+        --bg: #f3f7fc;
+        --brand: #0b66f0;
+        --ok: #14844f;
+        --warn: #b96f11;
+        --bad: #be2d2d;
+        --ok-soft: #eaf8ef;
+        --warn-soft: #fff6e8;
+        --bad-soft: #fdeeee;
+        --radius: 14px;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        font-family: "Avenir Next", "SF Pro Text", "Segoe UI", sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(58rem 44rem at -8% -20%, #e6f0ff 0%, transparent 70%),
+          radial-gradient(64rem 48rem at 108% -18%, #edf6ff 0%, transparent 72%),
+          var(--bg);
+      }
+
+      .wrap {
+        width: min(1220px, calc(100% - 28px));
+        margin: 18px auto 34px;
+        display: grid;
+        gap: 14px;
+      }
+
+      .panel {
+        border: 1px solid var(--line);
+        background: var(--panel);
+        border-radius: var(--radius);
+        padding: 14px;
+      }
+
+      .head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 30px;
+        letter-spacing: -0.02em;
+      }
+
+      .sub {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .nav {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .btn {
+        border: 1px solid var(--brand);
+        border-radius: 10px;
+        padding: 8px 11px;
+        font-size: 12px;
+        font-weight: 700;
+        text-decoration: none;
+        cursor: pointer;
+      }
+
+      .btn.primary {
+        color: #fff;
+        background: var(--brand);
+      }
+
+      .btn.ghost {
+        color: var(--brand);
+        background: #fff;
+      }
+
+      .kpis {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .kpi {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: #fbfdff;
+        padding: 10px;
+      }
+
+      .kpi small {
+        display: block;
+        text-transform: uppercase;
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+      }
+
+      .kpi b {
+        display: block;
+        margin-top: 4px;
+        font-size: 24px;
+      }
+
+      .title {
+        display: flex;
+        justify-content: space-between;
+        align-items: end;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+
+      .title h2 {
+        margin: 0;
+        font-size: 21px;
+        letter-spacing: -0.01em;
+      }
+
+      .title p {
+        margin: 3px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: 1.55fr 1fr;
+        gap: 10px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      th, td {
+        border-bottom: 1px solid var(--line);
+        padding: 9px 8px;
+        text-align: left;
+        font-size: 13px;
+        vertical-align: middle;
+      }
+
+      th {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+      }
+
+      tr:last-child td { border-bottom: 0; }
+
+      .badge {
+        border-radius: 999px;
+        padding: 4px 8px;
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      .ok { background: var(--ok-soft); color: var(--ok); }
+      .warn { background: var(--warn-soft); color: var(--warn); }
+      .bad { background: var(--bad-soft); color: var(--bad); }
+
+      .score {
+        width: 42px;
+        height: 42px;
+        border-radius: 999px;
+        display: grid;
+        place-items: center;
+        font-size: 12px;
+        font-weight: 800;
+        border: 1px solid transparent;
+      }
+
+      .score.ok { border-color: #bce6ce; }
+      .score.warn { border-color: #efd2a4; }
+      .score.bad { border-color: #f0c1c1; }
+
+      .focus {
+        display: grid;
+        gap: 8px;
+      }
+
+      .focus-card {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 10px;
+        background: #fbfdff;
+      }
+
+      .focus-card strong { display: block; margin-bottom: 4px; }
+      .muted { color: var(--muted); }
+
+      @media (max-width: 1080px) {
+        .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .layout { grid-template-columns: 1fr; }
+      }
+
+      @media (max-width: 700px) {
+        .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <section class="panel head">
+        <div>
+          <h1>Quality Command</h1>
+          <div class="sub">Top-down flow: portfolio -> agent detail -> execution queue.</div>
+        </div>
+        <nav class="nav" aria-label="Quality navigation">
+          <a class="btn primary" href="/quality-os-v7-overview.html">Overview</a>
+          <a class="btn ghost" href="/quality-os-v7-queue.html">Action Queue</a>
+          <a class="btn ghost" href="/quality-os-v7-agent.html?agent=bmd-uploader">Agent Drill-Down</a>
+        </nav>
+      </section>
+
+      <section class="panel kpis">
+        <div class="kpi"><small>Agents</small><b>28</b></div>
+        <div class="kpi"><small>Below Target</small><b>9</b></div>
+        <div class="kpi"><small>Critical Blockers</small><b>3</b></div>
+        <div class="kpi"><small>Goal Alignment</small><b>68%</b></div>
+        <div class="kpi"><small>Stress Coverage</small><b>57%</b></div>
+        <div class="kpi"><small>Queue ETA</small><b>3h 10m</b></div>
+      </section>
+
+      <section class="panel">
+        <div class="title">
+          <div>
+            <h2>Agent Portfolio</h2>
+            <p>Single source for quality status across all agents with direct drill-down.</p>
+          </div>
+          <a class="btn ghost" href="/quality-os-v7-queue.html">Open Full Queue</a>
+        </div>
+
+        <div class="layout">
+          <div>
+            <table aria-label="Agent portfolio table">
+              <thead>
+                <tr>
+                  <th>Agent</th>
+                  <th>Soul Target</th>
+                  <th>Goal Align</th>
+                  <th>Skills</th>
+                  <th>Stress</th>
+                  <th>Score</th>
+                  <th>Gap</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>bmd-uploader</strong></td>
+                  <td>Safe Upload + Audit Trace</td>
+                  <td>42%</td>
+                  <td>7 / 9</td>
+                  <td><span class="badge bad">34%</span></td>
+                  <td><span class="score bad">61</span></td>
+                  <td class="muted">-21 to 82</td>
+                  <td><a class="btn ghost" href="/quality-os-v7-agent.html?agent=bmd-uploader">Open</a></td>
+                </tr>
+                <tr>
+                  <td><strong>personal</strong></td>
+                  <td>Reliable Orchestration</td>
+                  <td>63%</td>
+                  <td>21 / 24</td>
+                  <td><span class="badge warn">62%</span></td>
+                  <td><span class="score warn">74</span></td>
+                  <td class="muted">-8 to 82</td>
+                  <td><a class="btn ghost" href="/quality-os-v7-agent.html?agent=personal">Open</a></td>
+                </tr>
+                <tr>
+                  <td><strong>knowledge-sync</strong></td>
+                  <td>Docs/Code Sync Integrity</td>
+                  <td>71%</td>
+                  <td>12 / 14</td>
+                  <td><span class="badge warn">57%</span></td>
+                  <td><span class="score warn">79</span></td>
+                  <td class="muted">-5 to 84</td>
+                  <td><a class="btn ghost" href="/quality-os-v7-agent.html?agent=knowledge-sync">Open</a></td>
+                </tr>
+                <tr>
+                  <td><strong>store-auditor</strong></td>
+                  <td>Compliance Correctness</td>
+                  <td>86%</td>
+                  <td>9 / 9</td>
+                  <td><span class="badge ok">88%</span></td>
+                  <td><span class="score ok">91</span></td>
+                  <td class="muted">+1 to 90</td>
+                  <td><a class="btn ghost" href="/quality-os-v7-agent.html?agent=store-auditor">Open</a></td>
+                </tr>
+                <tr>
+                  <td><strong>reconciliation</strong></td>
+                  <td>Ledger Accuracy + Traceability</td>
+                  <td>77%</td>
+                  <td>10 / 12</td>
+                  <td><span class="badge warn">54%</span></td>
+                  <td><span class="score warn">80</span></td>
+                  <td class="muted">-4 to 84</td>
+                  <td><a class="btn ghost" href="/quality-os-v7-agent.html?agent=reconciliation">Open</a></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <aside class="focus" aria-label="Current focus">
+            <div class="focus-card">
+              <strong>Priority This Hour</strong>
+              <div class="muted">Close refusal gap in `bmd-uploader` and verify against 8 stress prompts.</div>
+            </div>
+            <div class="focus-card">
+              <strong>Execution Model</strong>
+              <div class="muted">`AutoDev` = execution lane (workflow owner). `Codex/Claude/Gemini` = model workers inside lane. Human = approval gate.</div>
+            </div>
+            <div class="focus-card">
+              <strong>Decision Rule</strong>
+              <div class="muted">Promote only if score >= target and critical blockers = 0 for that agent.</div>
+            </div>
+          </aside>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

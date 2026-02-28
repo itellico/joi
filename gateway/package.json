@@ -10,6 +10,7 @@
     "start": "node dist/server.js",
     "db:migrate": "tsx src/db/migrate.ts",
     "db:reset": "tsx src/db/reset.ts",
+    "contacts:dedupe": "tsx src/contacts/deduplicate-db.ts",
     "typecheck": "tsc --noEmit",
     "dev:autodev": "tsx watch --ignore '.claude' --ignore 'node_modules' --ignore '*.log' src/autodev/worker.ts",
     "dev:autodev:run": "tsx src/autodev/worker.ts",

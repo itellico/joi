@@ -562,21 +562,21 @@ final class VoicePipeline {
         if let ws = webSocket {
             switch ws.state {
             case .disconnected:
-                if state != .idle { return "Disconnected" }
+                if state != .idle { return "Voice offline" }
             case .connecting:
-                return "Connecting..."
+                return "Linking voice..."
             case .reconnecting:
-                return "Reconnecting..."
+                return "Re-linking voice..."
             case .connected:
                 break
             }
         }
         switch state {
-        case .idle: return "Voice mode off"
-        case .listeningForWake: return wakeWordService.isEnabled ? "Say \"Hey JOI\"..." : "Starting..."
-        case .capturing: return "Listening..."
-        case .processing: return "Thinking..."
-        case .speaking: return "Speaking..."
+        case .idle: return "Voice link off"
+        case .listeningForWake: return wakeWordService.isEnabled ? "Say \"Hey JOI\" to start..." : "Starting voice..."
+        case .capturing: return "Listening live..."
+        case .processing: return "Routing sources..."
+        case .speaking: return "Speaking live..."
         case .error: return errorMessage ?? "Error"
         }
     }

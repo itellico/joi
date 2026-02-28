@@ -6,6 +6,7 @@ import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import { promisify } from "node:util";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { query } from "../db/client.js";
@@ -138,6 +139,47 @@ const WATCHDOG_PID_FILE = "/tmp/joi-watchdog.pid";
 const WATCHDOG_STATUS_FILE = "/tmp/joi-watchdog.json";
 const WATCHDOG_AUTORESTART_FILE = "/tmp/joi-watchdog.enabled";
 const WATCHDOG_STATUS_STALE_MS = 90_000;
+
+function parseOptionalEnvBoolean(raw: string | undefined): boolean | null {
+  const value = (raw || "").trim().toLowerCase();
+  if (!value) return null;
+  if (["1", "true", "yes", "on", "enabled"].includes(value)) return true;
+  if (["0", "false", "no", "off", "disabled"].includes(value)) return false;
+  return null;
+}
+
+function getMiniHostnames(): Set<string> {
+  const values = new Set<string>();
+  const append = (raw: string) => {
+    const normalized = raw.trim().toLowerCase();
+    if (!normalized) return;
+    values.add(normalized);
+    const short = normalized.split(".")[0] || normalized;
+    if (short) values.add(short);
+  };
+  append(process.env.JOI_MINI_HOST_ALIAS || "mini");
+  append(process.env.JOI_MINI_HOSTNAME || "marcuss-mini");
+  return values;
+}
+
+function isCurrentHostMini(): boolean {
+  const host = os.hostname().trim().toLowerCase();
+  if (!host) return false;
+  const short = host.split(".")[0] || host;
+  const miniHosts = getMiniHostnames();
+  return miniHosts.has(host) || miniHosts.has(short);
+}
+
+function shouldRunLocalLiveKitWorker(): boolean {
+  const mode = (process.env.JOI_LIVEKIT_WORKER_MODE || "").trim().toLowerCase();
+  if (["local", "host", "enabled"].includes(mode)) return true;
+  if (["external", "remote", "container", "disabled"].includes(mode)) return false;
+
+  const explicit = parseOptionalEnvBoolean(process.env.JOI_LIVEKIT_LOCAL_WORKER);
+  if (explicit !== null) return explicit;
+
+  return isCurrentHostMini();
+}
 
 function parseWatchdogAutoRestart(raw: string): boolean | null {
   const value = raw.trim().toLowerCase();
@@ -366,18 +408,29 @@ async function storeReport(report: SelfRepairReport): Promise<void> {
 export async function runSelfRepair(config: JoiConfig): Promise<void> {
   console.log("[SelfRepair] Starting health check...");
   const timestamp = new Date().toISOString();
+  const localLivekitWorker = shouldRunLocalLiveKitWorker();
+  console.log(`[SelfRepair] Local LiveKit worker: ${localLivekitWorker ? "enabled" : "external"}`);
 
   const watchdogSupervisor = getWatchdogSupervisorState();
   console.log(`[SelfRepair] Watchdog supervisor: ${watchdogSupervisor.detail}`);
 
   // 1. Run health checks
-  const services: ServiceCheck[] = await Promise.all([
+  const checks: Array<Promise<ServiceCheck>> = [
     checkHttp("Gateway API", 3100, "/health"),
     checkHttp("Web Dev Server", 5173, "/"),
-    checkProcess("LiveKit Worker", `${PROJECT_ROOT}/infra/livekit-worker`),
     checkProcess("AutoDev Worker", `${PROJECT_ROOT}/gateway.*autodev/worker`),
     checkDatabase(),
-  ]);
+  ];
+  if (localLivekitWorker) {
+    checks.push(checkProcess("LiveKit Worker", `${PROJECT_ROOT}/infra/livekit-worker`));
+  } else {
+    checks.push(Promise.resolve({
+      name: "LiveKit Worker",
+      status: "healthy",
+      detail: "Managed externally on this host",
+    }));
+  }
+  const services: ServiceCheck[] = await Promise.all(checks);
 
   // 2. Analyze recent error logs
   const logIssues = await analyzeRecentLogs(15);
@@ -398,6 +451,15 @@ export async function runSelfRepair(config: JoiConfig): Promise<void> {
   };
 
   for (const svc of downServices) {
+    if (svc.name === "LiveKit Worker" && !localLivekitWorker) {
+      repairs.push({
+        service: svc.name,
+        action: "restart_skipped_external",
+        success: true,
+        detail: "Skipped restart because worker is managed externally on this host",
+      });
+      continue;
+    }
     const script = serviceRestartMap[svc.name];
     if (script) {
       const watchdogManagedService = svc.name === "Web Dev Server"

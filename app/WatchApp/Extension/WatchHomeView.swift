@@ -24,6 +24,10 @@ struct WatchHomeView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.leading)
 
+                Text(routeSummary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
                 if let lastError = session.lastError, !lastError.isEmpty {
                     Text(lastError)
                         .font(.footnote)
@@ -32,17 +36,17 @@ struct WatchHomeView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Hold To Talk")
+                    Text("Hold To Speak")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
 
                     ZStack {
                         RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(isHoldingToTalk ? Color.green.opacity(0.25) : Color.blue.opacity(0.18))
+                            .fill(isHoldingToTalk ? Color.orange.opacity(0.32) : Color.red.opacity(0.18))
                         VStack(spacing: 3) {
                             Image(systemName: isHoldingToTalk ? "waveform" : "mic.fill")
                                 .font(.system(size: 20, weight: .semibold))
-                            Text(isHoldingToTalk ? "Listening..." : "Press + hold")
+                            Text(isHoldingToTalk ? "Listening..." : "Press + hold to speak")
                                 .font(.caption2)
                         }
                         .foregroundStyle(.primary)
@@ -64,13 +68,13 @@ struct WatchHomeView: View {
                     }
                 }
 
-                Button(session.isActive ? "JOI Off" : "JOI On") {
+                Button(session.isActive ? "Voice Off" : "Voice On") {
                     session.send(command: session.isActive ? .stopVoice : .startVoice)
                 }
                 .buttonStyle(.borderedProminent)
 
                 HStack(spacing: 8) {
-                    Button("Ping") {
+                    Button("Sync") {
                         session.requestStatus()
                     }
                     .buttonStyle(.bordered)
@@ -97,11 +101,20 @@ struct WatchHomeView: View {
     }
 
     private var connectionText: String {
-        session.isReachable ? "Live" : "Queued"
+        session.isReachable ? "Voice Live" : "Voice Queued"
     }
 
     private var connectionColor: Color {
-        session.isReachable ? .green : .orange
+        session.isReachable ? .orange : .red
+    }
+
+    private var routeSummary: String {
+        let mode = session.networkMode.uppercased()
+        let target = session.networkTargetIp
+        if target.isEmpty {
+            return "Route \(mode)"
+        }
+        return "Route \(mode) - \(target)"
     }
 
     private var holdToTalkGesture: some Gesture {

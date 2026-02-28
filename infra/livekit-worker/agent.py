@@ -127,6 +127,112 @@ def load_joi_config() -> dict:
 
 CONFIG = load_joi_config()
 LK_CONFIG = CONFIG.get("livekit", {})
+VOICE_ID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+def load_livekit_config() -> dict:
+    """Load livekit settings from ~/.joi/config.json on demand."""
+    cfg = load_joi_config()
+    lk = cfg.get("livekit", {})
+    return lk if isinstance(lk, dict) else {}
+
+
+def _normalize_language_code(raw: str | None) -> str:
+    lang = (raw or "").strip().lower()
+    if not lang:
+        return "en"
+    if "-" in lang:
+        lang = lang.split("-", 1)[0]
+    return lang
+
+
+def _is_probable_voice_id(value: str | None) -> bool:
+    if not value:
+        return False
+    return bool(VOICE_ID_RE.match(value.strip()))
+
+
+async def resolve_cartesia_voice_id(
+    *,
+    api_key: str,
+    configured_voice: str | None,
+    language_code: str,
+) -> str | None:
+    """Resolve configurable voice input (ID or name) to a Cartesia voice ID.
+
+    Defaults to "Victoria" when no voice is configured.
+    """
+    configured = (configured_voice or "").strip()
+    if configured and _is_probable_voice_id(configured):
+        return configured
+
+    target_name = configured or "Victoria"
+    if not api_key:
+        return None
+
+    timeout = aiohttp.ClientTimeout(total=4, sock_connect=2, sock_read=3)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(
+                "https://api.cartesia.ai/voices?limit=100",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Cartesia-Version": "2024-11-13",
+                },
+            ) as resp:
+                if resp.status >= 300:
+                    body = await resp.text()
+                    logger.warning(
+                        f"Failed resolving Cartesia voice '{target_name}' (status={resp.status}): {body[:160]}"
+                    )
+                    return None
+
+                payload = await resp.json()
+    except Exception as e:
+        logger.warning(f"Failed resolving Cartesia voice '{target_name}': {type(e).__name__}: {e}")
+        return None
+
+    raw_voices = payload.get("data") or payload.get("voices") or []
+    voices = [
+        v for v in raw_voices
+        if isinstance(v, dict) and isinstance(v.get("id"), str) and isinstance(v.get("name"), str)
+    ]
+    if not voices:
+        return None
+
+    lang = _normalize_language_code(language_code)
+    def lang_matches(voice: dict[str, Any]) -> bool:
+        vlang = _normalize_language_code(str(voice.get("language") or ""))
+        return vlang == lang
+
+    def find_by_name(name: str, subset: list[dict[str, Any]]) -> str | None:
+        target = name.strip().lower()
+        if not target:
+            return None
+        for voice in subset:
+            if str(voice.get("name", "")).strip().lower() == target:
+                return str(voice["id"])
+        for voice in subset:
+            if target in str(voice.get("name", "")).strip().lower():
+                return str(voice["id"])
+        return None
+
+    lang_voices = [voice for voice in voices if lang_matches(voice)]
+    resolved = (
+        find_by_name(target_name, lang_voices)
+        or find_by_name(target_name, voices)
+    )
+    if resolved:
+        return resolved
+
+    # If no explicit match, pick a language-compatible default.
+    if not configured and lang_voices:
+        return str(lang_voices[0]["id"])
+
+    logger.warning(f"Configured Cartesia voice '{target_name}' was not found; falling back to provider default")
+    return None
 
 
 def _env_int(name: str, default: int, *, minimum: int | None = None) -> int:
@@ -299,6 +405,7 @@ def strip_voice_markers(text: str) -> str:
 def build_voice_prompt(lk_config: dict) -> str:
     """Build voice-mode system prompt suffix."""
     parts = []
+    is_german = _normalize_language_code(str(lk_config.get("language") or "en")) == "de"
 
     voice_prompt = lk_config.get("voicePrompt", "")
     if voice_prompt:
@@ -307,17 +414,31 @@ def build_voice_prompt(lk_config: dict) -> str:
     rules = lk_config.get("pronunciations", [])
     if rules:
         guides = "\n".join(f'- "{r["word"]}" → write as "{r["replacement"]}"' for r in rules)
-        parts.append(
-            "## Pronunciation Guide\n"
-            "When speaking, use these exact spellings so the text-to-speech engine pronounces them correctly:\n"
-            + guides
-        )
+        if is_german:
+            parts.append(
+                "## Aussprache-Hinweise\n"
+                "Beim Sprechen diese Schreibweisen verwenden, damit die Text-to-Speech-Ausgabe korrekt klingt:\n"
+                + guides
+            )
+        else:
+            parts.append(
+                "## Pronunciation Guide\n"
+                "When speaking, use these exact spellings so the text-to-speech engine pronounces them correctly:\n"
+                + guides
+            )
 
-    parts.append(
-        "## Voice Style\n"
-        "Speak naturally and clearly. Never output bracketed markers like [happy] or [thinking]. "
-        "Avoid repetitive time-based greetings and avoid repeatedly saying the user's name."
-    )
+    if is_german:
+        parts.append(
+            "## Sprachstil\n"
+            "Sprich natuerlich und klar. Gib niemals eckige Marker wie [happy] oder [thinking] aus. "
+            "Keine repetitiven tageszeitbasierten Begruessungen und den Namen der Person nicht dauernd wiederholen."
+        )
+    else:
+        parts.append(
+            "## Voice Style\n"
+            "Speak naturally and clearly. Never output bracketed markers like [happy] or [thinking]. "
+            "Avoid repetitive time-based greetings and avoid repeatedly saying the user's name."
+        )
 
     return "\n\n".join(parts)
 
@@ -811,7 +932,13 @@ class _CachedStreamAdapterWrapper(lk_tts.SynthesizeStream):
 # ── JOI Agent ──
 
 class JOIAgent(Agent):
-    def __init__(self, conversation_id: str, agent_id: str, pending_turns: deque[dict[str, str]]):
+    def __init__(
+        self,
+        conversation_id: str,
+        agent_id: str,
+        pending_turns: deque[dict[str, str]],
+        livekit_config: dict[str, Any],
+    ):
         super().__init__(
             instructions="",
             llm=_StubLLM(),  # Required so pipeline doesn't skip LLM node
@@ -819,6 +946,7 @@ class JOIAgent(Agent):
         self.conversation_id = conversation_id
         self.agent_id = agent_id
         self.pending_turns = pending_turns
+        self.livekit_config = livekit_config
 
     async def llm_node(
         self,
@@ -854,9 +982,9 @@ class JOIAgent(Agent):
 
         logger.info(f"User text: {user_text[:200]!r}")
 
-        voice_prompt_suffix = build_voice_prompt(LK_CONFIG)
+        voice_prompt_suffix = build_voice_prompt(self.livekit_config)
         push_replace, flush_replace = build_pronunciation_replacer(
-            LK_CONFIG.get("pronunciations", [])
+            self.livekit_config.get("pronunciations", [])
         )
 
         payload = {
@@ -1026,12 +1154,18 @@ async def entrypoint(ctx: agents.JobContext):
         f"conversation={conversation_id}, agent={agent_id}"
     )
 
+    livekit_config = load_livekit_config()
+
     # Build STT
-    stt_model = LK_CONFIG.get("sttModel", "nova-2-general")
-    deepgram_key = LK_CONFIG.get("deepgramApiKey") or os.environ.get("DEEPGRAM_API_KEY", "")
+    stt_model = livekit_config.get("sttModel") or LK_CONFIG.get("sttModel", "nova-3")
+    deepgram_key = (
+        livekit_config.get("deepgramApiKey")
+        or LK_CONFIG.get("deepgramApiKey")
+        or os.environ.get("DEEPGRAM_API_KEY", "")
+    )
     logger.info(f"STT: deepgram, model={stt_model}, key={'present' if deepgram_key else 'MISSING'}")
 
-    stt_language = LK_CONFIG.get("language", "en-US")
+    stt_language = livekit_config.get("language") or LK_CONFIG.get("language", "en")
     # Normalize short codes to Deepgram-compatible codes
     if stt_language == "en":
         stt_language = "en-US"
@@ -1039,6 +1173,7 @@ async def entrypoint(ctx: agents.JobContext):
         stt_language = "de"
     elif len(stt_language) == 2:
         stt_language = stt_language  # Deepgram accepts 2-letter codes for most languages
+    session_language = _normalize_language_code(stt_language)
     logger.info(f"STT language: {stt_language}")
 
     stt = DebugDeepgramSTT(
@@ -1052,10 +1187,23 @@ async def entrypoint(ctx: agents.JobContext):
     )
 
     # Build TTS
-    tts_model = LK_CONFIG.get("ttsModel", "sonic-2")
-    tts_voice = LK_CONFIG.get("ttsVoice")
-    cartesia_key = LK_CONFIG.get("cartesiaApiKey") or os.environ.get("CARTESIA_API_KEY", "")
-    logger.info(f"TTS: cartesia, model={tts_model}, voice={tts_voice or 'default'}, key={'present' if cartesia_key else 'MISSING'}")
+    tts_model = livekit_config.get("ttsModel") or LK_CONFIG.get("ttsModel", "sonic-2")
+    configured_voice_raw = livekit_config.get("ttsVoice")
+    configured_tts_voice = configured_voice_raw.strip() if isinstance(configured_voice_raw, str) else ""
+    cartesia_key = (
+        livekit_config.get("cartesiaApiKey")
+        or LK_CONFIG.get("cartesiaApiKey")
+        or os.environ.get("CARTESIA_API_KEY", "")
+    )
+    tts_voice = await resolve_cartesia_voice_id(
+        api_key=cartesia_key,
+        configured_voice=configured_tts_voice or None,
+        language_code=session_language,
+    )
+    logger.info(
+        f"TTS: cartesia, model={tts_model}, voice={tts_voice or 'default'}, "
+        f"configured_voice={configured_tts_voice or 'default'}, key={'present' if cartesia_key else 'MISSING'}"
+    )
 
     base_tts = cartesia.TTS(
         model=tts_model,
@@ -1085,6 +1233,7 @@ async def entrypoint(ctx: agents.JobContext):
                 "provider": "cartesia",
                 "model": tts_model,
                 "voice": tts_voice or "",
+                "language": session_language,
                 "sample_rate": base_tts.sample_rate,
                 "num_channels": base_tts.num_channels,
             },
@@ -1096,6 +1245,7 @@ async def entrypoint(ctx: agents.JobContext):
             f"local_max_bytes={TTS_CACHE_LOCAL_MAX_BYTES}, "
             f"remote_enabled={cache.remote_enabled}, "
             f"remote_backends={','.join(cache.remote_backends) if cache.remote_backends else 'none'}, "
+            f"language={session_language}, "
             f"max_text_chars={TTS_CACHE_MAX_TEXT_CHARS}, "
             f"max_audio_bytes={TTS_CACHE_MAX_AUDIO_BYTES}"
         )
@@ -1115,6 +1265,7 @@ async def entrypoint(ctx: agents.JobContext):
         conversation_id=conversation_id,
         agent_id=agent_id,
         pending_turns=pending_turns,
+        livekit_config=livekit_config,
     )
 
     # Debug event listeners

@@ -12,6 +12,8 @@ interface SystemInfo {
   startedAt: number;
   executorMode?: "auto" | "claude-code" | "gemini-cli" | "codex-cli";
   parallelExecution?: boolean;
+  discussionMode?: boolean;
+  discussionMaxTurns?: number;
   claudeModel?: string | null;
   codexModel?: string | null;
   geminiModel?: string | null;
@@ -37,9 +39,29 @@ interface AutoDevStatus {
   systemInfo?: SystemInfo;
 }
 
+interface ThingsTaskItem {
+  uuid: string;
+  title: string;
+  list: string;
+  notes: string | null;
+  checklist: Array<{ title: string; completed: boolean }>;
+  tags: string[];
+  projectUuid: string | null;
+  projectTitle: string | null;
+  headingTitle: string | null;
+}
+
+type TaskDispatchLane = "codex" | "claude" | "gemini";
+
 interface Props {
   ws: ReturnType<typeof useWebSocket>;
 }
+
+const TASK_DISPATCH_LANE_TO_HEADING: Record<TaskDispatchLane, string> = {
+  codex: "Codex",
+  claude: "Claude",
+  gemini: "Gemini",
+};
 
 const stateBadge: Record<string, { label: string; status: "muted" | "warning" | "accent" | "success" }> = {
   waiting: { label: "Waiting", status: "muted" },
@@ -57,6 +79,13 @@ function safeString(value: unknown): string {
   if (typeof value === "string") return value;
   if (value == null) return "";
   return String(value);
+}
+
+function normalizeTextBlock(value: unknown): string | null {
+  if (value == null) return null;
+  const text = typeof value === "string" ? value : String(value);
+  const trimmed = text.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function normalizeStatusPayload(value: unknown): AutoDevStatus {
@@ -129,11 +158,71 @@ export default function AutoDev({ ws }: Props) {
   const [log, setLog] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [completions, setCompletions] = useState<Array<{ title: string; summary: string; expanded?: boolean }>>([]);
+  const [taskDispatchLane, setTaskDispatchLane] = useState<TaskDispatchLane>("codex");
+  const [selectedTaskUuid, setSelectedTaskUuid] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{ tone: "success" | "error"; text: string } | null>(null);
+  const [busyTaskDispatchUuid, setBusyTaskDispatchUuid] = useState<string | null>(null);
+  const [busyShowTaskUuid, setBusyShowTaskUuid] = useState<string | null>(null);
+  const [openThingsTasks, setOpenThingsTasks] = useState<ThingsTaskItem[]>([]);
+  const [listsLoaded, setListsLoaded] = useState(false);
   const claudeLogRef = useRef<HTMLPreElement>(null);
   const codexLogRef = useRef<HTMLPreElement>(null);
   const geminiLogRef = useRef<HTMLPreElement>(null);
   const [elapsed, setElapsed] = useState("");
   const splitLogs = useMemo(() => splitExecutorLogs(log), [log]);
+
+  const refreshOpenLists = useCallback(async () => {
+    const projectTitle = (status.projectTitle || "JOI").trim().toLowerCase();
+    const tasksData = await fetch("/api/tasks").then((r) => r.json()).catch(() => null);
+
+    const taskGroups = asObject(tasksData)?.tasks as Record<string, unknown> | undefined;
+    const allTasks = taskGroups
+      ? Object.values(taskGroups).flatMap((value) => (Array.isArray(value) ? value : []))
+      : [];
+
+    const normalizedTasks = allTasks
+      .map((item) => asObject(item))
+      .filter((item): item is Record<string, unknown> => Boolean(item))
+      .map((item) => {
+        const checklistRaw = Array.isArray(item.checklist) ? item.checklist : [];
+        const checklist = checklistRaw
+          .map((ci) => asObject(ci))
+          .filter((ci): ci is Record<string, unknown> => Boolean(ci))
+          .map((ci) => ({
+            title: safeString(ci.title),
+            completed: ci.completed === true,
+          }))
+          .filter((ci) => ci.title.length > 0);
+        const tags = Array.isArray(item.tags)
+          ? item.tags.map((tag) => safeString(tag)).filter((tag) => tag.length > 0)
+          : [];
+        return {
+          uuid: safeString(item.uuid),
+          title: safeString(item.title),
+          list: safeString(item.list),
+          notes: normalizeTextBlock(item.notes),
+          checklist,
+          tags,
+          projectUuid: typeof item.projectUuid === "string" ? item.projectUuid : null,
+          projectTitle: typeof item.projectTitle === "string" ? item.projectTitle : null,
+          headingTitle: typeof item.headingTitle === "string" ? item.headingTitle : null,
+        };
+      })
+      .filter((item) => item.uuid.length > 0 && item.title.length > 0);
+
+    const projectTasks = normalizedTasks
+      .filter((item) => (item.projectTitle || "").trim().toLowerCase() === projectTitle)
+      .sort((a, b) => a.title.localeCompare(b.title));
+    setOpenThingsTasks(projectTasks);
+    setListsLoaded(true);
+  }, [status.projectTitle]);
+
+  useEffect(() => {
+    if (!selectedTaskUuid) return;
+    if (!openThingsTasks.some((task) => task.uuid === selectedTaskUuid)) {
+      setSelectedTaskUuid(null);
+    }
+  }, [openThingsTasks, selectedTaskUuid]);
 
   // Fetch status + log on mount AND on WS reconnect (stale state recovery)
   useEffect(() => {
@@ -148,6 +237,17 @@ export default function AutoDev({ ws }: Props) {
       setLoaded(true);
     });
   }, [ws.status]);
+
+  useEffect(() => {
+    if (ws.status !== "connected" && listsLoaded) return;
+    void refreshOpenLists();
+  }, [ws.status, listsLoaded, refreshOpenLists]);
+
+  useEffect(() => {
+    if (ws.status !== "connected") return;
+    const id = setInterval(() => { void refreshOpenLists(); }, 30_000);
+    return () => clearInterval(id);
+  }, [ws.status, refreshOpenLists]);
 
   // Subscribe to WS events
   useEffect(() => {
@@ -213,6 +313,95 @@ export default function AutoDev({ ws }: Props) {
   const toggleCompletion = (i: number) => {
     setCompletions((prev) => prev.map((c, idx) => idx === i ? { ...c, expanded: !c.expanded } : c));
   };
+
+  const selectedTask = useMemo(
+    () => (selectedTaskUuid ? openThingsTasks.find((task) => task.uuid === selectedTaskUuid) || null : null),
+    [openThingsTasks, selectedTaskUuid],
+  );
+
+  const parseApiError = useCallback(async (response: Response): Promise<string> => {
+    try {
+      const payload = await response.json();
+      const raw = asObject(payload);
+      const message = safeString(raw?.error || raw?.detail);
+      if (message) return message;
+    } catch {
+      // fallback to status text below
+    }
+    return response.statusText || `HTTP ${response.status}`;
+  }, []);
+
+  const selectTask = useCallback((taskUuid: string) => {
+    setSelectedTaskUuid(taskUuid);
+    setFeedback(null);
+  }, []);
+
+  const openTaskInThings = useCallback(async (taskUuid: string) => {
+    setBusyShowTaskUuid(taskUuid);
+    setFeedback(null);
+    try {
+      const response = await fetch(`/api/tasks/${taskUuid}/show`, { method: "POST" });
+      if (!response.ok) throw new Error(await parseApiError(response));
+      setFeedback({ tone: "success", text: "Opened task in Things." });
+    } catch (err) {
+      setFeedback({ tone: "error", text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusyShowTaskUuid(null);
+    }
+  }, [parseApiError]);
+
+  const dispatchTaskToAutodev = useCallback(async (task: ThingsTaskItem) => {
+    setBusyTaskDispatchUuid(task.uuid);
+    setFeedback(null);
+    try {
+      const projectUuid = status.projectUuid || task.projectUuid;
+      if (!projectUuid) throw new Error("AutoDev project UUID is missing. Open AutoDev status first.");
+
+      const headingsResponse = await fetch(`/api/tasks/projects/${projectUuid}/headings`);
+      if (!headingsResponse.ok) throw new Error(await parseApiError(headingsResponse));
+      const headingsPayload = await headingsResponse.json();
+      const headingsRaw = asObject(headingsPayload)?.headings;
+      const headings = Array.isArray(headingsRaw)
+        ? headingsRaw
+            .map((item) => asObject(item))
+            .filter((item): item is Record<string, unknown> => Boolean(item))
+            .map((item) => ({
+              uuid: safeString(item.uuid),
+              title: safeString(item.title),
+            }))
+            .filter((item) => item.uuid.length > 0 && item.title.length > 0)
+        : [];
+
+      const headingTitle = TASK_DISPATCH_LANE_TO_HEADING[taskDispatchLane];
+      const heading = headings.find((item) => item.title.trim().toLowerCase() === headingTitle.toLowerCase());
+      if (!heading) {
+        throw new Error(`Missing "${headingTitle}" section in this project. Add it in Things and retry.`);
+      }
+
+      const updateResponse = await fetch(`/api/tasks/${task.uuid}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          when: "today",
+          headingId: heading.uuid,
+          addTags: ["autodev", "autodev-dispatched"],
+        }),
+      });
+      if (!updateResponse.ok) throw new Error(await parseApiError(updateResponse));
+
+      await refreshOpenLists();
+      setFeedback({
+        tone: "success",
+        text: status.paused
+          ? `Task moved to ${headingTitle} and queued. AutoDev is paused, press Resume to run.`
+          : `Task moved to ${headingTitle} and queued for AutoDev.`,
+      });
+    } catch (err) {
+      setFeedback({ tone: "error", text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusyTaskDispatchUuid(null);
+    }
+  }, [parseApiError, refreshOpenLists, status.paused, status.projectUuid, taskDispatchLane]);
 
   const isPaused = status.paused === true;
   const isDisconnected = status.workerConnected === false;
@@ -331,6 +520,12 @@ export default function AutoDev({ ws }: Props) {
               <span>Parallel</span>
               <span>{parallelExecution ? "on" : "off"}</span>
             </div>
+            {typeof sysInfo?.discussionMode === "boolean" && (
+              <div className="autodev-sidebar-stat-row">
+                <span>Discussion</span>
+                <span>{sysInfo.discussionMode ? `on (${sysInfo.discussionMaxTurns || 5})` : "off"}</span>
+              </div>
+            )}
             <div className="autodev-sidebar-stat-row">
               <span>Executor</span>
               <span>{status.currentExecutor || "n/a"}</span>
@@ -392,6 +587,105 @@ export default function AutoDev({ ws }: Props) {
               ))}
             </div>
           )}
+
+          {/* Open Things tasks */}
+          <div className="autodev-sidebar-card">
+            <div className="autodev-sidebar-label">
+              Open Things ({openThingsTasks.length})
+            </div>
+            {openThingsTasks.length === 0 ? (
+              <div className="autodev-sidebar-empty">{listsLoaded ? "No open project tasks." : "Loading..."}</div>
+            ) : (
+              <>
+                {openThingsTasks.slice(0, 12).map((t) => (
+                  <button
+                    key={t.uuid}
+                    type="button"
+                    className={`autodev-sidebar-list-item ${selectedTaskUuid === t.uuid ? "is-selected" : ""}`}
+                    onClick={() => selectTask(t.uuid)}
+                  >
+                    <div>{t.title}</div>
+                    <div className="autodev-sidebar-item-meta">
+                      {t.headingTitle || "No section"} · {t.list || "anytime"}
+                    </div>
+                  </button>
+                ))}
+                {openThingsTasks.length > 12 && (
+                  <div className="autodev-sidebar-empty">+{openThingsTasks.length - 12} more</div>
+                )}
+              </>
+            )}
+          </div>
+
+          {/* Inspector */}
+          <div className="autodev-sidebar-card">
+            <div className="autodev-sidebar-label">Inspector</div>
+            {!selectedTask && (
+              <div className="autodev-sidebar-empty">
+                Click an Open Things task to inspect details and dispatch it to AutoDev.
+              </div>
+            )}
+
+            {selectedTask && (
+              <div className="autodev-inspector-block">
+                <div className="autodev-inspector-kind">Things Task</div>
+                <div className="autodev-sidebar-task-title">{selectedTask.title}</div>
+                <div className="autodev-sidebar-item-meta">
+                  {selectedTask.headingTitle || "No section"} · {selectedTask.list || "anytime"}
+                </div>
+                {selectedTask.notes ? (
+                  <pre className="autodev-inspector-pre">{selectedTask.notes.slice(0, 2600)}</pre>
+                ) : (
+                  <div className="autodev-sidebar-empty">No notes on this task.</div>
+                )}
+                {selectedTask.checklist.length > 0 && (
+                  <div className="autodev-inspector-checklist">
+                    {selectedTask.checklist.slice(0, 8).map((item, idx) => (
+                      <div key={`${selectedTask.uuid}-${idx}`} className="autodev-inspector-check-item">
+                        <span>{item.completed ? "x" : " "}</span>
+                        <span>{item.title}</span>
+                      </div>
+                    ))}
+                    {selectedTask.checklist.length > 8 && (
+                      <div className="autodev-sidebar-empty">+{selectedTask.checklist.length - 8} more checklist items</div>
+                    )}
+                  </div>
+                )}
+                <div className="autodev-inspector-actions">
+                  <Button
+                    size="sm"
+                    onClick={() => openTaskInThings(selectedTask.uuid)}
+                    disabled={busyShowTaskUuid === selectedTask.uuid}
+                  >
+                    {busyShowTaskUuid === selectedTask.uuid ? "Opening..." : "Open in Things"}
+                  </Button>
+                  <select
+                    className="autodev-inspector-select"
+                    value={taskDispatchLane}
+                    onChange={(event) => setTaskDispatchLane(event.target.value as TaskDispatchLane)}
+                  >
+                    <option value="codex">Codex lane</option>
+                    <option value="claude">Claude lane</option>
+                    <option value="gemini">Gemini lane</option>
+                  </select>
+                  <Button
+                    size="sm"
+                    variant="accent"
+                    onClick={() => dispatchTaskToAutodev(selectedTask)}
+                    disabled={busyTaskDispatchUuid === selectedTask.uuid}
+                  >
+                    {busyTaskDispatchUuid === selectedTask.uuid ? "Sending..." : "Send to AutoDev"}
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {feedback && (
+              <div className={`autodev-sidebar-feedback ${feedback.tone === "error" ? "is-error" : "is-success"}`}>
+                {feedback.text}
+              </div>
+            )}
+          </div>
 
           {/* Completed */}
           {completions.length > 0 && (

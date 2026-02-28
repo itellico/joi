@@ -181,12 +181,36 @@ port_status "ollama" "${OLLAMA_HOST:-}" "${OLLAMA_PORT:-}"
 port_status "livekit server" "${LIVEKIT_HOST:-}" "${LIVEKIT_PORT:-}"
 port_status "redis" "${REDIS_HOST:-}" "${REDIS_PORT:-}"
 
+section "Runtime Routing"
+line "mini mode" "${JOI_MINI_ACTIVE_MODE:-unset}"
+line "mini active ip" "${JOI_MINI_ACTIVE_IP:-unset}"
+line "mini home ip" "${JOI_MINI_HOME_IP:-unset}"
+line "mini road ip" "${JOI_MINI_ROAD_IP:-unset}"
+line "webhook home env" "${JOI_WEBHOOK_BASE_URL_HOME:-unset}"
+line "webhook road env" "${JOI_WEBHOOK_BASE_URL_ROAD:-unset}"
+line "webhook active env" "${JOI_WEBHOOK_BASE_URL:-unset}"
+
 section "Health Endpoint"
 if curl -sf -m 6 "$HEALTH_URL" > /tmp/joi-health-audit.json 2>/dev/null; then
   line "/health" "REACHABLE"
   line "/health body" "$(cat /tmp/joi-health-audit.json)"
 else
   line "/health" "UNREACHABLE"
+fi
+
+section "Webhook Base Resolution"
+if curl -sf -m 6 "http://127.0.0.1:3100/api/gateway/webhook-base" > /tmp/joi-webhook-base-audit.json 2>/dev/null; then
+  line "/api/gateway/webhook-base" "REACHABLE"
+  if command -v jq >/dev/null 2>&1; then
+    line "webhook base" "$(jq -r '.webhookBaseUrl // "<none>"' /tmp/joi-webhook-base-audit.json 2>/dev/null)"
+    line "source" "$(jq -r '.source // "<none>"' /tmp/joi-webhook-base-audit.json 2>/dev/null)"
+    line "mode" "$(jq -r '.networkMode // "<none>"' /tmp/joi-webhook-base-audit.json 2>/dev/null)"
+    line "request local" "$(jq -r '.requestIsLocal' /tmp/joi-webhook-base-audit.json 2>/dev/null)"
+  else
+    line "webhook base body" "$(cat /tmp/joi-webhook-base-audit.json)"
+  fi
+else
+  line "/api/gateway/webhook-base" "UNREACHABLE"
 fi
 
 section "Push Status"

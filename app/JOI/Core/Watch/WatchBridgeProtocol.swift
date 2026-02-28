@@ -22,6 +22,8 @@ struct WatchBridgeStatusSnapshot: Equatable, Sendable {
     let statusText: String
     let isActive: Bool
     let isMuted: Bool
+    let networkMode: String?
+    let networkTargetIp: String?
     let capturedTranscript: String?
     let errorMessage: String?
     let updatedAt: TimeInterval
@@ -34,6 +36,8 @@ enum WatchBridgePayload {
     static let statusText = "statusText"
     static let isActive = "isActive"
     static let isMuted = "isMuted"
+    static let networkMode = "networkMode"
+    static let networkTargetIp = "networkTargetIp"
     static let capturedTranscript = "capturedTranscript"
     static let errorMessage = "errorMessage"
     static let updatedAt = "updatedAt"
@@ -54,6 +58,12 @@ enum WatchBridgePayload {
             isMuted: snapshot.isMuted,
             updatedAt: snapshot.updatedAt,
         ]
+        if let networkMode = snapshot.networkMode, !networkMode.isEmpty {
+            payload[self.networkMode] = networkMode
+        }
+        if let networkTargetIp = snapshot.networkTargetIp, !networkTargetIp.isEmpty {
+            payload[self.networkTargetIp] = networkTargetIp
+        }
         if let capturedTranscript = snapshot.capturedTranscript, !capturedTranscript.isEmpty {
             payload[self.capturedTranscript] = capturedTranscript
         }
@@ -87,6 +97,8 @@ enum WatchBridgePayload {
         }
 
         let capturedTranscript = payload[self.capturedTranscript] as? String
+        let networkMode = payload[self.networkMode] as? String
+        let networkTargetIp = payload[self.networkTargetIp] as? String
         let errorMessage = payload[self.errorMessage] as? String
         let updatedAt = payload[self.updatedAt] as? TimeInterval ?? Date().timeIntervalSince1970
 
@@ -95,6 +107,8 @@ enum WatchBridgePayload {
             statusText: statusText,
             isActive: isActive,
             isMuted: isMuted,
+            networkMode: networkMode,
+            networkTargetIp: networkTargetIp,
             capturedTranscript: capturedTranscript,
             errorMessage: errorMessage,
             updatedAt: updatedAt

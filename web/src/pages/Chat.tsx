@@ -1,46 +1,35 @@
-import { useRef, useEffect, useState, useCallback } from "react";
-import { useChat, type ChatMessage, type ToolCall, type Attachment } from "../hooks/useChat";
+import { useRef, useEffect, useMemo, useState, useCallback, type CSSProperties } from "react";
+import {
+  useChat,
+  type ChatMessage,
+  type ToolCall,
+  type Attachment,
+  type OutgoingAttachment,
+  type ChatMention,
+  type OutgoingMessageRelations,
+} from "../hooks/useChat";
 import type { ConnectionStatus, Frame } from "../hooks/useWebSocket";
+import { useSearchParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkFrontmatter from "remark-frontmatter";
 import { Badge, MetaText, EmptyState, Modal } from "../components/ui";
 import { PageHeader } from "../components/ui/PageLayout";
 import JoiOrb from "../components/JoiOrb";
-
-function shortModelName(model: string): string {
-  return model
-    .replace("claude-sonnet-4-20250514", "Sonnet 4")
-    .replace("claude-opus-4-20250514", "Opus 4")
-    .replace("claude-haiku-3-20240307", "Haiku 3")
-    .replace("anthropic/claude-sonnet-4", "Sonnet 4")
-    .replace("anthropic/claude-opus-4", "Opus 4")
-    .replace("anthropic/claude-3-haiku", "Haiku 3")
-    .replace("anthropic/claude-3.5-haiku", "Haiku 3.5")
-    .replace("openai/gpt-4o-mini", "GPT-4o Mini")
-    .replace("openai/gpt-4o", "GPT-4o")
-    .replace("google/gemini-2.0-flash-001", "Gemini Flash")
-    .replace("google/gemini-2.5-pro-preview", "Gemini Pro")
-    .replace("anthropic/", "")
-    .replace("openai/", "")
-    .replace("google/", "")
-    .replace("deepseek/", "")
-    .replace("meta-llama/", "");
-}
-
-function formatDuration(ms: number): string {
-  return ms < 1000
-    ? `${Math.round(ms)}ms`
-    : `${(ms / 1000).toFixed(1)}s`;
-}
-
-function formatToolName(name: string): string {
-  const normalized = name.trim().toLowerCase();
-  if (normalized === "contacts_search") return "Contact search";
-  return normalized
-    .replace(/[_-]+/g, " ")
-    .replace(/\b\w/g, (ch) => ch.toUpperCase());
-}
+import { shortModelName, formatDuration, formatToolName } from "../chat/formatters";
+import { getToolSourceIndicator } from "../chat/sourceIndicators";
+import {
+  buildSimulationMetadata,
+  type ChatExecutionMode,
+  type ChatLatencyPreset,
+} from "../chat/simulation";
+import { CHAT_SURFACE_PROFILES } from "../chat/surfaces";
+import { createThingsTicketFromChat, parseTicketCommand } from "../chat/ticketCapture";
+import {
+  ASSISTANT_VOICE_STATUS_EVENT,
+  emitAssistantVoiceControl,
+  type AssistantVoiceStatusDetail,
+} from "../lib/assistantVoiceEvents";
 
 interface Conversation {
   id: string;
@@ -89,6 +78,159 @@ function getSenderName(conv: Conversation): string {
   return dash >= 0 ? title.slice(dash + 3) : title;
 }
 
+function parseExecutionModeParam(value: string | null): ChatExecutionMode | null {
+  if (value === "live" || value === "shadow" || value === "dry_run") return value;
+  return null;
+}
+
+function parseLatencyPresetParam(value: string | null): ChatLatencyPreset | null {
+  if (value === "none" || value === "light" || value === "realistic" || value === "stress") return value;
+  return null;
+}
+
+const MAX_COMPOSER_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const MAX_COMPOSER_ATTACHMENTS = 6;
+const REACTION_ACTOR_ID = "joi-user";
+const QUICK_REACTION_EMOJIS = ["❤️", "🔥", "👍", "😂", "👎", "🥰"] as const;
+const URL_DETECT_RE = /https?:\/\/[^\s<>()]+/i;
+const LINK_PREVIEW_CACHE = new Map<string, LinkPreviewPayload | null>();
+const LINK_PREVIEW_PENDING = new Map<string, Promise<LinkPreviewPayload | null>>();
+
+interface LinkPreviewPayload {
+  url: string;
+  title: string;
+  description?: string;
+  imageUrl?: string;
+  siteName?: string;
+}
+
+interface ComposerAttachment {
+  id: string;
+  type: "photo" | "audio" | "document";
+  name: string;
+  mimeType: string;
+  size: number;
+  data: string;
+}
+
+interface AgentSummary {
+  id: string;
+  name?: string | null;
+  skills?: string[];
+}
+
+interface ComposerTarget {
+  id: string;
+  role: ChatMessage["role"];
+  preview: string;
+}
+
+const TRAILING_MENTION_RE = /(^|\s)@([a-zA-Z0-9._-]{1,64})$/;
+const INLINE_MENTION_RE = /(^|\s)@([a-zA-Z0-9._-]{2,64})/g;
+
+function summarizeMessageForComposer(message: ChatMessage): string {
+  const fallback = message.role === "assistant" ? "Assistant message" : "Message";
+  const source = message.content.trim();
+  if (!source) return fallback;
+  const compact = source.replace(/\s+/g, " ");
+  return compact.length > 120 ? `${compact.slice(0, 117)}...` : compact;
+}
+
+function buildMentionPayload(content: string, agents: AgentSummary[]): ChatMention[] {
+  if (!content.trim()) return [];
+  const mentions: ChatMention[] = [];
+  const seen = new Set<string>();
+
+  for (const match of content.matchAll(INLINE_MENTION_RE)) {
+    const handle = match[2];
+    if (!handle) continue;
+    const normalized = handle.trim().replace(/^@+/, "");
+    if (!normalized) continue;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const agent = agents.find((candidate) => (
+      candidate.id.toLowerCase() === key
+      || (candidate.name && candidate.name.toLowerCase() === key)
+    ));
+    const prefixLength = typeof match[1] === "string" ? match[1].length : 0;
+    const start = typeof match.index === "number" ? match.index + prefixLength : undefined;
+    mentions.push({
+      id: agent?.id,
+      value: normalized,
+      label: agent?.name || undefined,
+      kind: agent ? "agent" : "unknown",
+      start,
+      end: typeof start === "number" ? start + normalized.length + 1 : undefined,
+    });
+    if (mentions.length >= 32) break;
+  }
+
+  return mentions;
+}
+
+function firstHttpUrl(text: string): string | null {
+  if (!text) return null;
+  const match = text.match(URL_DETECT_RE);
+  if (!match?.[0]) return null;
+  return match[0];
+}
+
+async function loadLinkPreview(url: string): Promise<LinkPreviewPayload | null> {
+  if (LINK_PREVIEW_CACHE.has(url)) return LINK_PREVIEW_CACHE.get(url) ?? null;
+  const pending = LINK_PREVIEW_PENDING.get(url);
+  if (pending) return pending;
+
+  const request = fetch(`/api/chat/link-preview?url=${encodeURIComponent(url)}`)
+    .then(async (response) => {
+      if (!response.ok) return null;
+      const payload = await response.json() as LinkPreviewPayload;
+      if (!payload?.title) return null;
+      return payload;
+    })
+    .catch(() => null)
+    .finally(() => {
+      LINK_PREVIEW_PENDING.delete(url);
+    });
+
+  LINK_PREVIEW_PENDING.set(url, request);
+  const resolved = await request;
+  LINK_PREVIEW_CACHE.set(url, resolved);
+  return resolved;
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") resolve(reader.result);
+      else reject(new Error("Failed to read file"));
+    };
+    reader.onerror = () => reject(reader.error || new Error("Failed to read file"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function isAllowedComposerFile(file: File): boolean {
+  const mimeType = (file.type || "").toLowerCase();
+  if (mimeType.startsWith("image/")) return true;
+  if (mimeType.startsWith("audio/")) return true;
+  if (mimeType === "application/pdf") return true;
+  if (mimeType.startsWith("text/")) return true;
+  if (mimeType === "application/json") return true;
+
+  const lower = (file.name || "").toLowerCase();
+  return [".pdf", ".txt", ".md", ".csv", ".json", ".wav", ".mp3", ".m4a", ".ogg", ".webm"]
+    .some((ext) => lower.endsWith(ext));
+}
+
+function composerAttachmentType(file: File): ComposerAttachment["type"] {
+  const mimeType = (file.type || "").toLowerCase();
+  if (mimeType.startsWith("image/")) return "photo";
+  if (mimeType.startsWith("audio/")) return "audio";
+  return "document";
+}
+
 interface ChatProps {
   ws: {
     status: ConnectionStatus;
@@ -98,80 +240,50 @@ interface ChatProps {
   chatMode?: "api" | "claude-code";
 }
 
-interface QualitySuiteOption {
-  id: string;
-  name: string;
-  agent_id?: string;
-  tags?: string[];
-}
-
-type ChatExecutionMode = "live" | "shadow" | "dry_run";
-type ChatLatencyPreset = "none" | "light" | "realistic" | "stress";
-
-interface QaCaseDraft {
-  suiteId: string;
-  name: string;
-  inputMessage: string;
-  expectedTools: string;
-  unexpectedTools: string;
-  expectedContentPatterns: string;
-  maxLatencyMs: string;
-  minQualityScore: string;
-  description: string;
-}
-
-function csvToArray(value: string): string[] {
-  return value
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function defaultQaSuiteId(suites: QualitySuiteOption[]): string {
-  if (suites.length === 0) return "";
-  const preferred = suites.find((suite) => suite.name.toLowerCase() === "core agent behavior");
-  return preferred?.id || suites[0].id;
-}
-
-function chatLatencyProfileFromPreset(preset: ChatLatencyPreset): Record<string, number> | null {
-  if (preset === "none") return null;
-  if (preset === "light") {
-    return { toolMinMs: 80, toolMaxMs: 250, responseMinMs: 120, responseMaxMs: 380, jitterMs: 40 };
-  }
-  if (preset === "realistic") {
-    return { toolMinMs: 180, toolMaxMs: 900, responseMinMs: 300, responseMaxMs: 1400, jitterMs: 200 };
-  }
-  return { toolMinMs: 500, toolMaxMs: 2200, responseMinMs: 1200, responseMaxMs: 4200, jitterMs: 650 };
-}
-
 export default function Chat({ ws, chatMode = "api" }: ChatProps) {
-  const { messages, isStreaming, conversationId, sendMessage, loadConversation } = useChat({
+  const [searchParams, setSearchParams] = useSearchParams();
+  const surface = CHAT_SURFACE_PROFILES.main;
+  const {
+    messages,
+    isStreaming,
+    conversationId,
+    sendMessage,
+    loadConversation,
+    newConversation,
+    setMessageReactions,
+  } = useChat({
     send: ws.send,
     on: ws.on,
   });
   const [input, setInput] = useState("");
-  const [chatExecutionMode, setChatExecutionMode] = useState<ChatExecutionMode>("live");
-  const [chatLatencyPreset, setChatLatencyPreset] = useState<ChatLatencyPreset>("none");
-  const [qaSuites, setQaSuites] = useState<QualitySuiteOption[]>([]);
-  const [qaSuitesLoading, setQaSuitesLoading] = useState(false);
-  const [qaCaseModalOpen, setQaCaseModalOpen] = useState(false);
-  const [qaCaseSaving, setQaCaseSaving] = useState(false);
-  const [qaCaseError, setQaCaseError] = useState<string | null>(null);
-  const [qaCaseDraft, setQaCaseDraft] = useState<QaCaseDraft>({
-    suiteId: "",
-    name: "",
-    inputMessage: "",
-    expectedTools: "",
-    unexpectedTools: "",
-    expectedContentPatterns: "",
-    maxLatencyMs: "",
-    minQualityScore: "0.5",
-    description: "",
-  });
+  const [composerAttachments, setComposerAttachments] = useState<ComposerAttachment[]>([]);
+  const [chatExecutionMode, setChatExecutionMode] = useState<ChatExecutionMode>(surface.defaultExecutionMode);
+  const [chatLatencyPreset, setChatLatencyPreset] = useState<ChatLatencyPreset>(surface.defaultLatencyPreset);
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [convFilter, setConvFilter] = useState<ConversationFilter>("inbox");
+  const [convFilter, setConvFilter] = useState<ConversationFilter>(() => {
+    if (typeof window === "undefined") return "all";
+    const saved = window.localStorage.getItem("joi-chat-filter");
+    if (saved === "all" || saved === "inbox") return saved;
+    return "all";
+  });
   const [accountFilter, setAccountFilter] = useState<string>("all");
+  const [simulationCaseName, setSimulationCaseName] = useState<string | null>(null);
+  const [ticketNote, setTicketNote] = useState<string | null>(null);
+  const [agents, setAgents] = useState<AgentSummary[]>([]);
+  const [replyTarget, setReplyTarget] = useState<ComposerTarget | null>(null);
+  const [forwardTarget, setForwardTarget] = useState<ComposerTarget | null>(null);
+  const [selectedMessageIds, setSelectedMessageIds] = useState<string[]>([]);
+  const [assistantVoice, setAssistantVoice] = useState<AssistantVoiceStatusDetail>({
+    state: "idle",
+    isMuted: false,
+    error: null,
+    isListening: false,
+  });
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const queryInitDoneRef = useRef(false);
+  const autoSendDoneRef = useRef(false);
+  const restoreConversationDoneRef = useRef(false);
 
   const fetchConversations = useCallback(() => {
     const url = convFilter === "all"
@@ -189,6 +301,35 @@ export default function Chat({ ws, chatMode = "api" }: ChatProps) {
     fetchConversations();
   }, [fetchConversations]);
 
+  useEffect(() => {
+    fetch("/api/agents")
+      .then((res) => res.json())
+      .then((data) => {
+        if (!Array.isArray(data?.agents)) return;
+        const next = data.agents
+          .filter((agent: unknown): agent is AgentSummary => {
+            if (!agent || typeof agent !== "object") return false;
+            return typeof (agent as { id?: unknown }).id === "string";
+          })
+          .map((agent: AgentSummary) => ({
+            id: agent.id,
+            name: typeof agent.name === "string" ? agent.name : null,
+            skills: Array.isArray(agent.skills)
+              ? agent.skills.filter((skill): skill is string => typeof skill === "string" && skill.trim().length > 0)
+              : [],
+          }));
+        setAgents(next);
+      })
+      .catch(() => {
+        setAgents([]);
+      });
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem("joi-chat-filter", convFilter);
+  }, [convFilter]);
+
   // Refresh list when a response completes
   useEffect(() => {
     if (!isStreaming && messages.length > 0) {
@@ -201,111 +342,386 @@ export default function Chat({ ws, chatMode = "api" }: ChatProps) {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const ensureQaSuites = useCallback(async (): Promise<QualitySuiteOption[]> => {
-    if (qaSuites.length > 0) return qaSuites;
-    setQaSuitesLoading(true);
-    try {
-      const response = await fetch("/api/quality/suites");
-      if (!response.ok) throw new Error("Failed to load quality suites");
-      const data = await response.json();
-      const suites = Array.isArray(data) ? data as QualitySuiteOption[] : [];
-      setQaSuites(suites);
-      return suites;
-    } catch {
-      return [];
-    } finally {
-      setQaSuitesLoading(false);
-    }
-  }, [qaSuites]);
+  useEffect(() => {
+    setSelectedMessageIds([]);
+  }, [conversationId]);
 
-  const openQaCaseFromAssistant = useCallback(async (assistantMessage: ChatMessage, userPrompt: string) => {
-    const suites = await ensureQaSuites();
-    if (suites.length === 0) {
-      setQaCaseError("No QA suites available. Create one in /quality first.");
-      setQaCaseModalOpen(true);
+  useEffect(() => {
+    setSelectedMessageIds((prev) => prev.filter((id) => messages.some((message) => message.id === id)));
+  }, [messages]);
+
+  useEffect(() => {
+    const onAssistantVoiceStatus = (event: Event) => {
+      const custom = event as CustomEvent<AssistantVoiceStatusDetail>;
+      if (!custom.detail) return;
+      setAssistantVoice(custom.detail);
+    };
+
+    window.addEventListener(ASSISTANT_VOICE_STATUS_EVENT, onAssistantVoiceStatus as EventListener);
+    emitAssistantVoiceControl("status");
+    return () => {
+      window.removeEventListener(ASSISTANT_VOICE_STATUS_EVENT, onAssistantVoiceStatus as EventListener);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (conversationId || restoreConversationDoneRef.current) return;
+
+    const explicitConversationId = searchParams.get("conversationId");
+    const hasAutoSendFlow = searchParams.get("autoSend") === "1";
+    const storedConversationId = typeof window !== "undefined"
+      ? window.localStorage.getItem("joi-chat-last-conversation")
+      : null;
+
+    const preferredConversationId = explicitConversationId || (hasAutoSendFlow ? null : storedConversationId);
+    if (!preferredConversationId) {
+      restoreConversationDoneRef.current = true;
       return;
     }
 
-    const expectedTools = Array.from(new Set(
-      (assistantMessage.toolCalls || [])
-        .map((call) => call.name)
-        .filter((name): name is string => typeof name === "string" && name.trim().length > 0),
+    if (explicitConversationId) {
+      restoreConversationDoneRef.current = true;
+      loadConversation(explicitConversationId);
+      return;
+    }
+
+    if (conversations.length === 0) return;
+
+    const exists = conversations.some((conv) => conv.id === preferredConversationId);
+    restoreConversationDoneRef.current = true;
+    if (exists) {
+      loadConversation(preferredConversationId);
+    }
+  }, [conversationId, conversations, loadConversation, searchParams]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!conversationId) return;
+    window.localStorage.setItem("joi-chat-last-conversation", conversationId);
+  }, [conversationId]);
+
+  useEffect(() => {
+    setReplyTarget(null);
+    setForwardTarget(null);
+  }, [conversationId]);
+
+  useEffect(() => {
+    const currentConversationParam = searchParams.get("conversationId");
+    if (conversationId) {
+      if (currentConversationParam === conversationId) return;
+      const next = new URLSearchParams(searchParams);
+      next.set("conversationId", conversationId);
+      setSearchParams(next, { replace: true });
+      return;
+    }
+    if (!currentConversationParam) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete("conversationId");
+    setSearchParams(next, { replace: true });
+  }, [conversationId, searchParams, setSearchParams]);
+
+  useEffect(() => {
+    if (queryInitDoneRef.current) return;
+    queryInitDoneRef.current = true;
+
+    const mode = parseExecutionModeParam(searchParams.get("execution"));
+    const latency = parseLatencyPresetParam(searchParams.get("latency"));
+    const prompt = searchParams.get("prompt");
+    const caseName = searchParams.get("caseName");
+
+    if (mode) setChatExecutionMode(mode);
+    if (latency) setChatLatencyPreset(latency);
+    if (prompt) setInput(prompt);
+    if (caseName) setSimulationCaseName(caseName);
+  }, [searchParams]);
+
+  useEffect(() => {
+    const autoSendRequested = searchParams.get("autoSend");
+    const prompt = searchParams.get("prompt");
+    if (autoSendRequested !== "1") return;
+    if (autoSendDoneRef.current) return;
+    if (!prompt || !prompt.trim()) return;
+    if (isStreaming || ws.status !== "connected") return;
+
+    autoSendDoneRef.current = true;
+    const simulationMetadata = buildSimulationMetadata(chatMode, chatExecutionMode, chatLatencyPreset);
+    sendMessage(prompt.trim(), chatMode, surface.agentId, simulationMetadata);
+    setInput("");
+
+    const next = new URLSearchParams(searchParams);
+    next.delete("autoSend");
+    setSearchParams(next, { replace: true });
+  }, [
+    chatExecutionMode,
+    chatLatencyPreset,
+    chatMode,
+    isStreaming,
+    searchParams,
+    sendMessage,
+    setSearchParams,
+    surface.agentId,
+    ws.status,
+  ]);
+
+  const addComposerAttachments = useCallback(async (files: File[]) => {
+    if (files.length === 0) return;
+    const acceptedFileTypes = files.filter((file) => isAllowedComposerFile(file));
+    if (acceptedFileTypes.length === 0) return;
+
+    const availableSlots = Math.max(0, MAX_COMPOSER_ATTACHMENTS - composerAttachments.length);
+    if (availableSlots === 0) return;
+
+    const selected = acceptedFileTypes.slice(0, availableSlots);
+    const oversize = selected.filter((file) => file.size > MAX_COMPOSER_ATTACHMENT_BYTES);
+    if (oversize.length > 0) {
+      window.alert(`Max file size is ${Math.floor(MAX_COMPOSER_ATTACHMENT_BYTES / (1024 * 1024))}MB per file.`);
+    }
+
+    const accepted = selected.filter((file) => file.size <= MAX_COMPOSER_ATTACHMENT_BYTES);
+    if (accepted.length === 0) return;
+
+    const built = await Promise.all(accepted.map(async (file) => ({
+      id: crypto.randomUUID(),
+      type: composerAttachmentType(file),
+      name: file.name || "attachment",
+      mimeType: file.type || "application/octet-stream",
+      size: file.size,
+      data: await readFileAsDataUrl(file),
+    })));
+
+    setComposerAttachments((prev) => [...prev, ...built].slice(0, MAX_COMPOSER_ATTACHMENTS));
+  }, [composerAttachments.length]);
+
+  const handleComposerPickFiles = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []);
+    if (files.length > 0) {
+      void addComposerAttachments(files);
+    }
+    event.target.value = "";
+  }, [addComposerAttachments]);
+
+  const removeComposerAttachment = useCallback((id: string) => {
+    setComposerAttachments((prev) => prev.filter((att) => att.id !== id));
+  }, []);
+
+  const trailingMentionQuery = useMemo(() => {
+    const match = input.match(TRAILING_MENTION_RE);
+    return match?.[2]?.toLowerCase() || "";
+  }, [input]);
+
+  const mentionSuggestions = useMemo(() => {
+    if (!trailingMentionQuery) return [];
+    return agents
+      .filter((agent) => {
+        const idMatch = agent.id.toLowerCase().startsWith(trailingMentionQuery);
+        const nameMatch = typeof agent.name === "string"
+          ? agent.name.toLowerCase().includes(trailingMentionQuery)
+          : false;
+        return idMatch || nameMatch;
+      })
+      .slice(0, 6);
+  }, [agents, trailingMentionQuery]);
+
+  const insertMention = useCallback((agent: AgentSummary) => {
+    setInput((current) => (
+      current.replace(TRAILING_MENTION_RE, (_fullMatch, prefix: string) => {
+        const safePrefix = typeof prefix === "string" ? prefix : "";
+        return `${safePrefix}@${agent.id} `;
+      })
     ));
-    const normalizedPrompt = userPrompt.trim();
-    const promptForCase = normalizedPrompt || "TODO: add user prompt";
-    const nameSeed = promptForCase.replace(/\s+/g, " ").slice(0, 72);
-    const suiteId = defaultQaSuiteId(suites);
-    const latencyBudget = assistantMessage.latencyMs
-      ? String(Math.max(1000, Math.round(assistantMessage.latencyMs * 1.25)))
-      : "";
+  }, []);
 
-    setQaCaseDraft({
-      suiteId,
-      name: nameSeed ? `Chat case: ${nameSeed}` : "Chat case",
-      inputMessage: promptForCase,
-      expectedTools: expectedTools.join(", "),
-      unexpectedTools: "",
-      expectedContentPatterns: "",
-      maxLatencyMs: latencyBudget,
-      minQualityScore: "0.5",
-      description: `Created from chat${conversationId ? ` ${conversationId}` : ""}`,
+  const handleReplyToMessage = useCallback((message: ChatMessage) => {
+    setForwardTarget(null);
+    setReplyTarget({
+      id: message.id,
+      role: message.role,
+      preview: summarizeMessageForComposer(message),
     });
-    setQaCaseError(null);
-    setQaCaseModalOpen(true);
-  }, [conversationId, ensureQaSuites]);
+  }, []);
 
-  const saveQaCase = useCallback(async () => {
-    if (!qaCaseDraft.suiteId.trim()) {
-      setQaCaseError("Pick a suite.");
-      return;
-    }
-    if (!qaCaseDraft.name.trim() || !qaCaseDraft.inputMessage.trim()) {
-      setQaCaseError("Case name and input message are required.");
-      return;
-    }
+  const handleForwardMessage = useCallback((message: ChatMessage) => {
+    setReplyTarget(null);
+    setForwardTarget({
+      id: message.id,
+      role: message.role,
+      preview: summarizeMessageForComposer(message),
+    });
+  }, []);
 
-    setQaCaseSaving(true);
-    setQaCaseError(null);
+  const handleToggleReaction = useCallback(async (message: ChatMessage, emoji: string) => {
+    const normalizedEmoji = emoji.trim();
+    if (!message.id || !normalizedEmoji || message.isStreaming) return;
     try {
-      const response = await fetch(`/api/quality/suites/${qaCaseDraft.suiteId}/cases`, {
+      const response = await fetch(`/api/messages/${message.id}/reactions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: qaCaseDraft.name.trim(),
-          description: qaCaseDraft.description.trim() || null,
-          input_message: qaCaseDraft.inputMessage.trim(),
-          expected_tools: csvToArray(qaCaseDraft.expectedTools),
-          unexpected_tools: csvToArray(qaCaseDraft.unexpectedTools),
-          expected_content_patterns: csvToArray(qaCaseDraft.expectedContentPatterns),
-          max_latency_ms: qaCaseDraft.maxLatencyMs.trim() ? Number.parseInt(qaCaseDraft.maxLatencyMs, 10) : null,
-          min_quality_score: Number.parseFloat(qaCaseDraft.minQualityScore) || 0.5,
+          emoji: normalizedEmoji,
+          actorId: REACTION_ACTOR_ID,
         }),
       });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => null);
-        throw new Error(payload?.error || "Failed to create QA case");
-      }
-      setQaCaseModalOpen(false);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to create QA case";
-      setQaCaseError(message);
-    } finally {
-      setQaCaseSaving(false);
+      if (!response.ok) return;
+      const payload = await response.json() as { reactions?: Record<string, string[]> };
+      setMessageReactions(message.id, payload.reactions && typeof payload.reactions === "object"
+        ? payload.reactions
+        : undefined);
+    } catch (error) {
+      console.error("Failed to toggle reaction:", error);
     }
-  }, [qaCaseDraft]);
+  }, [setMessageReactions]);
+
+  const refreshActiveConversation = useCallback(() => {
+    if (!conversationId) return;
+    loadConversation(conversationId);
+  }, [conversationId, loadConversation]);
+
+  const handlePinMessage = useCallback(async (message: ChatMessage) => {
+    if (!message.id) return;
+    try {
+      const response = await fetch(`/api/messages/${message.id}/pin`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pinned: !message.pinned }),
+      });
+      if (!response.ok) return;
+      refreshActiveConversation();
+    } catch (error) {
+      console.error("Failed to toggle pin:", error);
+    }
+  }, [refreshActiveConversation]);
+
+  const handleReportMessage = useCallback(async (message: ChatMessage) => {
+    if (!message.id) return;
+    const note = window.prompt("Report note (optional):", message.reportNote || "");
+    if (note === null) return;
+    try {
+      const response = await fetch(`/api/messages/${message.id}/report`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note }),
+      });
+      if (!response.ok) return;
+      refreshActiveConversation();
+    } catch (error) {
+      console.error("Failed to report message:", error);
+    }
+  }, [refreshActiveConversation]);
+
+  const handleDeleteMessage = useCallback(async (message: ChatMessage) => {
+    if (!message.id) return;
+    const confirmed = window.confirm("Delete this message?");
+    if (!confirmed) return;
+    try {
+      const response = await fetch(`/api/messages/${message.id}`, { method: "DELETE" });
+      if (!response.ok) return;
+      setSelectedMessageIds((prev) => prev.filter((id) => id !== message.id));
+      refreshActiveConversation();
+    } catch (error) {
+      console.error("Failed to delete message:", error);
+    }
+  }, [refreshActiveConversation]);
+
+  const handleSelectMessage = useCallback((message: ChatMessage) => {
+    if (!message.id) return;
+    setSelectedMessageIds((prev) => (
+      prev.includes(message.id)
+        ? prev.filter((id) => id !== message.id)
+        : [...prev, message.id]
+    ));
+  }, []);
+
+  const handleSelectOnlyMessage = useCallback((message: ChatMessage) => {
+    if (!message.id) return;
+    setSelectedMessageIds([message.id]);
+  }, []);
+
+  const handleClearSelectedMessages = useCallback(() => {
+    setSelectedMessageIds([]);
+  }, []);
+
+  const handleCopySelectedMessages = useCallback(() => {
+    if (selectedMessageIds.length === 0) return;
+    const selected = messages.filter((message) => selectedMessageIds.includes(message.id));
+    const payload = selected
+      .map((message) => `[${message.role}] ${message.content.trim()}`)
+      .filter((line) => line.trim().length > 0)
+      .join("\n\n");
+    if (!payload) return;
+    navigator.clipboard.writeText(payload).catch(() => {});
+  }, [messages, selectedMessageIds]);
+
+  const handleDeleteSelectedMessages = useCallback(async () => {
+    if (selectedMessageIds.length === 0) return;
+    const confirmed = window.confirm(`Delete ${selectedMessageIds.length} selected message(s)?`);
+    if (!confirmed) return;
+    try {
+      const response = await fetch("/api/messages/bulk-delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: selectedMessageIds }),
+      });
+      if (!response.ok) return;
+      setSelectedMessageIds([]);
+      refreshActiveConversation();
+    } catch (error) {
+      console.error("Failed to bulk delete messages:", error);
+    }
+  }, [refreshActiveConversation, selectedMessageIds]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim()) return;
-    const latencyProfile = chatLatencyProfileFromPreset(chatLatencyPreset);
-    const simulationMetadata = chatMode === "claude-code"
-      ? undefined
-      : {
-          executionMode: chatExecutionMode,
-          ...(latencyProfile ? { latencyProfile } : {}),
-        };
-    sendMessage(input.trim(), chatMode, "personal", simulationMetadata);
+    const trimmedInput = input.trim();
+    if (!trimmedInput && composerAttachments.length === 0 && !forwardTarget) return;
+
+    const ticketCommand = (composerAttachments.length === 0 && !forwardTarget && !replyTarget)
+      ? parseTicketCommand(trimmedInput)
+      : null;
+    if (ticketCommand) {
+      void createThingsTicketFromChat({
+        conversationId,
+        messages,
+        note: ticketCommand.note,
+        kind: ticketCommand.kind,
+        pendingUserMessage: trimmedInput,
+        commandText: trimmedInput,
+        source: "chat-main",
+      })
+        .then((result) => {
+          setTicketNote(`Ticket created: ${result.title}`);
+        })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : "Failed to create ticket";
+          setTicketNote(message);
+        });
+      setInput("");
+      setReplyTarget(null);
+      setForwardTarget(null);
+      return;
+    }
+
+    const sendMode = composerAttachments.length > 0 ? "api" : chatMode;
+    const simulationMetadata = buildSimulationMetadata(sendMode, chatExecutionMode, chatLatencyPreset);
+    const outgoingAttachments: OutgoingAttachment[] = composerAttachments.map((att) => ({
+      type: att.type,
+      name: att.name,
+      mimeType: att.mimeType,
+      size: att.size,
+      data: att.data,
+    }));
+    const mentions = buildMentionPayload(trimmedInput, agents);
+    const relations: OutgoingMessageRelations = {
+      replyToMessageId: replyTarget?.id,
+      forwardOfMessageId: forwardTarget?.id,
+      mentions,
+    };
+    sendMessage(trimmedInput, sendMode, surface.agentId, simulationMetadata, outgoingAttachments, relations);
     setInput("");
+    setTicketNote(null);
+    setComposerAttachments([]);
+    setReplyTarget(null);
+    setForwardTarget(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   const formatTime = (iso: string) => {
@@ -322,6 +738,18 @@ export default function Chat({ ws, chatMode = "api" }: ChatProps) {
     return d.toLocaleDateString("de-AT", { day: "numeric", month: "short" });
   };
 
+  const handleVoiceListeningToggle = useCallback(() => {
+    if (assistantVoice.state === "idle") {
+      emitAssistantVoiceControl("connect");
+      return;
+    }
+    if (assistantVoice.isMuted) {
+      emitAssistantVoiceControl("unmute");
+      return;
+    }
+    emitAssistantVoiceControl("stop");
+  }, [assistantVoice.isMuted, assistantVoice.state]);
+
   // Derive unique accounts for filter chips
   const accounts = [...new Set(conversations.map((c) => c.channel_id).filter(Boolean))] as string[];
 
@@ -329,7 +757,60 @@ export default function Chat({ ws, chatMode = "api" }: ChatProps) {
     if (accountFilter === "all") return true;
     return conv.channel_id === accountFilter;
   });
-  const isInboxConversation = conversations.find((conv) => conv.id === conversationId)?.type === "inbox";
+  const activeConversation = useMemo(
+    () => conversations.find((conv) => conv.id === conversationId) ?? null,
+    [conversationId, conversations],
+  );
+  const isInboxConversation = activeConversation?.type === "inbox";
+  const messageById = useMemo(
+    () => new Map(messages.map((message) => [message.id, message] as const)),
+    [messages],
+  );
+
+  const handleDeleteConversation = useCallback(async (
+    event: React.MouseEvent,
+    convId: string,
+  ) => {
+    event.stopPropagation();
+    if (!window.confirm("Delete this conversation permanently?")) return;
+
+    try {
+      const response = await fetch(`/api/conversations/${convId}`, { method: "DELETE" });
+      if (!response.ok) throw new Error("Delete failed");
+      setConversations((prev) => prev.filter((conv) => conv.id !== convId));
+      if (convId === conversationId) {
+        newConversation();
+        if (typeof window !== "undefined") {
+          window.localStorage.removeItem("joi-chat-last-conversation");
+        }
+      }
+    } catch (err) {
+      console.error("Failed to delete conversation:", err);
+    }
+  }, [conversationId, newConversation]);
+
+  const handleDeleteFilteredConversations = useCallback(async () => {
+    if (filteredConversations.length === 0) return;
+    const confirmed = window.confirm(`Delete ${filteredConversations.length} conversation(s) currently shown?`);
+    if (!confirmed) return;
+
+    const ids = filteredConversations.map((conversation) => conversation.id);
+    await Promise.all(ids.map(async (id) => {
+      try {
+        await fetch(`/api/conversations/${id}`, { method: "DELETE" });
+      } catch {
+        // best-effort bulk delete
+      }
+    }));
+
+    setConversations((prev) => prev.filter((conv) => !ids.includes(conv.id)));
+    if (conversationId && ids.includes(conversationId)) {
+      newConversation();
+      if (typeof window !== "undefined") {
+        window.localStorage.removeItem("joi-chat-last-conversation");
+      }
+    }
+  }, [conversationId, filteredConversations, newConversation]);
 
   const accountTabs = accounts.length > 1 ? (
     <div className="chat-channel-filters">
@@ -359,6 +840,16 @@ export default function Chat({ ws, chatMode = "api" }: ChatProps) {
           <MetaText className="text-md font-semibold text-secondary">
             {convFilter === "inbox" ? "Inbox" : "All Conversations"}
           </MetaText>
+          {convFilter === "all" && filteredConversations.length > 0 && (
+            <button
+              type="button"
+              className="chat-sidebar-bulk-delete"
+              onClick={handleDeleteFilteredConversations}
+              title="Delete all conversations currently listed"
+            >
+              Delete All
+            </button>
+          )}
           <div className="chat-filter-tabs" style={{ marginLeft: "auto" }}>
             {(["all", "inbox"] as ConversationFilter[]).map((f) => (
               <button
@@ -399,6 +890,16 @@ export default function Chat({ ws, chatMode = "api" }: ChatProps) {
                       <MetaText size="sm">{formatTime(conv.updated_at)}</MetaText>
                     </div>
                   </div>
+                  {convFilter === "all" && (
+                    <button
+                      type="button"
+                      className="chat-conv-delete"
+                      onClick={(event) => void handleDeleteConversation(event, conv.id)}
+                      title="Delete conversation"
+                    >
+                      &times;
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -411,7 +912,28 @@ export default function Chat({ ws, chatMode = "api" }: ChatProps) {
 
       {/* Main chat */}
       <div className="chat-container">
-        <PageHeader title="Chats" />
+        <PageHeader
+          title="Voice Chats"
+          actions={(
+            <button
+              className={`filter-btn${assistantVoice.isListening ? " filter-btn-active" : ""}`}
+              onClick={handleVoiceListeningToggle}
+              title={
+                assistantVoice.state === "idle"
+                  ? "Start voice link"
+                  : assistantVoice.isMuted
+                    ? "Resume voice stream"
+                    : "End voice link"
+              }
+            >
+              {assistantVoice.state === "idle"
+                ? "Start Voice"
+                : assistantVoice.isMuted
+                  ? "Resume Voice"
+                  : "End Voice"}
+            </button>
+          )}
+        />
 
         <div className="chat-messages">
           {messages.length === 0 && (
@@ -420,40 +942,46 @@ export default function Chat({ ws, chatMode = "api" }: ChatProps) {
                 className="chat-welcome-avatar"
                 size={64}
                 active
-                intensity={0.24}
-                variant="transparent"
+                intensity={0.36}
+                variant="firestorm"
                 rings={3}
+                animated
                 ariaLabel="JOI"
               />
               <h3 className="chat-welcome-title">
                 JOI
               </h3>
-              <p>How can I help you today?</p>
+              <p>Speak or type and I will route the right source.</p>
             </div>
           )}
 
-          {messages.map((msg, index) => {
-            let previousUserText = "";
-            for (let i = index - 1; i >= 0; i--) {
-              if (messages[i].role === "user") {
-                previousUserText = messages[i].content;
-                break;
-              }
-            }
+          {messages.map((msg) => {
+            const replySource = msg.replyToMessageId ? messageById.get(msg.replyToMessageId) : null;
+            const replyPreview = replySource
+              ? summarizeMessageForComposer(replySource)
+              : (msg.replyToMessageId ? `Message ${msg.replyToMessageId.slice(0, 8)}` : null);
 
             return (
               <MessageBubble
                 key={msg.id}
                 message={msg}
+                replyPreview={replyPreview}
+                onReply={handleReplyToMessage}
+                onForward={handleForwardMessage}
+                onToggleReaction={handleToggleReaction}
+                onPin={handlePinMessage}
+                onReport={handleReportMessage}
+                onDelete={handleDeleteMessage}
+                onSelect={handleSelectMessage}
+                onSelectOnly={handleSelectOnlyMessage}
+                isSelected={selectedMessageIds.includes(msg.id)}
+                selectionMode={selectedMessageIds.length > 0}
                 onInstruct={isInboxConversation ? (text) => {
                   setInput(text);
                   // Focus the textarea
                   const textarea = document.querySelector<HTMLTextAreaElement>(".chat-compose textarea");
                   textarea?.focus();
                 } : undefined}
-                onCreateQaCase={msg.role === "assistant" && !msg.isStreaming
-                  ? () => { void openQaCaseFromAssistant(msg, previousUserText); }
-                  : undefined}
               />
             );
           })}
@@ -461,154 +989,121 @@ export default function Chat({ ws, chatMode = "api" }: ChatProps) {
           <div ref={messagesEndRef} />
         </div>
 
-        <ConversationTotals messages={messages} />
-        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", padding: "0 16px 8px" }}>
-          <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12 }}>
-            Mode
-            <select
-              value={chatExecutionMode}
-              onChange={(e) => setChatExecutionMode(e.target.value as ChatExecutionMode)}
-              disabled={chatMode === "claude-code"}
-            >
-              <option value="live">live</option>
-              <option value="shadow">shadow</option>
-              <option value="dry_run">dry_run</option>
-            </select>
-          </label>
-          <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12 }}>
-            Latency
-            <select
-              value={chatLatencyPreset}
-              onChange={(e) => setChatLatencyPreset(e.target.value as ChatLatencyPreset)}
-              disabled={chatMode === "claude-code"}
-            >
-              <option value="none">none</option>
-              <option value="light">light</option>
-              <option value="realistic">realistic</option>
-              <option value="stress">stress</option>
-            </select>
-          </label>
-          {chatMode === "claude-code" && <MetaText size="xs">Simulation controls work in API mode only.</MetaText>}
-        </div>
-        <Modal
-          open={qaCaseModalOpen}
-          onClose={() => setQaCaseModalOpen(false)}
-          title="Create QA Case from Chat"
-          width={720}
-        >
-          <div style={{ display: "grid", gap: 10 }}>
-            <label style={{ display: "grid", gap: 4 }}>
-              <MetaText size="xs">Suite</MetaText>
-              <select
-                value={qaCaseDraft.suiteId}
-                onChange={(e) => setQaCaseDraft((prev) => ({ ...prev, suiteId: e.target.value }))}
-                disabled={qaSuitesLoading || qaCaseSaving}
-              >
-                {qaSuites.length === 0 && <option value="">No suites</option>}
-                {qaSuites.map((suite) => (
-                  <option key={suite.id} value={suite.id}>{suite.name}</option>
-                ))}
-              </select>
-            </label>
-
-            <label style={{ display: "grid", gap: 4 }}>
-              <MetaText size="xs">Case Name</MetaText>
-              <input
-                type="text"
-                value={qaCaseDraft.name}
-                onChange={(e) => setQaCaseDraft((prev) => ({ ...prev, name: e.target.value }))}
-                disabled={qaCaseSaving}
-              />
-            </label>
-
-            <label style={{ display: "grid", gap: 4 }}>
-              <MetaText size="xs">Input Message</MetaText>
-              <textarea
-                rows={3}
-                value={qaCaseDraft.inputMessage}
-                onChange={(e) => setQaCaseDraft((prev) => ({ ...prev, inputMessage: e.target.value }))}
-                disabled={qaCaseSaving}
-              />
-            </label>
-
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <label style={{ display: "grid", gap: 4 }}>
-                <MetaText size="xs">Expected Tools (CSV)</MetaText>
-                <input
-                  type="text"
-                  value={qaCaseDraft.expectedTools}
-                  onChange={(e) => setQaCaseDraft((prev) => ({ ...prev, expectedTools: e.target.value }))}
-                  disabled={qaCaseSaving}
-                />
-              </label>
-              <label style={{ display: "grid", gap: 4 }}>
-                <MetaText size="xs">Unexpected Tools (CSV)</MetaText>
-                <input
-                  type="text"
-                  value={qaCaseDraft.unexpectedTools}
-                  onChange={(e) => setQaCaseDraft((prev) => ({ ...prev, unexpectedTools: e.target.value }))}
-                  disabled={qaCaseSaving}
-                />
-              </label>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-              <label style={{ display: "grid", gap: 4 }}>
-                <MetaText size="xs">Expected Content Patterns (CSV)</MetaText>
-                <input
-                  type="text"
-                  value={qaCaseDraft.expectedContentPatterns}
-                  onChange={(e) => setQaCaseDraft((prev) => ({ ...prev, expectedContentPatterns: e.target.value }))}
-                  disabled={qaCaseSaving}
-                />
-              </label>
-              <label style={{ display: "grid", gap: 4 }}>
-                <MetaText size="xs">Max Latency (ms)</MetaText>
-                <input
-                  type="number"
-                  value={qaCaseDraft.maxLatencyMs}
-                  onChange={(e) => setQaCaseDraft((prev) => ({ ...prev, maxLatencyMs: e.target.value }))}
-                  disabled={qaCaseSaving}
-                />
-              </label>
-              <label style={{ display: "grid", gap: 4 }}>
-                <MetaText size="xs">Min Quality Score</MetaText>
-                <input
-                  type="number"
-                  min={0}
-                  max={1}
-                  step={0.1}
-                  value={qaCaseDraft.minQualityScore}
-                  onChange={(e) => setQaCaseDraft((prev) => ({ ...prev, minQualityScore: e.target.value }))}
-                  disabled={qaCaseSaving}
-                />
-              </label>
-            </div>
-
-            <label style={{ display: "grid", gap: 4 }}>
-              <MetaText size="xs">Description</MetaText>
-              <input
-                type="text"
-                value={qaCaseDraft.description}
-                onChange={(e) => setQaCaseDraft((prev) => ({ ...prev, description: e.target.value }))}
-                disabled={qaCaseSaving}
-              />
-            </label>
-
-            {qaCaseError && <MetaText size="xs" style={{ color: "var(--red)" }}>{qaCaseError}</MetaText>}
-
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button type="button" className="msg-action-btn" onClick={() => setQaCaseModalOpen(false)} disabled={qaCaseSaving}>Cancel</button>
-              <button type="button" className="msg-action-btn msg-action-btn--primary" onClick={() => { void saveQaCase(); }} disabled={qaCaseSaving || qaSuitesLoading}>
-                {qaCaseSaving ? "Creating..." : "Create Case"}
-              </button>
-            </div>
+        {selectedMessageIds.length > 0 && (
+          <div className="chat-selection-toolbar">
+            <span className="chat-selection-count">{selectedMessageIds.length} selected</span>
+            <button type="button" className="msg-action-btn" onClick={handleCopySelectedMessages}>Copy</button>
+            <button type="button" className="msg-action-btn msg-action-btn--warn" onClick={() => { void handleDeleteSelectedMessages(); }}>Delete</button>
+            <button type="button" className="msg-action-btn" onClick={handleClearSelectedMessages}>Clear</button>
           </div>
-        </Modal>
+        )}
+
+        <ConversationTotals messages={messages} />
+        <div className="chat-sim-toolbar chat-sim-toolbar--simple">
+          <div className="chat-sim-summary">
+            <div className="chat-sim-status-row">
+              {simulationCaseName && (
+                <Badge status="info">Simulating case: {simulationCaseName}</Badge>
+              )}
+            </div>
+            <MetaText size="xs">
+              Autopilot is active. Logs in <a href="/logs">/logs</a>
+            </MetaText>
+            <MetaText size="xs">
+              Command: <code>/ticket reason</code> creates a Things item in JOI/Inbox with full chat context.
+            </MetaText>
+            {ticketNote && <MetaText size="xs" className="chat-qa-note">{ticketNote}</MetaText>}
+          </div>
+        </div>
         <form className="chat-compose" onSubmit={handleSubmit}>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*,application/pdf,audio/*,text/plain,text/markdown,text/csv,application/json"
+            multiple
+            onChange={handleComposerPickFiles}
+            style={{ display: "none" }}
+          />
+          {(replyTarget || forwardTarget) && (
+            <div className="chat-compose-context">
+              {replyTarget && (
+                <div className="chat-compose-context-item">
+                  <span className="chat-compose-context-label">Replying to {replyTarget.role}</span>
+                  <span className="chat-compose-context-preview">{replyTarget.preview}</span>
+                  <button
+                    type="button"
+                    className="chat-compose-context-clear"
+                    onClick={() => setReplyTarget(null)}
+                    aria-label="Clear reply target"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+              {forwardTarget && (
+                <div className="chat-compose-context-item">
+                  <span className="chat-compose-context-label">Forwarding {forwardTarget.role}</span>
+                  <span className="chat-compose-context-preview">{forwardTarget.preview}</span>
+                  <button
+                    type="button"
+                    className="chat-compose-context-clear"
+                    onClick={() => setForwardTarget(null)}
+                    aria-label="Clear forward target"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+          {composerAttachments.length > 0 && (
+            <div className="chat-compose-attachments">
+              {composerAttachments.map((att) => (
+                <div key={att.id} className="chat-compose-attachment-pill">
+                  {att.type === "photo" ? (
+                    <img
+                      src={att.data}
+                      alt={att.name}
+                      className="chat-compose-attachment-thumb"
+                    />
+                  ) : (
+                    <span className="chat-compose-attachment-thumb chat-compose-attachment-thumb--file">
+                      {att.type === "audio" ? "A" : "F"}
+                    </span>
+                  )}
+                  <span>{att.name}</span>
+                  <button
+                    type="button"
+                    className="chat-compose-attachment-remove"
+                    onClick={() => removeComposerAttachment(att.id)}
+                    aria-label={`Remove ${att.name}`}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <button
+            type="button"
+            className="chat-attach-btn"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isStreaming || composerAttachments.length >= MAX_COMPOSER_ATTACHMENTS || ws.status !== "connected"}
+            title={composerAttachments.length >= MAX_COMPOSER_ATTACHMENTS ? `Maximum ${MAX_COMPOSER_ATTACHMENTS} attachments` : "Attach files"}
+          >
+            +
+          </button>
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onPaste={(e) => {
+              const files = Array.from(e.clipboardData?.files || []);
+              const supported = files.filter((file) => isAllowedComposerFile(file));
+              if (supported.length > 0) {
+                e.preventDefault();
+                void addComposerAttachments(supported);
+              }
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
@@ -620,14 +1115,35 @@ export default function Chat({ ws, chatMode = "api" }: ChatProps) {
             autoFocus
             rows={1}
           />
+          {mentionSuggestions.length > 0 && (
+            <div className="chat-mention-suggestions">
+              {mentionSuggestions.map((agent) => (
+                <button
+                  key={agent.id}
+                  type="button"
+                  className="chat-mention-suggestion"
+                  onClick={() => insertMention(agent)}
+                >
+                  <span className="chat-mention-suggestion-id">@{agent.id}</span>
+                  {agent.name && <span className="chat-mention-suggestion-name">{agent.name}</span>}
+                </button>
+              ))}
+            </div>
+          )}
           <button
             type="submit"
-            disabled={!input.trim() || isStreaming || ws.status !== "connected"}
+            disabled={(!input.trim() && composerAttachments.length === 0 && !forwardTarget) || isStreaming || ws.status !== "connected"}
           >
             {isStreaming ? "..." : "Send"}
           </button>
         </form>
       </div>
+      <ConversationHistoryPanel
+        conversationId={conversationId}
+        conversationAgentId={activeConversation?.agent_id || null}
+        messages={messages}
+        agents={agents}
+      />
     </div>
   );
 }
@@ -639,19 +1155,69 @@ function ConversationTotals({ messages }: { messages: ChatMessage[] }) {
   let totalTokens = 0;
   let totalCost = 0;
   let totalLatency = 0;
+  let assistantTokens = 0;
+  let toolTokens = 0;
+  let assistantCost = 0;
+  let toolCost = 0;
+  let hasAssistantBreakdown = false;
+  let hasToolBreakdown = false;
+  let hasAnyCostValue = false;
 
   for (const m of assistantMsgs) {
     if (m.usage) totalTokens += m.usage.inputTokens + m.usage.outputTokens;
-    if (m.costUsd) totalCost += m.costUsd;
+    if (typeof m.costUsd === "number") {
+      totalCost += m.costUsd;
+      hasAnyCostValue = true;
+    }
     if (m.latencyMs) totalLatency += m.latencyMs;
+
+    if (m.assistantUsage) {
+      assistantTokens += m.assistantUsage.inputTokens + m.assistantUsage.outputTokens;
+      hasAssistantBreakdown = true;
+    }
+    if (m.toolUsage) {
+      toolTokens += m.toolUsage.inputTokens + m.toolUsage.outputTokens;
+      hasToolBreakdown = true;
+    }
+    if (!m.assistantUsage && !m.toolUsage && m.usage) {
+      assistantTokens += m.usage.inputTokens + m.usage.outputTokens;
+      hasAssistantBreakdown = true;
+    }
+
+    if (typeof m.assistantCostUsd === "number") {
+      assistantCost += m.assistantCostUsd;
+      hasAssistantBreakdown = true;
+      hasAnyCostValue = true;
+    }
+    if (typeof m.toolCostUsd === "number") {
+      toolCost += m.toolCostUsd;
+      hasToolBreakdown = true;
+      hasAnyCostValue = true;
+    }
+    if (m.assistantCostUsd === undefined && m.toolCostUsd === undefined && typeof m.costUsd === "number") {
+      assistantCost += m.costUsd;
+      hasAssistantBreakdown = true;
+    }
   }
 
-  if (totalTokens === 0) return null;
+  if (totalTokens === 0 && totalCost === 0) return null;
 
   const parts: string[] = [];
-  parts.push(`${totalTokens.toLocaleString()} tok`);
-  if (totalCost > 0) {
-    parts.push(totalCost < 0.01 ? `$${totalCost.toFixed(4)}` : `$${totalCost.toFixed(3)}`);
+  if (totalTokens > 0) parts.push(`${totalTokens.toLocaleString()} tok`);
+  if (hasAnyCostValue) {
+    parts.push(formatUsd(totalCost));
+  }
+  if (hasAssistantBreakdown && assistantTokens > 0) {
+    parts.push(`assistant ${assistantTokens.toLocaleString()} tok`);
+  }
+  if (hasToolBreakdown && toolTokens > 0) {
+    parts.push(`tools ${toolTokens.toLocaleString()} tok`);
+  }
+  if (hasAssistantBreakdown && hasAnyCostValue) {
+    parts.push(`assistant ${formatUsd(assistantCost)}`);
+  }
+  if (hasToolBreakdown && hasAnyCostValue) {
+    parts.push(`tools ${formatUsd(toolCost)}`);
   }
   parts.push(`${(totalLatency / 1000).toFixed(1)}s`);
   parts.push(`${assistantMsgs.length} msgs`);
@@ -665,6 +1231,362 @@ function ConversationTotals({ messages }: { messages: ChatMessage[] }) {
         </MetaText>
       ))}
     </div>
+  );
+}
+
+function formatHistoryTimestamp(iso?: string): string {
+  if (!iso) return "pending";
+  const d = new Date(iso);
+  return `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+}
+
+function formatHistoryTimestampLong(iso?: string): string {
+  if (!iso) return "pending";
+  const d = new Date(iso);
+  return `${d.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })} ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
+}
+
+function formatHistoryGap(previousIso?: string, nextIso?: string): string | null {
+  if (!previousIso || !nextIso) return null;
+  const previous = new Date(previousIso).getTime();
+  const next = new Date(nextIso).getTime();
+  if (!Number.isFinite(previous) || !Number.isFinite(next) || next <= previous) return null;
+
+  const seconds = Math.round((next - previous) / 1000);
+  if (seconds < 60) return `+${seconds}s`;
+
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes < 60) {
+    return remainingSeconds > 0 ? `+${minutes}m ${remainingSeconds}s` : `+${minutes}m`;
+  }
+
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (hours < 24) {
+    return remainingMinutes > 0 ? `+${hours}h ${remainingMinutes}m` : `+${hours}h`;
+  }
+
+  const days = Math.floor(hours / 24);
+  const remainingHours = hours % 24;
+  return remainingHours > 0 ? `+${days}d ${remainingHours}h` : `+${days}d`;
+}
+
+function formatUsd(amount: number): string {
+  return amount < 0.01 ? `$${amount.toFixed(4)}` : `$${amount.toFixed(3)}`;
+}
+
+function summarizeHistoryContent(content: string): string {
+  const compact = (content || "").replace(/\s+/g, " ").trim();
+  if (!compact) return "(no text)";
+  return compact.length > 190 ? `${compact.slice(0, 187)}...` : compact;
+}
+
+function ConversationHistoryPanel({
+  conversationId,
+  conversationAgentId,
+  messages,
+  agents,
+}: {
+  conversationId: string | null;
+  conversationAgentId: string | null;
+  messages: ChatMessage[];
+  agents: AgentSummary[];
+}) {
+  const [copiedPayload, setCopiedPayload] = useState<"transcript" | "json" | null>(null);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const assistantMessages = messages.filter((message) => message.role === "assistant" && !message.isStreaming);
+  const totalTurns = messages.filter((message) => message.role === "user" || message.role === "assistant").length;
+  const agentsById = useMemo(
+    () => new Map(agents.map((agent) => [agent.id, agent] as const)),
+    [agents],
+  );
+
+  const agentIdsInPlay = useMemo(() => {
+    const ids = new Set<string>();
+    if (conversationAgentId) ids.add(conversationAgentId);
+    for (const message of messages) {
+      if (message.agentId) ids.add(message.agentId);
+      for (const delegation of message.delegations || []) {
+        if (delegation.agentId) ids.add(delegation.agentId);
+      }
+    }
+    return [...ids];
+  }, [conversationAgentId, messages]);
+
+  const configuredSkills = useMemo(() => {
+    const skills = new Set<string>();
+    for (const agentId of agentIdsInPlay) {
+      const agent = agentsById.get(agentId);
+      for (const skill of agent?.skills || []) {
+        const trimmed = skill.trim();
+        if (trimmed.length > 0) skills.add(trimmed);
+      }
+    }
+    return [...skills].sort((a, b) => a.localeCompare(b));
+  }, [agentIdsInPlay, agentsById]);
+
+  const observedModels = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const message of messages) {
+      if (message.model) {
+        counts.set(message.model, (counts.get(message.model) || 0) + 1);
+      }
+      if (message.toolModel) {
+        counts.set(`tools:${message.toolModel}`, (counts.get(`tools:${message.toolModel}`) || 0) + 1);
+      }
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  }, [messages]);
+
+  const observedTools = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const message of messages) {
+      for (const toolCall of message.toolCalls || []) {
+        const key = toolCall.name?.trim();
+        if (!key) continue;
+        counts.set(key, (counts.get(key) || 0) + 1);
+      }
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  }, [messages]);
+
+  const transcriptPayload = useMemo(() => {
+    if (messages.length === 0) return "";
+    const header = [
+      `Conversation: ${conversationId || "pending"}`,
+      `Agent: ${conversationAgentId || "unknown"}`,
+      `Generated: ${new Date().toISOString()}`,
+      "",
+    ].join("\n");
+
+    const body = messages.map((message, index) => {
+      const lines: string[] = [];
+      const metaParts = [
+        `#${index + 1}`,
+        message.role.toUpperCase(),
+        formatHistoryTimestampLong(message.createdAt),
+      ];
+      if (message.model) metaParts.push(`model=${message.model}`);
+      if (message.toolModel) metaParts.push(`toolModel=${message.toolModel}`);
+      if (message.provider) metaParts.push(`provider=${message.provider}`);
+      if (message.agentId) metaParts.push(`agent=${message.agentId}`);
+      lines.push(metaParts.join(" | "));
+      if (message.toolCalls && message.toolCalls.length > 0) {
+        lines.push(`tools: ${message.toolCalls.map((toolCall) => toolCall.name).join(", ")}`);
+      }
+      lines.push((message.content || "").trim() || "(no text)");
+      return lines.join("\n");
+    }).join("\n\n---\n\n");
+
+    return `${header}${body}`;
+  }, [conversationAgentId, conversationId, messages]);
+
+  const jsonPayload = useMemo(() => (
+    JSON.stringify({
+      conversationId,
+      conversationAgentId,
+      exportedAt: new Date().toISOString(),
+      messages,
+    }, null, 2)
+  ), [conversationAgentId, conversationId, messages]);
+
+  const copyPayload = useCallback((kind: "transcript" | "json", value: string) => {
+    if (!value) return;
+    navigator.clipboard.writeText(value)
+      .then(() => {
+        setCopiedPayload(kind);
+        window.setTimeout(() => {
+          setCopiedPayload((current) => (current === kind ? null : current));
+        }, 1400);
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleCopyMessage = useCallback((message: ChatMessage) => {
+    const payload = (message.content || "").trim();
+    if (!payload) return;
+    navigator.clipboard.writeText(payload)
+      .then(() => {
+        setCopiedMessageId(message.id);
+        window.setTimeout(() => {
+          setCopiedMessageId((current) => (current === message.id ? null : current));
+        }, 1200);
+      })
+      .catch(() => {});
+  }, []);
+
+  return (
+    <aside className="chat-history-panel">
+      <div className="chat-history-header">
+        <MetaText className="text-md font-semibold text-secondary">Debug Flow</MetaText>
+        <MetaText size="xs">
+          {assistantMessages.length} assistant / {totalTurns} turns
+        </MetaText>
+        {conversationId && (
+          <MetaText size="xs" className="chat-history-conversation-id">
+            {conversationId}
+          </MetaText>
+        )}
+        <div className="chat-history-actions">
+          <button
+            type="button"
+            className="chat-history-copy-btn"
+            onClick={() => copyPayload("transcript", transcriptPayload)}
+            disabled={messages.length === 0}
+          >
+            {copiedPayload === "transcript" ? "Copied Transcript" : "Copy Transcript"}
+          </button>
+          <button
+            type="button"
+            className="chat-history-copy-btn"
+            onClick={() => copyPayload("json", jsonPayload)}
+            disabled={messages.length === 0}
+          >
+            {copiedPayload === "json" ? "Copied JSON" : "Copy JSON"}
+          </button>
+        </div>
+      </div>
+      <div className="chat-history-summary">
+        <div className="chat-history-section">
+          <MetaText size="xs" className="chat-history-section-label">Agents</MetaText>
+          <div className="chat-history-chip-row">
+            {agentIdsInPlay.length === 0 && <span className="chat-history-empty-chip">none</span>}
+            {agentIdsInPlay.map((agentId) => {
+              const agent = agentsById.get(agentId);
+              const label = agent?.name?.trim() ? `${agent.name} (${agentId})` : agentId;
+              return (
+                <span key={agentId} className="chat-history-chip">{label}</span>
+              );
+            })}
+          </div>
+        </div>
+        <div className="chat-history-section">
+          <MetaText size="xs" className="chat-history-section-label">Configured Skills</MetaText>
+          <div className="chat-history-chip-row">
+            {configuredSkills.length === 0 && <span className="chat-history-empty-chip">none visible</span>}
+            {configuredSkills.map((skill) => (
+              <span key={skill} className="chat-history-chip">{skill}</span>
+            ))}
+          </div>
+        </div>
+        <div className="chat-history-section">
+          <MetaText size="xs" className="chat-history-section-label">Observed Models</MetaText>
+          <div className="chat-history-chip-row">
+            {observedModels.length === 0 && <span className="chat-history-empty-chip">none</span>}
+            {observedModels.map(([model, count]) => (
+              <span key={model} className="chat-history-chip">
+                {model.startsWith("tools:") ? `tools ${shortModelName(model.slice(6))}` : shortModelName(model)} x{count}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="chat-history-section">
+          <MetaText size="xs" className="chat-history-section-label">Observed Tools</MetaText>
+          <div className="chat-history-chip-row">
+            {observedTools.length === 0 && <span className="chat-history-empty-chip">none</span>}
+            {observedTools.map(([tool, count]) => (
+              <span key={tool} className="chat-history-chip">{formatToolName(tool)} x{count}</span>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="chat-history-list">
+        {messages.length === 0 && (
+          <MetaText size="sm" className="chat-history-empty">No history yet.</MetaText>
+        )}
+        {messages.map((message, index) => {
+          const previousMessage = index > 0 ? messages[index - 1] : null;
+          const flowDelta = previousMessage ? formatHistoryGap(previousMessage.createdAt, message.createdAt) : null;
+          const assistantTokenCount = message.assistantUsage
+            ? (message.assistantUsage.inputTokens + message.assistantUsage.outputTokens)
+            : (!message.toolUsage && message.usage ? (message.usage.inputTokens + message.usage.outputTokens) : null);
+          const toolTokenCount = message.toolUsage
+            ? (message.toolUsage.inputTokens + message.toolUsage.outputTokens)
+            : null;
+          const fallbackTokenCount = assistantTokenCount === null && toolTokenCount === null && message.usage
+            ? (message.usage.inputTokens + message.usage.outputTokens)
+            : null;
+          const assistantCost = typeof message.assistantCostUsd === "number"
+            ? message.assistantCostUsd
+            : (message.toolCostUsd === undefined && typeof message.costUsd === "number" ? message.costUsd : undefined);
+          const toolCost = typeof message.toolCostUsd === "number" ? message.toolCostUsd : undefined;
+          const fallbackCost = assistantCost === undefined && toolCost === undefined && typeof message.costUsd === "number"
+            ? message.costUsd
+            : undefined;
+          const assistantCostLabel = typeof assistantCost === "number"
+            ? `assistant ${formatUsd(assistantCost)}`
+            : null;
+          const toolCostLabel = typeof toolCost === "number"
+            ? `tools ${formatUsd(toolCost)}`
+            : null;
+          const fallbackCostLabel = typeof fallbackCost === "number"
+            ? formatUsd(fallbackCost)
+            : null;
+          const latencyLabel = typeof message.latencyMs === "number" && message.latencyMs > 0
+            ? formatDuration(message.latencyMs)
+            : null;
+          const modelLabel = message.model ? shortModelName(message.model) : null;
+          const actionsModelLabel = message.toolModel ? shortModelName(message.toolModel) : null;
+          const toolNames = (message.toolCalls || [])
+            .map((toolCall) => formatToolName(toolCall.name))
+            .filter((name) => name.length > 0);
+          const roleLabel = message.role === "assistant"
+            ? "Assistant"
+            : message.role === "user"
+              ? "User"
+              : "System";
+
+          return (
+            <div key={message.id || `${message.role}-${index}`} className={`chat-history-item chat-history-item-${message.role}`}>
+              <div className="chat-history-item-top">
+                <div className="chat-history-item-ident">
+                  <span className="chat-history-order">#{index + 1}</span>
+                  <span className={`chat-history-role chat-history-role-${message.role}`}>{roleLabel}</span>
+                </div>
+                <div className="chat-history-item-timewrap">
+                  <span className="chat-history-time">{formatHistoryTimestamp(message.createdAt)}</span>
+                  {flowDelta && <span className="chat-history-gap">{flowDelta}</span>}
+                </div>
+              </div>
+              <div className="chat-history-models">
+                {modelLabel && <Badge status="muted" className="chat-history-badge">{modelLabel}</Badge>}
+                {actionsModelLabel && <Badge status="info" className="chat-history-badge">tools: {actionsModelLabel}</Badge>}
+                {message.provider && <Badge status="muted" className="chat-history-badge">{message.provider}</Badge>}
+              </div>
+              <div className="chat-history-metrics">
+                {assistantTokenCount !== null && <span className="chat-history-metric-assistant">assistant {assistantTokenCount.toLocaleString()} tok</span>}
+                {toolTokenCount !== null && <span className="chat-history-metric-tool">tools {toolTokenCount.toLocaleString()} tok</span>}
+                {fallbackTokenCount !== null && <span className="chat-history-metric-total">{fallbackTokenCount.toLocaleString()} tok</span>}
+                {assistantCostLabel && <span className="chat-history-metric-assistant">{assistantCostLabel}</span>}
+                {toolCostLabel && <span className="chat-history-metric-tool">{toolCostLabel}</span>}
+                {fallbackCostLabel && <span className="chat-history-metric-total">{fallbackCostLabel}</span>}
+                {latencyLabel && <span>{latencyLabel}</span>}
+              </div>
+              {toolNames.length > 0 && (
+                <MetaText size="xs" className="chat-history-tools">
+                  tools: {toolNames.slice(0, 4).join(", ")}
+                  {toolNames.length > 4 ? " +" : ""}
+                </MetaText>
+              )}
+              <div className="chat-history-content-wrap">
+                <div className="chat-history-content">
+                  {message.content?.trim() ? message.content : summarizeHistoryContent(message.content)}
+                </div>
+                <button
+                  type="button"
+                  className="chat-history-inline-copy"
+                  onClick={() => handleCopyMessage(message)}
+                  disabled={!message.content?.trim()}
+                >
+                  {copiedMessageId === message.id ? "Copied" : "Copy"}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </aside>
   );
 }
 
@@ -701,7 +1623,7 @@ function EmailView({ content }: { content: string }) {
     doc.open();
     doc.write(`<!DOCTYPE html><html><head><style>
       body { margin: 0; padding: 12px; font-family: -apple-system, system-ui, sans-serif; font-size: 13px; color: #e0e0e0; background: transparent; overflow-x: hidden; word-break: break-word; }
-      a { color: #a78bfa; }
+      a { color: #ff5a1f; }
       img { max-width: 100%; height: auto; }
       table { max-width: 100% !important; }
     </style></head><body>${body}</body></html>`);
@@ -752,16 +1674,17 @@ function AttachmentBadges({ attachments }: { attachments: Attachment[] }) {
         {attachments.map((att, i) => {
           const hasMedia = att.mediaId && att.status === "ready";
           const isImage = att.type === "photo" || att.mimeType?.startsWith("image/");
+          const hasInlineDataImage = Boolean(!hasMedia && isImage && att.fileUrl?.startsWith("data:"));
 
           // Inline thumbnail for downloaded images
-          if (hasMedia && isImage && att.thumbnailUrl) {
+          if ((hasMedia && isImage && att.thumbnailUrl) || hasInlineDataImage) {
             return (
               <img
                 key={i}
-                src={att.thumbnailUrl}
+                src={hasInlineDataImage ? att.fileUrl : att.thumbnailUrl}
                 alt={att.filename || "photo"}
                 className="chat-attachment-thumb"
-                onClick={() => setLightboxAtt(att)}
+                onClick={hasMedia ? () => setLightboxAtt(att) : undefined}
                 loading="lazy"
               />
             );
@@ -810,6 +1733,41 @@ function ChatMediaLightbox({ attachment, onClose }: { attachment: Attachment; on
   );
 }
 
+function LinkPreviewCard({ preview }: { preview: LinkPreviewPayload }) {
+  const siteLabel = preview.siteName || (() => {
+    try {
+      return new URL(preview.url).hostname;
+    } catch {
+      return "";
+    }
+  })();
+
+  return (
+    <a
+      className="chat-link-preview"
+      href={preview.url}
+      target="_blank"
+      rel="noreferrer"
+    >
+      {preview.imageUrl && (
+        <img
+          src={preview.imageUrl}
+          alt=""
+          className="chat-link-preview-image"
+          loading="lazy"
+        />
+      )}
+      <div className="chat-link-preview-body">
+        {siteLabel && <div className="chat-link-preview-site">{siteLabel}</div>}
+        <div className="chat-link-preview-title">{preview.title}</div>
+        {preview.description && (
+          <div className="chat-link-preview-description">{preview.description}</div>
+        )}
+      </div>
+    </a>
+  );
+}
+
 function MessageActions({ copied, onCopy, onInstruct, onTask, onExtract }: {
   copied: boolean;
   onCopy: () => void;
@@ -837,14 +1795,35 @@ function MessageActions({ copied, onCopy, onInstruct, onTask, onExtract }: {
 
 function MessageBubble({
   message,
+  replyPreview,
+  onReply,
+  onForward,
+  onToggleReaction,
+  onPin,
+  onReport,
+  onDelete,
+  onSelect,
+  onSelectOnly,
+  isSelected,
+  selectionMode,
   onInstruct,
-  onCreateQaCase,
 }: {
   message: ChatMessage;
+  replyPreview?: string | null;
+  onReply?: (message: ChatMessage) => void;
+  onForward?: (message: ChatMessage) => void;
+  onToggleReaction?: (message: ChatMessage, emoji: string) => void;
+  onPin?: (message: ChatMessage) => void;
+  onReport?: (message: ChatMessage) => void;
+  onDelete?: (message: ChatMessage) => void;
+  onSelect?: (message: ChatMessage) => void;
+  onSelectOnly?: (message: ChatMessage) => void;
+  isSelected?: boolean;
+  selectionMode?: boolean;
   onInstruct?: (text: string) => void;
-  onCreateQaCase?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const [preview, setPreview] = useState<LinkPreviewPayload | null>(null);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(message.content).then(() => {
@@ -893,25 +1872,107 @@ function MessageBubble({
   const hasAttachments = message.attachments && message.attachments.length > 0;
   const hasToolCalls = Boolean(message.toolCalls && message.toolCalls.length > 0);
   const hasPlannedSteps = Boolean(message.plannedSteps && message.plannedSteps.length > 0);
+  const forwardMeta = message.forwardingMetadata && typeof message.forwardingMetadata === "object"
+    ? message.forwardingMetadata
+    : null;
+  const forwardSourceRole = typeof forwardMeta?.sourceRole === "string" ? forwardMeta.sourceRole : null;
+  const mentionValues = (message.mentions || [])
+    .map((mention) => (typeof mention.value === "string" ? mention.value.trim() : ""))
+    .filter((value) => value.length > 0);
+  const linkUrl = firstHttpUrl(message.content);
+  const timestampLabel = message.createdAt
+    ? new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : null;
+  const hasComposerActions = !message.isStreaming && Boolean(
+    onReply || onForward || onPin || onReport || onDelete || onSelectOnly,
+  );
+  const reactionEntries = Object.entries(message.reactions || {})
+    .map(([emoji, actors]) => {
+      const actorList = Array.isArray(actors)
+        ? actors.filter((actor): actor is string => typeof actor === "string")
+        : [];
+      if (actorList.length === 0) return null;
+      return {
+        emoji,
+        count: actorList.length,
+        reacted: actorList.includes(REACTION_ACTOR_ID),
+      };
+    })
+    .filter((entry): entry is { emoji: string; count: number; reacted: boolean } => Boolean(entry))
+    .sort((a, b) => b.count - a.count);
+  const canReact = Boolean(onToggleReaction) && !message.isStreaming && message.role === "assistant";
+
+  useEffect(() => {
+    if (!linkUrl) {
+      setPreview(null);
+      return;
+    }
+    let active = true;
+    loadLinkPreview(linkUrl).then((payload) => {
+      if (!active) return;
+      setPreview(payload);
+    });
+    return () => {
+      active = false;
+    };
+  }, [linkUrl]);
 
   return (
-    <div className={`chat-message ${message.role}${emailMode ? " chat-message-email" : ""}`}>
+    <div className={`chat-message ${message.role}${emailMode ? " chat-message-email" : ""}${isSelected ? " chat-message-selected" : ""}`}>
+      {selectionMode && (
+        <label className="chat-message-select-toggle">
+          <input
+            type="checkbox"
+            checked={Boolean(isSelected)}
+            onChange={() => onSelect?.(message)}
+          />
+          <span>Select</span>
+        </label>
+      )}
+      {message.pinned && (
+        <div className="chat-message-context chat-message-context--pin">
+          📌 Pinned
+        </div>
+      )}
+      {message.reported && (
+        <div className="chat-message-context chat-message-context--report">
+          ⚠️ Reported{message.reportNote ? `: ${message.reportNote}` : ""}
+        </div>
+      )}
+      {message.replyToMessageId && (
+        <div className="chat-message-context chat-message-context--reply">
+          Replying to {replyPreview || `message ${message.replyToMessageId.slice(0, 8)}`}
+        </div>
+      )}
+      {message.forwardOfMessageId && (
+        <div className="chat-message-context chat-message-context--forward">
+          Forwarded{forwardSourceRole ? ` from ${forwardSourceRole}` : ""}
+        </div>
+      )}
+      {mentionValues.length > 0 && (
+        <div className="chat-message-mentions">
+          {mentionValues.slice(0, 4).map((value, index) => (
+            <span key={`${message.id}-${value}-${index}`} className="chat-message-mention-chip">@{value}</span>
+          ))}
+        </div>
+      )}
       {message.role === "assistant" ? (
         <>
           <div className="joi-avatar-row">
             <JoiOrb
               className="joi-msg-avatar"
               size={22}
-              active={Boolean(message.isStreaming)}
-              intensity={message.isStreaming ? 0.44 : 0.14}
+              active
+              intensity={message.isStreaming ? 0.5 : 0.22}
               variant={message.isStreaming ? "firestorm" : "transparent"}
               rings={2}
-              animated={Boolean(message.isStreaming)}
+              animated
               ariaLabel="JOI"
             />
             <MetaText size="xs" className="text-accent font-semibold joi-label">JOI</MetaText>
           </div>
           <ReactMarkdown remarkPlugins={[remarkGfm, remarkFrontmatter]}>{message.content}</ReactMarkdown>
+          {preview && <LinkPreviewCard preview={preview} />}
           {message.isStreaming && !message.content && (
             <div className="streaming-indicator">
               <span /><span /><span />
@@ -947,31 +2008,122 @@ function MessageBubble({
           {!message.isStreaming && (message.model || message.usage || message.latencyMs || message.toolCalls?.length) && (
             <MessageMeta message={message} />
           )}
-          {!message.isStreaming && onCreateQaCase && (
-            <div className="msg-actions">
-              <button type="button" className="msg-action-btn" onClick={onCreateQaCase} title="Create a QA test case from this assistant turn">
-                QA Case
-              </button>
-              <button type="button" className="msg-action-btn" onClick={handleCopy} title="Copy message">
-                {copied ? "Copied!" : "Copy"}
-              </button>
+                </>
+              ) : emailMode ? (
+                <>
+                  <EmailView content={message.content} />
+                  {hasAttachments && <AttachmentBadges attachments={message.attachments!} />}
+                  {onInstruct && <MessageActions copied={copied} onCopy={handleCopy} onInstruct={handleInstruct} onTask={handleTask} onExtract={handleExtract} />}
+                </>
+              ) : (
+                <>
+                  {message.content && <span>{message.content}</span>}
+                  {preview && <LinkPreviewCard preview={preview} />}
+                  {hasAttachments && <AttachmentBadges attachments={message.attachments!} />}
+                  {message.role === "user" && onInstruct && (
+                    <MessageActions copied={copied} onCopy={handleCopy} onInstruct={handleInstruct} onTask={handleTask} onExtract={handleExtract} />
+                  )}
+                </>
+              )}
+      {timestampLabel && (
+        <div className="chat-message-time">
+          {timestampLabel}
+        </div>
+      )}
+      {(reactionEntries.length > 0 || canReact) && (
+        <div className="chat-message-reactions">
+          {reactionEntries.map((reaction) => (
+            <button
+              key={`${message.id}-${reaction.emoji}`}
+              type="button"
+              className={`chat-message-reaction${reaction.reacted ? " chat-message-reaction--active" : ""}`}
+              onClick={() => onToggleReaction?.(message, reaction.emoji)}
+              title={`Toggle ${reaction.emoji} reaction`}
+            >
+              <span>{reaction.emoji}</span>
+              {reaction.count > 1 && <span className="chat-message-reaction-count">{reaction.count}</span>}
+            </button>
+          ))}
+          {canReact && (
+            <div className="chat-message-reaction-picker">
+              {QUICK_REACTION_EMOJIS.map((emoji) => (
+                <button
+                  key={`${message.id}-pick-${emoji}`}
+                  type="button"
+                  className="chat-message-reaction-btn"
+                  onClick={() => onToggleReaction?.(message, emoji)}
+                  aria-label={`React with ${emoji}`}
+                >
+                  {emoji}
+                </button>
+              ))}
             </div>
           )}
-        </>
-      ) : emailMode ? (
-        <>
-          <EmailView content={message.content} />
-          {hasAttachments && <AttachmentBadges attachments={message.attachments!} />}
-          {onInstruct && <MessageActions copied={copied} onCopy={handleCopy} onInstruct={handleInstruct} onTask={handleTask} onExtract={handleExtract} />}
-        </>
-      ) : (
-        <>
-          {message.content && <span>{message.content}</span>}
-          {hasAttachments && <AttachmentBadges attachments={message.attachments!} />}
-          {message.role === "user" && onInstruct && (
-            <MessageActions copied={copied} onCopy={handleCopy} onInstruct={handleInstruct} onTask={handleTask} onExtract={handleExtract} />
+        </div>
+      )}
+      {hasComposerActions && (
+        <div className="msg-actions">
+          {onReply && (
+            <button
+              type="button"
+              className="msg-action-btn"
+              onClick={() => onReply(message)}
+              title="Reply to this message"
+            >
+              Reply
+            </button>
           )}
-        </>
+          {onForward && (
+            <button
+              type="button"
+              className="msg-action-btn"
+              onClick={() => onForward(message)}
+              title="Forward this message"
+            >
+              Forward
+            </button>
+          )}
+          {onPin && (
+            <button
+              type="button"
+              className={`msg-action-btn${message.pinned ? " msg-action-btn--primary" : ""}`}
+              onClick={() => onPin(message)}
+              title={message.pinned ? "Unpin message" : "Pin message"}
+            >
+              {message.pinned ? "Unpin" : "Pin"}
+            </button>
+          )}
+          {onReport && (
+            <button
+              type="button"
+              className="msg-action-btn msg-action-btn--warn"
+              onClick={() => onReport(message)}
+              title="Report this message"
+            >
+              Report
+            </button>
+          )}
+          {onDelete && (
+            <button
+              type="button"
+              className="msg-action-btn msg-action-btn--warn"
+              onClick={() => onDelete(message)}
+              title="Delete this message"
+            >
+              Delete
+            </button>
+          )}
+          {onSelectOnly && (
+            <button
+              type="button"
+              className="msg-action-btn"
+              onClick={() => onSelectOnly(message)}
+              title="Select this message"
+            >
+              Select
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
@@ -980,6 +2132,7 @@ function MessageBubble({
 function ChatToolBadge({ tc }: { tc: ToolCall }) {
   const isError = tc.error;
   const isPending = tc.result === undefined;
+  const source = getToolSourceIndicator(tc.name);
   const [elapsedMs, setElapsedMs] = useState<number>(() => {
     if (tc.startedAt) return Math.max(0, Date.now() - tc.startedAt);
     return 0;
@@ -1005,6 +2158,14 @@ function ChatToolBadge({ tc }: { tc: ToolCall }) {
       className={`chat-tool-pill${isError ? " error" : isPending ? " pending" : " done"}`}
       title={tc.name}
     >
+      <span
+        className="tool-source-sigil"
+        title={source.label}
+        style={{ "--sig-c1": source.c1, "--sig-c2": source.c2 } as CSSProperties}
+      >
+        <span className="tool-source-pip" />
+        <span className="tool-source-eq"><i /><i /><i /></span>
+      </span>
       <span className="chat-tool-name">{toolLabel}</span>
       {durationLabel && <span className="chat-tool-duration">{durationLabel}</span>}
       {isPending && !isError && <span className="chat-tool-spinner" />}

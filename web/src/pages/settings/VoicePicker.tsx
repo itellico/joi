@@ -63,15 +63,16 @@ export const GENDERS: Record<string, string> = {
   gender_neutral: "Neutral",
 };
 
-export default function VoicePicker({ provider, selectedVoiceId, onSelect }: {
+export default function VoicePicker({ provider, language, selectedVoiceId, onSelect }: {
   provider: string;
+  language?: string;
   selectedVoiceId: string;
   onSelect: (id: string) => void;
 }) {
   const [voices, setVoices] = useState<VoiceInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [languageFilter, setLanguageFilter] = useState("");
+  const [languageFilter, setLanguageFilter] = useState(language || "");
   const [genderFilter, setGenderFilter] = useState("");
   const [search, setSearch] = useState("");
   const [previewingId, setPreviewingId] = useState<string | null>(null);
@@ -84,6 +85,8 @@ export default function VoicePicker({ provider, selectedVoiceId, onSelect }: {
     setError(null);
     try {
       const params = new URLSearchParams({ provider });
+      const activeLanguage = languageFilter || language || "";
+      if (activeLanguage) params.set("language", activeLanguage);
       if (genderFilter) params.set("gender", genderFilter);
       const res = await fetch(`/api/livekit/voices?${params}`);
       if (!res.ok) {
@@ -97,7 +100,11 @@ export default function VoicePicker({ provider, selectedVoiceId, onSelect }: {
     } finally {
       setLoading(false);
     }
-  }, [provider, genderFilter]);
+  }, [provider, genderFilter, languageFilter, language]);
+
+  useEffect(() => {
+    setLanguageFilter(language || "");
+  }, [language]);
 
   useEffect(() => { fetchVoices(); }, [fetchVoices]);
 
@@ -120,6 +127,7 @@ export default function VoicePicker({ provider, selectedVoiceId, onSelect }: {
         body: JSON.stringify({
           voiceId,
           provider,
+          ...(languageFilter || language ? { language: languageFilter || language } : {}),
           ...(previewText.trim() ? { text: previewText.trim() } : {}),
         }),
       });

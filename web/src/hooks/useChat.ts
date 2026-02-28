@@ -22,6 +22,33 @@ export interface Attachment {
   status?: string;
 }
 
+export interface OutgoingAttachment {
+  type: string;
+  name?: string;
+  mimeType?: string;
+  url?: string;
+  data?: string;
+  mediaId?: string;
+  size?: number;
+}
+
+export interface ChatMention {
+  id?: string;
+  value: string;
+  label?: string;
+  kind?: "agent" | "person" | "unknown";
+  start?: number;
+  end?: number;
+}
+
+export type MessageReactions = Record<string, string[]>;
+
+export interface OutgoingMessageRelations {
+  replyToMessageId?: string;
+  forwardOfMessageId?: string;
+  mentions?: ChatMention[];
+}
+
 export interface Delegation {
   delegationId?: string;
   agentId: string;
@@ -64,6 +91,18 @@ export interface ChatMessage {
       hitRate?: number;
     };
   };
+  assistantUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  };
+  toolUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  };
   latencyMs?: number;
   ttftMs?: number;
   timings?: {
@@ -78,6 +117,8 @@ export interface ChatMessage {
   isStreaming?: boolean;
   createdAt?: string;
   costUsd?: number;
+  assistantCostUsd?: number;
+  toolCostUsd?: number;
   // Agent routing/delegation metadata
   agentId?: string;
   agentName?: string;
@@ -85,6 +126,14 @@ export interface ChatMessage {
   routeConfidence?: number;
   delegations?: Delegation[];
   cacheStats?: CacheStats;
+  replyToMessageId?: string;
+  forwardOfMessageId?: string;
+  mentions?: ChatMention[];
+  forwardingMetadata?: Record<string, unknown>;
+  reactions?: MessageReactions;
+  pinned?: boolean;
+  reported?: boolean;
+  reportNote?: string | null;
 }
 
 interface UseChatOptions {
@@ -92,12 +141,16 @@ interface UseChatOptions {
   on: (type: string, handler: (frame: Frame) => void) => () => void;
 }
 
-/** Strip <think> blocks and [emotion] tags (LLM instructions, not user-facing) */
+/** Strip <think> blocks, [emotion] tags, and fenced code blocks (LLM internals, not user-facing) */
 function stripInternalTags(text: string): string {
   // Strip complete <think>...</think> blocks
   let cleaned = text.replace(/<think>[\s\S]*?<\/think>\s*/g, "");
   // Strip unclosed <think> at the end (model still outputting thinking)
   cleaned = cleaned.replace(/<think>[\s\S]*$/, "");
+  // Strip fenced code blocks (```...```) — model sometimes outputs code interpreter style
+  cleaned = cleaned.replace(/```[^\n]*\n[\s\S]*?```\s*/g, "");
+  // Strip unclosed fenced code block at the end (model still outputting code)
+  cleaned = cleaned.replace(/```[^\n]*\n[\s\S]*$/, "");
   // Strip emotion tags like [happy], [thinking], [curious] etc.
   cleaned = cleaned.replace(/\[(happy|thinking|surprised|sad|excited|curious|amused|playful|warm|gentle|earnest|confident|thoughtful|serious|empathetic)\]\s*/gi, "");
   return cleaned;
@@ -158,6 +211,7 @@ export function useChat({ send, on }: UseChatOptions) {
               content: stripInternalTags(streamBufferRef.current),
               isStreaming: true,
               streamStartedAt: startedAt,
+              createdAt: new Date().toISOString(),
             },
           ];
         });
@@ -173,8 +227,12 @@ export function useChat({ send, on }: UseChatOptions) {
           messageId: string;
           conversationId?: string;
           usage?: ChatMessage["usage"];
+          assistantUsage?: ChatMessage["assistantUsage"];
+          toolUsage?: ChatMessage["toolUsage"];
           latencyMs?: number;
           costUsd?: number;
+          assistantCostUsd?: number;
+          toolCostUsd?: number;
           timings?: ChatMessage["timings"];
           agentId?: string;
           agentName?: string;
@@ -211,7 +269,11 @@ export function useChat({ send, on }: UseChatOptions) {
                 toolModel: data.toolModel,
                 toolProvider: data.toolProvider,
                 usage: data.usage,
+                assistantUsage: data.assistantUsage,
+                toolUsage: data.toolUsage,
                 costUsd: data.costUsd,
+                assistantCostUsd: data.assistantCostUsd,
+                toolCostUsd: data.toolCostUsd,
                 latencyMs,
                 ttftMs,
                 timings: data.timings,
@@ -222,6 +284,7 @@ export function useChat({ send, on }: UseChatOptions) {
                 routeConfidence: data.routeConfidence,
                 delegations: data.delegations,
                 cacheStats: data.cacheStats,
+                createdAt: last.createdAt || new Date().toISOString(),
               },
             ];
           }
@@ -236,7 +299,11 @@ export function useChat({ send, on }: UseChatOptions) {
               toolModel: data.toolModel,
               toolProvider: data.toolProvider,
               usage: data.usage,
+              assistantUsage: data.assistantUsage,
+              toolUsage: data.toolUsage,
               costUsd: data.costUsd,
+              assistantCostUsd: data.assistantCostUsd,
+              toolCostUsd: data.toolCostUsd,
               latencyMs,
               ttftMs,
               timings: data.timings,
@@ -247,6 +314,7 @@ export function useChat({ send, on }: UseChatOptions) {
               routeConfidence: data.routeConfidence,
               delegations: data.delegations,
               cacheStats: data.cacheStats,
+              createdAt: new Date().toISOString(),
             },
           ];
         });
@@ -507,20 +575,62 @@ export function useChat({ send, on }: UseChatOptions) {
   }, [on, conversationId]);
 
   const sendMessage = useCallback(
-    (content: string, mode?: "api" | "claude-code", agentId?: string, metadata?: Record<string, unknown>) => {
-      if (!content.trim() || isStreaming) return;
+    (
+      content: string,
+      mode?: "api" | "claude-code",
+      agentId?: string,
+      metadata?: Record<string, unknown>,
+      attachments?: OutgoingAttachment[],
+      relations?: OutgoingMessageRelations,
+    ) => {
+      const trimmed = content.trim();
+      const normalizedAttachments = Array.isArray(attachments)
+        ? attachments.filter((att) => att && typeof att.type === "string" && att.type.trim().length > 0)
+        : [];
+      const replyToMessageId = typeof relations?.replyToMessageId === "string"
+        ? relations.replyToMessageId.trim()
+        : "";
+      const forwardOfMessageId = typeof relations?.forwardOfMessageId === "string"
+        ? relations.forwardOfMessageId.trim()
+        : "";
+      const normalizedMentions = Array.isArray(relations?.mentions)
+        ? relations.mentions
+          .filter((mention) => mention && typeof mention.value === "string" && mention.value.trim().length > 0)
+          .map((mention) => ({
+            ...mention,
+            value: mention.value.trim().replace(/^@+/, ""),
+          }))
+          .slice(0, 32)
+        : [];
+      const hasForwardSource = forwardOfMessageId.length > 0;
+      if ((!trimmed && normalizedAttachments.length === 0 && !hasForwardSource) || isStreaming) return;
 
       const reqId = String(++requestIdRef.current);
       streamBufferRef.current = "";
       streamStartRef.current = Date.now();
       firstTokenRef.current = 0;
 
+      const localAttachments: Attachment[] | undefined = normalizedAttachments.length > 0
+        ? normalizedAttachments.map((att) => ({
+            type: att.type as Attachment["type"],
+            filename: att.name,
+            mimeType: att.mimeType,
+            size: att.size,
+            mediaId: att.mediaId,
+            fileUrl: att.data?.startsWith("data:") ? att.data : undefined,
+          }))
+        : undefined;
+
       // Add user message
       const userMsg: ChatMessage = {
         id: crypto.randomUUID(),
         role: "user",
-        content,
+        content: trimmed || (hasForwardSource ? "Forwarded message" : ""),
+        attachments: localAttachments,
         createdAt: new Date().toISOString(),
+        replyToMessageId: replyToMessageId || undefined,
+        forwardOfMessageId: forwardOfMessageId || undefined,
+        mentions: normalizedMentions.length > 0 ? normalizedMentions : undefined,
       };
 
       // Add placeholder for assistant response
@@ -538,8 +648,12 @@ export function useChat({ send, on }: UseChatOptions) {
       send("chat.send", {
         conversationId,
         agentId: agentId || "personal",
-        content,
+        content: trimmed,
         mode: mode || "api",
+        ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
+        ...(replyToMessageId ? { replyToMessageId } : {}),
+        ...(forwardOfMessageId ? { forwardOfMessageId } : {}),
+        ...(normalizedMentions.length > 0 ? { mentions: normalizedMentions } : {}),
         ...(metadata ? { metadata } : {}),
       }, reqId);
     },
@@ -563,7 +677,24 @@ export function useChat({ send, on }: UseChatOptions) {
               token_usage?: {
                 inputTokens: number;
                 outputTokens: number;
+                cacheReadTokens?: number;
+                cacheWriteTokens?: number;
                 latencyMs?: number;
+                assistantUsage?: {
+                  inputTokens: number;
+                  outputTokens: number;
+                  cacheReadTokens?: number;
+                  cacheWriteTokens?: number;
+                };
+                toolUsage?: {
+                  inputTokens: number;
+                  outputTokens: number;
+                  cacheReadTokens?: number;
+                  cacheWriteTokens?: number;
+                };
+                assistantCostUsd?: number;
+                toolCostUsd?: number;
+                costUsd?: number;
                 voiceCache?: {
                   cacheHits?: number;
                   cacheMisses?: number;
@@ -576,6 +707,14 @@ export function useChat({ send, on }: UseChatOptions) {
                 };
               };
               attachments?: Attachment[];
+              reply_to_message_id?: string | null;
+              forward_of_message_id?: string | null;
+              mentions?: ChatMention[] | null;
+              forwarding_metadata?: Record<string, unknown> | null;
+              reactions?: MessageReactions | null;
+              pinned?: boolean | null;
+              reported?: boolean | null;
+              report_note?: string | null;
               media?: Array<{
                 id: string;
                 media_type: string;
@@ -624,12 +763,31 @@ export function useChat({ send, on }: UseChatOptions) {
                   const msg: ChatMessage = {
                     id: m.id,
                     role: m.role as ChatMessage["role"],
-                    content: m.content || "",
+                    content: m.role === "assistant" ? stripInternalTags(m.content || "") : (m.content || ""),
                     model: m.model,
                     usage: m.token_usage || undefined,
+                    assistantUsage: m.token_usage?.assistantUsage || undefined,
+                    toolUsage: m.token_usage?.toolUsage || undefined,
+                    assistantCostUsd: typeof m.token_usage?.assistantCostUsd === "number"
+                      ? m.token_usage.assistantCostUsd
+                      : undefined,
+                    toolCostUsd: typeof m.token_usage?.toolCostUsd === "number"
+                      ? m.token_usage.toolCostUsd
+                      : undefined,
+                    costUsd: typeof m.token_usage?.costUsd === "number"
+                      ? m.token_usage.costUsd
+                      : undefined,
                     latencyMs: typeof m.token_usage?.latencyMs === "number" ? m.token_usage.latencyMs : undefined,
                     attachments: enrichedAttachments,
                     createdAt: m.created_at,
+                    replyToMessageId: m.reply_to_message_id || undefined,
+                    forwardOfMessageId: m.forward_of_message_id || undefined,
+                    mentions: Array.isArray(m.mentions) ? m.mentions : undefined,
+                    forwardingMetadata: m.forwarding_metadata || undefined,
+                    reactions: m.reactions && typeof m.reactions === "object" ? m.reactions : undefined,
+                    pinned: Boolean(m.pinned),
+                    reported: Boolean(m.reported),
+                    reportNote: typeof m.report_note === "string" ? m.report_note : null,
                   };
                   // Attach tool calls with their results
                   if (m.tool_calls && m.tool_calls.length > 0) {
@@ -669,6 +827,14 @@ export function useChat({ send, on }: UseChatOptions) {
     setMessages((prev) => [...prev, msg]);
   }, []);
 
+  const setMessageReactions = useCallback((messageId: string, reactions?: MessageReactions) => {
+    setMessages((prev) => prev.map((message) => (
+      message.id === messageId
+        ? { ...message, reactions }
+        : message
+    )));
+  }, []);
+
   return {
     messages,
     isStreaming,
@@ -677,5 +843,6 @@ export function useChat({ send, on }: UseChatOptions) {
     loadConversation,
     newConversation,
     addMessage,
+    setMessageReactions,
   };
 }

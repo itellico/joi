@@ -101,6 +101,7 @@ export default function Contacts() {
     if (status && status !== "all") params.set("status", status);
     params.set("limit", String(limit));
     params.set("offset", String(off));
+    params.set("dedupe", "1");
 
     const startedAt = performance.now();
     setLoading(true);

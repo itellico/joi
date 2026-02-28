@@ -188,7 +188,7 @@ export default function SystemReport() {
                 <XAxis dataKey="day" tick={{ fontSize: 10 }} stroke="var(--text-muted)" tickFormatter={formatDate} />
                 <YAxis tick={{ fontSize: 10 }} stroke="var(--text-muted)" tickFormatter={(v) => formatCost(v)} />
                 <Tooltip {...tooltipStyle} labelFormatter={(v: any) => formatDate(String(v))} formatter={(v: any) => [formatCost(Number(v ?? 0)), ""]} />
-                <Bar dataKey="stt" stackId="1" fill="#22d3ee" name="STT (DeepGram)" radius={[0, 0, 0, 0]} />
+                <Bar dataKey="stt" stackId="1" fill="#ff8a2f" name="STT (DeepGram)" radius={[0, 0, 0, 0]} />
                 <Bar dataKey="tts" stackId="1" fill="#f472b6" name="TTS (Cartesia)" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>

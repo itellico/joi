@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Quality OS v4 - Orchestrated</title>
+    <style>
+      :root {
+        --bg: #f3f6fc;
+        --panel: #ffffff;
+        --ink: #0f172a;
+        --muted: #64748b;
+        --line: #d8e1f0;
+        --brand: #0a84ff;
+        --ok: #16a34a;
+        --warn: #ea580c;
+        --bad: #dc2626;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        font-family: "SF Pro Display", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: var(--ink);
+        background: radial-gradient(circle at 10% -20%, #e4efff 0%, #f3f6fc 45%), var(--bg);
+      }
+
+      .wrap {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 16px 14px 24px;
+        display: grid;
+        gap: 12px;
+      }
+
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 14px;
+      }
+
+      .hero {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        align-items: center;
+      }
+
+      .hero h1 {
+        margin: 0;
+        font-size: 26px;
+        font-weight: 650;
+      }
+
+      .hero p {
+        margin: 4px 0 0;
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      .badge {
+        border: 1px solid #b9d8ff;
+        background: #edf6ff;
+        color: #0b61bf;
+        border-radius: 999px;
+        padding: 8px 12px;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
+      .kpis {
+        margin-top: 10px;
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .kpi {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 9px;
+      }
+
+      .kpi .l {
+        font-size: 11px;
+        color: var(--muted);
+      }
+
+      .kpi b {
+        display: block;
+        margin-top: 2px;
+        font-size: 22px;
+      }
+
+      h2 {
+        margin: 0;
+        font-size: 18px;
+        font-weight: 640;
+      }
+
+      .sub {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .exec-grid {
+        margin-top: 10px;
+        display: grid;
+        grid-template-columns: 1.1fr 1fr 1fr 1fr;
+        gap: 8px;
+      }
+
+      .exec {
+        border: 1px solid #dce5f3;
+        border-radius: 12px;
+        padding: 10px;
+        background: #fbfdff;
+      }
+
+      .exec b {
+        display: block;
+        font-size: 13px;
+      }
+
+      .exec p {
+        margin: 4px 0 0;
+        color: #52617a;
+        font-size: 12px;
+      }
+
+      .pill {
+        display: inline-block;
+        margin-top: 6px;
+        border-radius: 999px;
+        padding: 3px 8px;
+        font-size: 11px;
+        border: 1px solid #d4e1f6;
+        background: #f8fbff;
+        color: #36557e;
+      }
+
+      .pill.ok { color: #0f7a3d; border-color: #bde7cf; background: #ecfdf3; }
+      .pill.warn { color: #9a3412; border-color: #fed7aa; background: #fff7ed; }
+      .pill.bad { color: #991b1b; border-color: #fecaca; background: #fef2f2; }
+
+      .flow {
+        margin-top: 10px;
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .step {
+        border: 1px solid #dce5f3;
+        border-radius: 12px;
+        padding: 10px;
+      }
+
+      .step b {
+        display: block;
+        font-size: 13px;
+      }
+
+      .step p {
+        margin: 4px 0 0;
+        font-size: 12px;
+        color: #55657f;
+      }
+
+      .dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        display: inline-block;
+        margin-right: 6px;
+      }
+
+      .ok { background: var(--ok); }
+      .warn { background: var(--warn); }
+      .bad { background: var(--bad); }
+
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 10px;
+        font-size: 13px;
+      }
+
+      th,
+      td {
+        border-bottom: 1px solid #e4ebf6;
+        padding: 9px 6px;
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #667085;
+      }
+
+      .log {
+        margin-top: 10px;
+        border: 1px solid #d8e1f0;
+        background: #0f172a;
+        color: #e7effc;
+        border-radius: 12px;
+        padding: 10px;
+        font-size: 12px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+
+      .log p { margin: 0 0 4px; }
+      .log p:last-child { margin-bottom: 0; }
+
+      @media (max-width: 1060px) {
+        .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .exec-grid { grid-template-columns: 1fr 1fr; }
+        .flow { grid-template-columns: 1fr 1fr; }
+        .grid { grid-template-columns: 1fr; }
+      }
+
+      @media (max-width: 700px) {
+        .hero { flex-direction: column; align-items: flex-start; }
+        .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .exec-grid,
+        .flow { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <section class="card">
+        <div class="hero">
+          <div>
+            <h1>Agent Reliability</h1>
+            <p>Auto-testing is fully automatic. You only watch status and outcomes.</p>
+          </div>
+          <span class="badge">Autopilot on · no manual test setup</span>
+        </div>
+
+        <div class="kpis">
+          <div class="kpi"><span class="l">Agents</span><b>12</b></div>
+          <div class="kpi"><span class="l">Skills</span><b>67</b></div>
+          <div class="kpi"><span class="l">Test cases</span><b>412</b></div>
+          <div class="kpi"><span class="l">Runs (24h)</span><b>1,184</b></div>
+          <div class="kpi"><span class="l">Passed</span><b>1,039</b></div>
+          <div class="kpi"><span class="l">Need repair</span><b>23</b></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>AutoCoder collaboration</h2>
+        <p class="sub">Simple view of who is doing what right now (Claude, Codex, Gemini + orchestrator).</p>
+
+        <div class="exec-grid">
+          <div class="exec">
+            <b>AutoCoder orchestrator</b>
+            <p>Task: personal.memory_recall regression</p>
+            <span class="pill warn">planning</span>
+            <p style="margin-top: 8px;"><span class="dot ok"></span>Consensus: 2/2 agree -> proceed</p>
+          </div>
+          <div class="exec">
+            <b>Claude</b>
+            <p>Proposed patch strategy and risk checks</p>
+            <span class="pill ok">agreed</span>
+          </div>
+          <div class="exec">
+            <b>Codex</b>
+            <p>Implementing patch + tests</p>
+            <span class="pill warn">running</span>
+          </div>
+          <div class="exec">
+            <b>Gemini</b>
+            <p>Secondary validation and style checks</p>
+            <span class="pill">queued</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Flag from chat -> quality -> repair</h2>
+        <p class="sub">When you flag a bad chat response, it automatically enters this loop.</p>
+
+        <div class="flow">
+          <div class="step">
+            <b>1. Chat flag</b>
+            <p>User clicks "Flag issue" in chat.</p>
+          </div>
+          <div class="step">
+            <b>2. Auto link</b>
+            <p>System maps it to agent + skill + run context.</p>
+          </div>
+          <div class="step">
+            <b>3. Auto repair</b>
+            <p>Issue created and sent to AutoCoder queue.</p>
+          </div>
+          <div class="step">
+            <b>4. Auto verify</b>
+            <p>System re-tests and closes or re-opens.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="grid">
+        <section class="card">
+          <h2>Coverage status</h2>
+          <p class="sub">All agents, all skills, no manual filtering required.</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Agent</th>
+                <th>Skills OK</th>
+                <th>Failing</th>
+                <th>Untested 24h</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>personal</td><td>18 / 22</td><td><span class="pill bad">4</span></td><td><span class="pill warn">2</span></td></tr>
+              <tr><td>knowledge-sync</td><td>12 / 13</td><td><span class="pill bad">1</span></td><td><span class="pill">0</span></td></tr>
+              <tr><td>skill-scout</td><td>8 / 11</td><td><span class="pill bad">3</span></td><td><span class="pill warn">1</span></td></tr>
+              <tr><td>store-auditor</td><td>9 / 9</td><td><span class="pill ok">0</span></td><td><span class="pill">0</span></td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="card">
+          <h2>Latest flagged chats</h2>
+          <p class="sub">Directly visible here, with repair status.</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Flagged from</th>
+                <th>Mapped to</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>/chat @ 12:58</td><td>personal.memory_recall</td><td><span class="pill warn">repair running</span></td></tr>
+              <tr><td>/assistant bubble @ 12:44</td><td>knowledge-sync.latency_control</td><td><span class="pill">queued</span></td></tr>
+              <tr><td>/chat @ 12:31</td><td>personal.tool_selection</td><td><span class="pill ok">verified</span></td></tr>
+            </tbody>
+          </table>
+
+          <div class="log">
+            <p>[12:58:13] chat_flag_received: conv 9ab2...</p>
+            <p>[12:58:13] mapped: personal.memory_recall</p>
+            <p>[12:58:14] issue_created: P1</p>
+            <p>[12:58:15] autocoder_started: codex-cli</p>
+            <p>[12:58:37] verify_pending: scheduled</p>
+          </div>
+        </section>
+      </section>
+    </main>
+  </body>
+</html>

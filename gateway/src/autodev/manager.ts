@@ -16,7 +16,6 @@ import {
 } from "../things/client.js";
 import { writeMemory } from "../knowledge/writer.js";
 import { searchMemories } from "../knowledge/searcher.js";
-import { createAutoDevRuntimeIssue, pushToAutodev } from "../quality/issues.js";
 import type { JoiConfig } from "../config/schema.js";
 import {
   getAutoDevAgentId,
@@ -53,7 +52,20 @@ interface TaskExecutionResult {
   executor: AutoDevExecutor;
 }
 
+interface DiscussionTurn {
+  turn: number;
+  executor: "codex-cli" | "claude-code";
+  content: string;
+}
+
 type ExecutorRuntimeState = "idle" | "running" | "success" | "error";
+
+interface AutoDevRuntimeConfig {
+  executorMode: AutoDevExecutorMode;
+  parallelExecution: boolean;
+  discussionMode: boolean;
+  discussionMaxTurns: number;
+}
 
 const PROJECT_TITLE = "JOI";
 const POLL_INTERVAL_MS = 30_000; // Check for new tasks every 30s when idle
@@ -67,6 +79,8 @@ const AUTODEV_GEMINI_TIMEOUT_MS = readTimeoutFromEnv("JOI_AUTODEV_GEMINI_TIMEOUT
 const AUTODEV_CODEX_TIMEOUT_MS = readTimeoutFromEnv("JOI_AUTODEV_CODEX_TIMEOUT_MS", 30 * 60 * 1000);
 const AUTODEV_EXECUTOR_MODE = getAutoDevExecutorMode();
 const AUTODEV_PARALLEL_EXECUTION = readBooleanFromEnv("JOI_AUTODEV_PARALLEL_EXECUTION", true);
+const AUTODEV_DISCUSSION_MODE = readBooleanFromEnv("JOI_AUTODEV_DISCUSSION_MODE", false);
+const AUTODEV_DISCUSSION_MAX_TURNS = readBoundedIntFromEnv("JOI_AUTODEV_DISCUSSION_MAX_TURNS", 5, 1, 5);
 const AUTODEV_CLAUDE_MODEL = process.env.JOI_AUTODEV_CLAUDE_MODEL?.trim() || undefined;
 const AUTODEV_GEMINI_MODEL = process.env.JOI_AUTODEV_GEMINI_MODEL?.trim() || undefined;
 const AUTODEV_CODEX_MODEL = process.env.JOI_AUTODEV_CODEX_MODEL?.trim() || undefined;
@@ -88,6 +102,22 @@ function readBooleanFromEnv(name: string, fallback: boolean): boolean {
   return fallback;
 }
 
+function readBoundedIntFromEnv(name: string, fallback: number, min: number, max: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(parsed)));
+}
+
+function normalizeExecutorMode(value: unknown, fallback: AutoDevExecutorMode): AutoDevExecutorMode {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (raw === "auto" || raw === "claude-code" || raw === "gemini-cli" || raw === "codex-cli") {
+    return raw;
+  }
+  return fallback;
+}
+
 export class AutoDevManager {
   private state: AutoDevState = "waiting";
   private projectUuid: string | null = null;
@@ -106,6 +136,8 @@ export class AutoDevManager {
   private paused = false;
   private executorMode: AutoDevExecutorMode = AUTODEV_EXECUTOR_MODE;
   private parallelExecution: boolean = AUTODEV_PARALLEL_EXECUTION;
+  private discussionMode: boolean = AUTODEV_DISCUSSION_MODE;
+  private discussionMaxTurns: number = AUTODEV_DISCUSSION_MAX_TURNS;
   private currentExecutor: AutoDevExecutor | null = null;
   private currentRoute: AutoDevRouteDecision | null = null;
   private strictGeminiErrorSignal: string | null = null;
@@ -119,6 +151,16 @@ export class AutoDevManager {
   constructor(broadcast: BroadcastFn, config: JoiConfig) {
     this.broadcast = broadcast;
     this.config = config;
+    this.executorMode = normalizeExecutorMode(config.autodev.executorMode, AUTODEV_EXECUTOR_MODE);
+    this.parallelExecution = typeof config.autodev.parallelExecution === "boolean"
+      ? config.autodev.parallelExecution
+      : AUTODEV_PARALLEL_EXECUTION;
+    this.discussionMode = typeof config.autodev.discussionMode === "boolean"
+      ? config.autodev.discussionMode
+      : AUTODEV_DISCUSSION_MODE;
+    this.discussionMaxTurns = Number.isFinite(config.autodev.discussionMaxTurns)
+      ? Math.min(5, Math.max(1, Math.floor(config.autodev.discussionMaxTurns)))
+      : AUTODEV_DISCUSSION_MAX_TURNS;
 
     // Auto-start after a short delay to let the gateway finish initializing
     setTimeout(() => {
@@ -166,6 +208,7 @@ export class AutoDevManager {
     this.appendLog(`Context carryover: last ${MAX_CONTEXT_SUMMARIES} completed tasks`);
     this.appendLog(`Executor mode: ${this.executorMode} (claude-code + codex-cli + gemini-cli)`);
     this.appendLog(`Parallel execution: ${(this.parallelExecution && this.executorMode === "auto") ? "enabled (writer + shadow)" : "disabled"}`);
+    this.appendLog(`Discussion mode: ${this.discussionMode ? `enabled (Codex<->Claude, max ${this.discussionMaxTurns} turns)` : "disabled"}`);
     this.appendLog(`Claude timeout: ${Math.round(AUTODEV_CLAUDE_TIMEOUT_MS / 1000)}s`);
     this.appendLog(`Codex timeout: ${Math.round(AUTODEV_CODEX_TIMEOUT_MS / 1000)}s`);
     this.appendLog(`Gemini timeout: ${Math.round(AUTODEV_GEMINI_TIMEOUT_MS / 1000)}s`);
@@ -234,6 +277,8 @@ export class AutoDevManager {
     startedAt: number;
     executorMode: AutoDevExecutorMode;
     parallelExecution: boolean;
+    discussionMode: boolean;
+    discussionMaxTurns: number;
     claudeModel: string | null;
     codexModel: string | null;
     geminiModel: string | null;
@@ -253,6 +298,8 @@ export class AutoDevManager {
       startedAt: this.startedAt,
       executorMode: this.executorMode,
       parallelExecution: this.parallelExecution && this.executorMode === "auto",
+      discussionMode: this.discussionMode,
+      discussionMaxTurns: this.discussionMaxTurns,
       claudeModel: AUTODEV_CLAUDE_MODEL || null,
       codexModel: AUTODEV_CODEX_MODEL || null,
       geminiModel: AUTODEV_GEMINI_MODEL || null,
@@ -280,6 +327,50 @@ export class AutoDevManager {
       queue: this.queue.slice(0, 10).map((t) => ({ uuid: t.uuid, title: t.title })),
       systemInfo: this.getSystemInfo(),
     };
+  }
+
+  configureRuntime(update: Partial<AutoDevRuntimeConfig>, source = "runtime"): void {
+    const prev = {
+      executorMode: this.executorMode,
+      parallelExecution: this.parallelExecution,
+      discussionMode: this.discussionMode,
+      discussionMaxTurns: this.discussionMaxTurns,
+    };
+
+    if (update.executorMode !== undefined) {
+      this.executorMode = normalizeExecutorMode(update.executorMode, this.executorMode);
+    }
+    if (typeof update.parallelExecution === "boolean") {
+      this.parallelExecution = update.parallelExecution;
+    }
+    if (typeof update.discussionMode === "boolean") {
+      this.discussionMode = update.discussionMode;
+    }
+    if (update.discussionMaxTurns !== undefined && Number.isFinite(update.discussionMaxTurns)) {
+      this.discussionMaxTurns = Math.min(5, Math.max(1, Math.floor(update.discussionMaxTurns)));
+    }
+
+    this.config.autodev = {
+      ...this.config.autodev,
+      executorMode: this.executorMode,
+      parallelExecution: this.parallelExecution,
+      discussionMode: this.discussionMode,
+      discussionMaxTurns: this.discussionMaxTurns,
+    };
+
+    const changed = prev.executorMode !== this.executorMode
+      || prev.parallelExecution !== this.parallelExecution
+      || prev.discussionMode !== this.discussionMode
+      || prev.discussionMaxTurns !== this.discussionMaxTurns;
+    if (!changed) return;
+
+    this.appendLog(
+      `CONFIG UPDATED (${source}): mode=${this.executorMode}, parallel=${this.parallelExecution ? "on" : "off"}, discussion=${this.discussionMode ? "on" : "off"}, turns=${this.discussionMaxTurns}`,
+    );
+    if (this.state === "working") {
+      this.appendLog(`Config update will apply fully to the next picked task.`);
+    }
+    this.broadcastStatus();
   }
 
   // Pause/resume: stops picking new tasks but doesn't kill current work
@@ -467,6 +558,130 @@ export class AutoDevManager {
       `Operate in read-only advisory mode. No file writes, no commits, no destructive terminal commands.`,
       `Focus on verifying approach and suggesting improvements.`,
     ].join("\n");
+  }
+
+  private clipDiscussionContent(text: string, maxChars = 1400): string {
+    const normalized = text.replace(/\r/g, "\n").trim();
+    if (normalized.length <= maxChars) return normalized;
+    return `${normalized.slice(0, maxChars)}\n...[truncated]`;
+  }
+
+  private buildDiscussionTurnPrompt(
+    taskPrompt: string,
+    turns: DiscussionTurn[],
+    turn: number,
+    executor: "codex-cli" | "claude-code",
+  ): string {
+    const priorTurns = turns
+      .slice(-2)
+      .map((entry) => [
+        `### Previous Turn ${entry.turn} (${entry.executor})`,
+        this.clipDiscussionContent(entry.content, 1000),
+      ].join("\n"))
+      .join("\n\n");
+
+    return [
+      `You are in AutoDev discussion mode. This is a short planning debate before implementation.`,
+      `Turn ${turn}/${this.discussionMaxTurns}. Speaker: ${executor}.`,
+      ``,
+      `Output format (required):`,
+      `1. PLAN: concise implementation approach (3-6 bullets).`,
+      `2. RISKS: major failure risks and mitigations (1-4 bullets).`,
+      `3. READY: yes|no`,
+      ``,
+      `Task context:`,
+      taskPrompt,
+      priorTurns ? `\n${priorTurns}` : "",
+      ``,
+      `Important: keep this discussion concise and implementation-focused.`,
+    ].join("\n");
+  }
+
+  private buildDiscussionTurnSystemPrompt(
+    baseSystemPrompt: string,
+    turn: number,
+  ): string {
+    return [
+      baseSystemPrompt,
+      ``,
+      `## Discussion Mode Constraints`,
+      `- Read-only discussion only. Do not edit files and do not run write operations.`,
+      `- Do not commit, push, or perform destructive commands.`,
+      `- Keep output compact and actionable.`,
+      `- This is discussion turn ${turn}/${this.discussionMaxTurns}; the final execution will be done by Codex.`,
+    ].join("\n");
+  }
+
+  private isDiscussionReady(content: string): boolean {
+    return /\bready\s*[:=]\s*(yes|true|1)\b/i.test(content) || /\[ready_to_implement\]/i.test(content);
+  }
+
+  private buildExecutionPromptWithDiscussion(taskPrompt: string, turns: DiscussionTurn[]): string {
+    if (turns.length === 0) return taskPrompt;
+    const transcript = turns.map((entry) => [
+      `### Turn ${entry.turn} (${entry.executor})`,
+      this.clipDiscussionContent(entry.content),
+    ].join("\n")).join("\n\n");
+    return [
+      taskPrompt,
+      ``,
+      `## Codex-Claude Discussion Transcript`,
+      transcript,
+      ``,
+      `Discussion is complete. Execute the task now.`,
+      `Use the transcript as guidance, then implement, verify, and summarize.`,
+    ].join("\n");
+  }
+
+  private buildExecutionSystemPromptWithDiscussion(baseSystemPrompt: string): string {
+    return [
+      baseSystemPrompt,
+      ``,
+      `## Final Execution Directive`,
+      `- Discussion phase is complete.`,
+      `- Implement directly now as Codex executor.`,
+      `- Do not continue the debate; focus on concrete code changes and verification.`,
+    ].join("\n");
+  }
+
+  private async runCodexClaudeDiscussion(
+    taskPrompt: string,
+    systemPrompt: string,
+    taskUuid: string,
+  ): Promise<DiscussionTurn[]> {
+    const turns: DiscussionTurn[] = [];
+    const sequence: Array<"codex-cli" | "claude-code"> = ["codex-cli", "claude-code"];
+
+    for (let i = 0; i < this.discussionMaxTurns; i++) {
+      const turn = i + 1;
+      const executor = sequence[i % sequence.length];
+      this.currentExecutor = executor;
+      if (this.currentRoute) {
+        this.currentRoute = {
+          ...this.currentRoute,
+          executor,
+          agentId: getAutoDevAgentId(executor),
+          reason: `Discussion mode turn ${turn}/${this.discussionMaxTurns} (${executor}). Final executor: codex-cli.`,
+        };
+      }
+      this.broadcastStatus();
+      this.appendLog(`Discussion turn ${turn}/${this.discussionMaxTurns} -> ${executor}`);
+
+      const turnPrompt = this.buildDiscussionTurnPrompt(taskPrompt, turns, turn, executor);
+      const turnSystemPrompt = this.buildDiscussionTurnSystemPrompt(systemPrompt, turn);
+      const result = await this.executeTaskWithExecutor(executor, turnPrompt, turnSystemPrompt, taskUuid);
+      const content = result.content.trim();
+      turns.push({ turn, executor, content });
+
+      const ready = this.isDiscussionReady(content);
+      this.appendLog(`Discussion turn ${turn} ready=${ready ? "yes" : "no"}`);
+      if (ready && turn >= 2) {
+        this.appendLog(`Discussion reached readiness at turn ${turn}.`);
+        break;
+      }
+    }
+
+    return turns;
   }
 
   private async executeTaskWithExecutor(
@@ -677,7 +892,18 @@ export class AutoDevManager {
     this.abortController = new AbortController();
     this.resetExecutorStates();
     this.strictGeminiErrorSignal = null;
-    this.currentRoute = routeAutoDevTask(task, this.executorMode);
+    const routed = routeAutoDevTask(task, this.executorMode);
+    if (this.discussionMode) {
+      this.currentRoute = {
+        ...routed,
+        executor: "codex-cli",
+        agentId: getAutoDevAgentId("codex-cli"),
+        strict: true,
+        reason: `Discussion mode enabled (Codex<->Claude, max ${this.discussionMaxTurns} turns). Original route: ${routed.executor}. Final executor forced to codex-cli.`,
+      };
+    } else {
+      this.currentRoute = routed;
+    }
     this.currentExecutor = this.currentRoute.executor;
     this.broadcastStatus();
 
@@ -706,9 +932,15 @@ export class AutoDevManager {
     this.appendLog(`Route reason: ${this.currentRoute.reason}`);
     this.appendLog(`Building system prompt (searching Obsidian + memories)...`);
     const systemPrompt = await this.buildSystemPrompt(task);
-    const parallelEnabled = this.parallelExecution && this.executorMode === "auto" && !this.currentRoute.strict;
+    const parallelEnabled = this.parallelExecution
+      && this.executorMode === "auto"
+      && !this.currentRoute.strict
+      && !this.discussionMode;
     if (this.currentRoute.strict && this.parallelExecution && this.executorMode === "auto") {
       this.appendLog(`Strict route detected — shadow parallel execution disabled for this task.`);
+    }
+    if (this.discussionMode) {
+      this.appendLog(`Discussion mode active - routing uses Codex<->Claude discussion before Codex execution.`);
     }
     this.appendLog(
       `System prompt ready (${systemPrompt.length} chars). Launching ${parallelEnabled ? "parallel writer+shadow execution" : this.currentRoute.executor}...`,
@@ -716,9 +948,28 @@ export class AutoDevManager {
 
     try {
       const preferred = this.currentRoute.executor;
-      const result = parallelEnabled
-        ? await this.executeInParallelWithShadow(preferred, prompt, systemPrompt, task.uuid)
-        : await this.executeWithFallback(preferred, prompt, systemPrompt, task.uuid, { allowFallback: !this.currentRoute.strict });
+      let result: TaskExecutionResult;
+      if (this.discussionMode) {
+        const discussionTurns = await this.runCodexClaudeDiscussion(prompt, systemPrompt, task.uuid);
+        const executionPrompt = this.buildExecutionPromptWithDiscussion(prompt, discussionTurns);
+        const executionSystemPrompt = this.buildExecutionSystemPromptWithDiscussion(systemPrompt);
+        this.currentExecutor = "codex-cli";
+        if (this.currentRoute) {
+          this.currentRoute = {
+            ...this.currentRoute,
+            executor: "codex-cli",
+            agentId: getAutoDevAgentId("codex-cli"),
+            reason: `Discussion mode complete (${discussionTurns.length} turn(s)); executing with codex-cli.`,
+          };
+        }
+        this.broadcastStatus();
+        this.appendLog(`Discussion complete (${discussionTurns.length} turn(s)). Launching codex-cli for final execution...`);
+        result = await this.executeTaskWithExecutor("codex-cli", executionPrompt, executionSystemPrompt, task.uuid);
+      } else {
+        result = parallelEnabled
+          ? await this.executeInParallelWithShadow(preferred, prompt, systemPrompt, task.uuid)
+          : await this.executeWithFallback(preferred, prompt, systemPrompt, task.uuid, { allowFallback: !this.currentRoute.strict });
+      }
 
       this.abortController = null;
       this.currentExecutor = result.executor;
@@ -742,10 +993,10 @@ export class AutoDevManager {
       if (msg.includes("aborted")) {
         if (this.currentRoute?.executor === "gemini-cli" && this.currentRoute.strict && this.strictGeminiErrorSignal) {
           const policyMessage = `Strict Gemini stream error signal: ${this.strictGeminiErrorSignal}`;
-          this.appendLog(`${policyMessage} — stopping and escalating to Quality/Claude.`);
+          this.appendLog(`${policyMessage} — stopping and escalating for manual follow-up.`);
           this.broadcastError(policyMessage, task.uuid);
-          const escalation = await this.escalateRuntimeError(task, policyMessage, "execution");
-          await this.finalizeStrictGeminiFailure(task, policyMessage, escalation?.issueId || null);
+          await this.escalateRuntimeError(task, policyMessage, "execution");
+          await this.finalizeStrictGeminiFailure(task, policyMessage);
           this.scheduleNext();
           return;
         }
@@ -754,11 +1005,11 @@ export class AutoDevManager {
         console.error(`[AutoDev] Error working on task "${task.title}":`, msg);
         this.appendLog(`ERROR: ${msg}`);
         this.broadcastError(msg, task.uuid);
-        const escalation = await this.escalateRuntimeError(task, msg, "execution");
+        await this.escalateRuntimeError(task, msg, "execution");
 
         if (this.currentRoute?.executor === "gemini-cli" && this.currentRoute.strict) {
-          this.appendLog(`Strict Gemini policy: do not self-repair. Stopping task and escalating to Quality/Claude.`);
-          await this.finalizeStrictGeminiFailure(task, msg, escalation?.issueId || null);
+          this.appendLog(`Strict Gemini policy: do not self-repair. Stopping task and escalating for manual follow-up.`);
+          await this.finalizeStrictGeminiFailure(task, msg);
           this.scheduleNext();
           return;
         }
@@ -1096,68 +1347,47 @@ export class AutoDevManager {
     task: ThingsTask,
     error: string,
     phase: "execution" | "completion",
-  ): Promise<{ issueId: string; created: boolean } | null> {
-    try {
-      const logTail = this.logBuffer.slice(-15000);
-      const result = await createAutoDevRuntimeIssue({
-        error: `[${phase}] ${error}`,
-        taskUuid: task.uuid,
-        taskTitle: task.title,
-        taskNotes: task.notes || null,
-        projectTitle: task.projectTitle || this.projectTitle,
-        headingTitle: task.headingTitle || null,
-        tags: task.tags,
-        executor: this.currentExecutor,
-        agentId: this.currentRoute?.agentId || null,
-        skill: this.currentRoute?.skill || null,
-        routeReason: this.currentRoute?.reason || null,
-        strict: this.currentRoute?.strict || false,
-        logExcerpt: logTail,
-      });
+  ): Promise<void> {
+    const ts = new Date().toLocaleString("de-AT", { dateStyle: "short", timeStyle: "short" });
+    const routeSummary = this.currentRoute
+      ? `${this.currentRoute.executor} (agent=${this.currentRoute.agentId}, strict=${this.currentRoute.strict ? "yes" : "no"})`
+      : (this.currentExecutor || "n/a");
+    const note = [
+      ``,
+      `---`,
+      `[AutoDev ${ts}] Runtime error (${phase})`,
+      `Executor: ${routeSummary}`,
+      `Error: ${error.slice(0, 1200)}`,
+    ].join("\n");
 
-      this.appendLog(
-        `Quality issue ${result.created ? "created" : "updated"}: ${result.issue.id} (${result.issue.severity}/${result.issue.category})`,
-      );
-      return { issueId: result.issue.id, created: result.created };
-    } catch (issueErr) {
-      const message = issueErr instanceof Error ? issueErr.message : String(issueErr);
-      this.appendLog(`WARNING: Failed to create Quality issue for AutoDev error: ${message}`);
-      return null;
+    try {
+      await updateTask(task.uuid, { appendNotes: note, addTags: ["autodev-error"] });
+      this.appendLog(`Runtime failure logged to task notes.`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.appendLog(`WARNING: Failed to append runtime error note to task: ${message}`);
     }
   }
 
   private async finalizeStrictGeminiFailure(
     task: ThingsTask,
     error: string,
-    issueId: string | null,
   ): Promise<void> {
-    try {
-      if (issueId) {
-        await pushToAutodev(issueId);
-        this.appendLog(`Escalated Quality issue ${issueId} to AutoDev as Claude-only QA task.`);
-      } else {
-        this.appendLog(`No Quality issue id available; skipping Claude escalation task creation.`);
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.appendLog(`WARNING: Failed to push Quality issue to AutoDev: ${message}`);
-    }
-
     try {
       const ts = new Date().toLocaleString("de-AT", { dateStyle: "short", timeStyle: "short" });
       const note = [
         ``,
         `---`,
         `[AutoDev ${ts}] Strict Gemini route failed and was escalated.`,
-        issueId ? `Quality Issue: ${issueId}` : `Quality Issue: (creation failed)`,
-        `Policy: No Gemini self-repair; delegated to Claude via Quality queue.`,
+        `Escalation: manual follow-up required (Quality module removed).`,
+        `Policy: No Gemini self-repair.`,
         `Error: ${error.slice(0, 600)}`,
       ].join("\n");
 
-      await updateTask(task.uuid, { appendNotes: note, addTags: ["quality", "escalated", "gemini-failed"] });
+      await updateTask(task.uuid, { appendNotes: note, addTags: ["escalated", "gemini-failed"] });
       await sleep(300);
       await completeTask(task.uuid);
-      this.appendLog(`Closed original strict Gemini task after escalation: ${task.title}`);
+      this.appendLog(`Closed strict Gemini task after escalation note: ${task.title}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.appendLog(`WARNING: Failed to close strict Gemini task after escalation: ${message}`);

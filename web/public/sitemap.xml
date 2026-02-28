@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>http://localhost:5173/</loc></url>
+  <url><loc>http://localhost:5173/chat</loc></url>
+  <url><loc>http://localhost:5173/tasks</loc></url>
+  <url><loc>http://localhost:5173/contacts</loc></url>
+  <url><loc>http://localhost:5173/quotes</loc></url>
+  <url><loc>http://localhost:5173/organizations</loc></url>
+  <url><loc>http://localhost:5173/agents</loc></url>
+  <url><loc>http://localhost:5173/knowledge</loc></url>
+  <url><loc>http://localhost:5173/store</loc></url>
+  <url><loc>http://localhost:5173/reports</loc></url>
+  <url><loc>http://localhost:5173/settings</loc></url>
+</urlset>

@@ -1,0 +1,1529 @@
+<!doctype html>
+<html lang="en" data-theme="dark" data-variant="frost">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>JOI iOS Route Concept - Dashboard + Tasks</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg-page: #070b14;
+        --bg-page-2: #0c1322;
+        --glass: rgba(17, 24, 40, 0.82);
+        --glass-2: rgba(20, 29, 48, 0.86);
+        --card: #121a2a;
+        --card-2: #18233a;
+        --card-3: #0e1626;
+
+        --text: #edf2ff;
+        --text-muted: #9bb0d1;
+        --text-soft: #6f84a7;
+
+        --line: #243553;
+        --line-soft: #1c2a45;
+
+        --accent: #68a2ff;
+        --accent-2: #56e0c4;
+        --danger: #ff6b7d;
+        --warn: #ffcf66;
+        --ok: #70d889;
+
+        --pill-bg: rgba(104, 162, 255, 0.14);
+        --pill-line: rgba(104, 162, 255, 0.45);
+
+        --shadow-heavy: 0 26px 72px rgba(2, 8, 23, 0.5);
+        --shadow-mid: 0 14px 36px rgba(2, 8, 23, 0.38);
+        --radius-xl: 24px;
+        --radius-lg: 16px;
+        --radius-md: 12px;
+      }
+
+      html[data-theme="light"] {
+        color-scheme: light;
+        --bg-page: #f3f7ff;
+        --bg-page-2: #e9f0ff;
+        --glass: rgba(255, 255, 255, 0.88);
+        --glass-2: rgba(245, 250, 255, 0.9);
+        --card: #ffffff;
+        --card-2: #f8fbff;
+        --card-3: #eef4ff;
+
+        --text: #1d2a40;
+        --text-muted: #4f6487;
+        --text-soft: #6a7fa2;
+
+        --line: #d4e0f2;
+        --line-soft: #e2eaf7;
+
+        --accent: #367ef0;
+        --accent-2: #26bda8;
+        --danger: #dc4d61;
+        --warn: #b88618;
+        --ok: #288f49;
+
+        --pill-bg: rgba(54, 126, 240, 0.12);
+        --pill-line: rgba(54, 126, 240, 0.34);
+
+        --shadow-heavy: 0 20px 60px rgba(31, 61, 104, 0.16);
+        --shadow-mid: 0 10px 28px rgba(31, 61, 104, 0.12);
+      }
+
+      html[data-variant="sunset"] {
+        --accent: #ff8b5e;
+        --accent-2: #ffcf71;
+        --pill-bg: rgba(255, 139, 94, 0.14);
+        --pill-line: rgba(255, 139, 94, 0.42);
+      }
+
+      html[data-variant="mono"] {
+        --accent: #8ab0ff;
+        --accent-2: #9ab8ff;
+        --radius-xl: 18px;
+        --radius-lg: 12px;
+        --radius-md: 9px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "SF Pro Display", "Avenir Next", "Helvetica Neue", sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(68vw 54vw at 4% -12%, rgba(72, 114, 255, 0.28), transparent 76%),
+          radial-gradient(60vw 56vw at 100% 6%, rgba(86, 224, 196, 0.18), transparent 74%),
+          linear-gradient(180deg, var(--bg-page) 0%, var(--bg-page-2) 100%);
+      }
+
+      .ambient {
+        position: fixed;
+        z-index: -1;
+        pointer-events: none;
+        border-radius: 999px;
+        filter: blur(20px);
+      }
+
+      .ambient.one {
+        width: 380px;
+        height: 380px;
+        left: -110px;
+        top: 40px;
+        background: radial-gradient(circle, rgba(89, 157, 255, 0.36), rgba(89, 157, 255, 0.05));
+      }
+
+      .ambient.two {
+        width: 460px;
+        height: 460px;
+        right: -140px;
+        bottom: -170px;
+        background: radial-gradient(circle, rgba(73, 228, 204, 0.28), rgba(73, 228, 204, 0.03));
+      }
+
+      .page {
+        padding: 18px;
+      }
+
+      .window {
+        width: min(1600px, 100%);
+        margin: 0 auto;
+        border-radius: var(--radius-xl);
+        border: 1px solid var(--line);
+        background: linear-gradient(166deg, var(--glass), var(--glass-2));
+        backdrop-filter: blur(18px);
+        box-shadow: var(--shadow-heavy);
+        overflow: hidden;
+      }
+
+      .window-bar {
+        height: 62px;
+        border-bottom: 1px solid var(--line);
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        gap: 12px;
+        align-items: center;
+        padding: 0 14px;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0));
+      }
+
+      .lights {
+        display: flex;
+        gap: 8px;
+      }
+
+      .lights span {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+      }
+
+      .lights span:nth-child(1) { background: #ff5f57; }
+      .lights span:nth-child(2) { background: #ffbd2e; }
+      .lights span:nth-child(3) { background: #28c940; }
+
+      .route-switch {
+        justify-self: center;
+        display: inline-flex;
+        gap: 4px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: var(--card-3);
+        padding: 4px;
+      }
+
+      .route-switch button {
+        border: none;
+        border-radius: 999px;
+        background: transparent;
+        color: var(--text-muted);
+        font: inherit;
+        font-size: 12px;
+        padding: 7px 13px;
+        cursor: pointer;
+      }
+
+      .route-switch button.active {
+        color: var(--text);
+        background: var(--pill-bg);
+        box-shadow: inset 0 0 0 1px var(--pill-line);
+      }
+
+      .bar-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .toggle,
+      .chip-btn {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: var(--card-2);
+        color: var(--text);
+        font: inherit;
+        font-size: 11px;
+        padding: 7px 10px;
+        cursor: pointer;
+      }
+
+      .chip-btn {
+        color: var(--text-muted);
+      }
+
+      .chip-btn.active {
+        color: var(--text);
+        border-color: var(--pill-line);
+        background: var(--pill-bg);
+      }
+
+      .app {
+        min-height: calc(100vh - 100px);
+        max-height: calc(100vh - 100px);
+        display: grid;
+        grid-template-columns: 252px minmax(0, 1fr);
+      }
+
+      .app-sidebar {
+        border-right: 1px solid var(--line);
+        padding: 12px;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0));
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        min-height: 0;
+      }
+
+      .brand {
+        border: 1px solid var(--line-soft);
+        border-radius: var(--radius-lg);
+        background: var(--card);
+        padding: 11px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .brand-orb {
+        width: 34px;
+        height: 34px;
+        border-radius: 11px;
+        background: radial-gradient(circle at 32% 26%, #d9f4ff 0%, #73a8ff 45%, #304f8f 100%);
+        box-shadow: 0 0 20px rgba(113, 168, 255, 0.5);
+      }
+
+      .brand h1 {
+        margin: 0;
+        font-size: 15px;
+      }
+
+      .brand p {
+        margin: 2px 0 0;
+        font-size: 11px;
+        color: var(--text-muted);
+      }
+
+      .nav-scroll {
+        overflow: auto;
+      }
+
+      .nav-group {
+        margin-bottom: 10px;
+      }
+
+      .nav-group h4 {
+        margin: 0;
+        padding: 6px 8px;
+        color: var(--text-soft);
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .nav-item {
+        width: 100%;
+        border: 1px solid transparent;
+        border-radius: 11px;
+        background: transparent;
+        color: var(--text-muted);
+        font: inherit;
+        font-size: 13px;
+        text-align: left;
+        padding: 9px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .nav-item.active,
+      .nav-item:hover {
+        border-color: var(--line-soft);
+        background: var(--card-2);
+        color: var(--text);
+      }
+
+      .nav-item.active {
+        box-shadow: inset 0 0 0 1px var(--pill-line);
+      }
+
+      .nav-badge {
+        min-width: 24px;
+        text-align: center;
+        border: 1px solid var(--line-soft);
+        border-radius: 999px;
+        font-size: 10px;
+        color: var(--text-soft);
+        padding: 2px 7px;
+      }
+
+      .sidebar-note {
+        margin-top: auto;
+        border: 1px solid var(--line-soft);
+        border-radius: var(--radius-md);
+        background: var(--card);
+        padding: 10px;
+        font-size: 11px;
+        color: var(--text-muted);
+        line-height: 1.45;
+      }
+
+      .workspace {
+        min-height: 0;
+        overflow: auto;
+        padding: 14px;
+      }
+
+      .route-tag-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        margin-bottom: 8px;
+      }
+
+      .route-tag {
+        border: 1px solid var(--line-soft);
+        border-radius: 999px;
+        background: var(--card);
+        color: var(--text-soft);
+        font-size: 11px;
+        padding: 5px 9px;
+      }
+
+      .page-title {
+        margin: 0;
+        font-size: 30px;
+        letter-spacing: -0.02em;
+      }
+
+      .page-sub {
+        margin: 5px 0 0;
+        font-size: 14px;
+        color: var(--text-muted);
+      }
+
+      .seg-row {
+        margin-top: 8px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+      }
+
+      .seg {
+        border: 1px solid var(--line-soft);
+        border-radius: 999px;
+        background: var(--card);
+        color: var(--text-muted);
+        font-size: 11px;
+        padding: 6px 10px;
+      }
+
+      .seg.active {
+        color: var(--text);
+        border-color: var(--pill-line);
+        background: var(--pill-bg);
+      }
+
+      .section-title {
+        margin: 16px 0 8px;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.09em;
+        color: var(--text-soft);
+      }
+
+      .grid-4 {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 9px;
+      }
+
+      .card {
+        border: 1px solid var(--line-soft);
+        border-radius: var(--radius-lg);
+        background: linear-gradient(180deg, var(--card) 0%, var(--card-2) 100%);
+        box-shadow: var(--shadow-mid);
+      }
+
+      .stat {
+        padding: 11px;
+      }
+
+      .stat .label {
+        font-size: 11px;
+        color: var(--text-muted);
+      }
+
+      .stat .value {
+        margin-top: 3px;
+        font-size: 22px;
+        font-weight: 690;
+      }
+
+      .stat .meta {
+        margin-top: 2px;
+        font-size: 11px;
+        color: var(--text-soft);
+      }
+
+      .chart-grid {
+        margin-top: 9px;
+        display: grid;
+        grid-template-columns: 1.25fr 1fr;
+        gap: 9px;
+      }
+
+      .block {
+        padding: 12px;
+      }
+
+      .block h3 {
+        margin: 0;
+        font-size: 13px;
+      }
+
+      .spark {
+        margin-top: 11px;
+        height: 140px;
+        display: grid;
+        grid-template-columns: repeat(12, minmax(0, 1fr));
+        gap: 4px;
+        align-items: end;
+      }
+
+      .spark span {
+        display: block;
+        border-radius: 5px 5px 2px 2px;
+        background: linear-gradient(180deg, var(--accent), var(--accent-2));
+        opacity: 0.86;
+      }
+
+      .provider-list {
+        margin-top: 10px;
+        display: grid;
+        gap: 7px;
+      }
+
+      .provider-row {
+        border: 1px solid var(--line-soft);
+        border-radius: 10px;
+        padding: 7px;
+        display: flex;
+        justify-content: space-between;
+        font-size: 12px;
+        color: var(--text-muted);
+        background: var(--card-3);
+      }
+
+      .donut {
+        width: 130px;
+        height: 130px;
+        margin: 7px auto 0;
+        border-radius: 50%;
+        background: conic-gradient(var(--accent) 0 58%, #3f74d3 58% 82%, var(--accent-2) 82% 100%);
+        position: relative;
+      }
+
+      .donut::after {
+        content: "";
+        position: absolute;
+        inset: 22px;
+        border-radius: 50%;
+        background: var(--card-2);
+        border: 1px solid var(--line-soft);
+      }
+
+      .table-wrap {
+        margin-top: 9px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      th,
+      td {
+        border-bottom: 1px solid var(--line-soft);
+        text-align: left;
+        font-size: 12px;
+        padding: 8px 7px;
+        color: var(--text-muted);
+      }
+
+      th {
+        font-size: 10px;
+        color: var(--text-soft);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      td strong {
+        color: var(--text);
+        font-weight: 620;
+      }
+
+      .pill {
+        border: 1px solid var(--line-soft);
+        border-radius: 999px;
+        padding: 3px 8px;
+        font-size: 10px;
+        color: var(--text-soft);
+      }
+
+      .pill.warn {
+        border-color: rgba(255, 207, 102, 0.55);
+        color: var(--warn);
+      }
+
+      .pill.ok {
+        border-color: rgba(112, 216, 137, 0.55);
+        color: var(--ok);
+      }
+
+      .pager {
+        margin-top: 8px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .pager-info {
+        font-size: 11px;
+        color: var(--text-soft);
+      }
+
+      .pager-actions {
+        display: flex;
+        gap: 6px;
+      }
+
+      .pager-actions button {
+        border: 1px solid var(--line-soft);
+        border-radius: 9px;
+        background: var(--card-3);
+        color: var(--text-muted);
+        font: inherit;
+        font-size: 11px;
+        padding: 5px 8px;
+        cursor: pointer;
+      }
+
+      .pager-actions button:hover:not(:disabled) {
+        border-color: var(--pill-line);
+        color: var(--text);
+      }
+
+      .pager-actions button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .goal-list {
+        margin-top: 9px;
+        display: grid;
+        gap: 8px;
+      }
+
+      .goal {
+        border: 1px solid var(--line-soft);
+        border-radius: var(--radius-md);
+        padding: 10px;
+        background: var(--card);
+      }
+
+      .goal .top {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .goal .area {
+        font-size: 11px;
+        color: var(--accent);
+      }
+
+      .goal .title {
+        margin-top: 2px;
+        font-size: 14px;
+        color: var(--text);
+        font-weight: 600;
+      }
+
+      .goal .meta {
+        margin-top: 4px;
+        font-size: 12px;
+        color: var(--text-muted);
+      }
+
+      .goal .track {
+        margin-top: 8px;
+        height: 6px;
+        border-radius: 999px;
+        background: var(--card-3);
+        overflow: hidden;
+      }
+
+      .goal .fill {
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      }
+
+      .finance-grid {
+        margin-top: 9px;
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .mini {
+        padding: 11px;
+        border: 1px solid var(--line-soft);
+        border-radius: var(--radius-md);
+        background: var(--card);
+      }
+
+      .mini .label {
+        font-size: 11px;
+        color: var(--text-muted);
+      }
+
+      .mini .value {
+        margin-top: 4px;
+        font-size: 18px;
+        font-weight: 660;
+      }
+
+      .tasks-shell {
+        margin-top: 10px;
+        border: 1px solid var(--line-soft);
+        border-radius: var(--radius-lg);
+        background: linear-gradient(180deg, var(--card) 0%, var(--card-2) 100%);
+        display: grid;
+        grid-template-columns: 260px minmax(0, 1fr) 300px;
+        min-height: 690px;
+        overflow: hidden;
+      }
+
+      .tasks-left {
+        border-right: 1px solid var(--line-soft);
+        padding: 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .search {
+        position: relative;
+      }
+
+      .search input {
+        width: 100%;
+        border: 1px solid var(--line-soft);
+        border-radius: 10px;
+        background: var(--card-3);
+        color: var(--text);
+        font: inherit;
+        font-size: 12px;
+        padding: 8px 10px;
+      }
+
+      .things-group {
+        border: 1px solid var(--line-soft);
+        border-radius: 12px;
+        background: var(--card-3);
+        padding: 7px;
+      }
+
+      .things-row {
+        border: 1px solid transparent;
+        border-radius: 10px;
+        padding: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 7px;
+        font-size: 12px;
+        color: var(--text-muted);
+      }
+
+      .things-row.active,
+      .things-row:hover {
+        border-color: var(--line-soft);
+        background: var(--card);
+        color: var(--text);
+      }
+
+      .things-label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+      }
+
+      .dot.blue { background: #4a9ef5; }
+      .dot.yellow { background: #f5c542; }
+      .dot.red { background: #e8453c; }
+      .dot.green { background: #48c8a4; }
+      .dot.gold { background: #d5b04f; }
+      .dot.gray { background: #9fa7b9; }
+
+      .tasks-main {
+        padding: 12px;
+        border-right: 1px solid var(--line-soft);
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+
+      .tasks-head {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .tasks-head h2 {
+        margin: 0;
+        font-size: 28px;
+      }
+
+      .tasks-head p {
+        margin: 4px 0 0;
+        font-size: 13px;
+        color: var(--text-muted);
+      }
+
+      .chip-row {
+        margin-top: 8px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+      }
+
+      .task-list {
+        margin-top: 10px;
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        display: grid;
+        gap: 10px;
+      }
+
+      .task-section {
+        border: 1px solid var(--line-soft);
+        border-radius: 12px;
+        background: var(--card-3);
+        padding: 8px;
+      }
+
+      .task-section h4 {
+        margin: 0 0 7px;
+        font-size: 12px;
+        color: var(--text-soft);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      .task-row {
+        border: 1px solid var(--line-soft);
+        border-radius: 10px;
+        background: var(--card);
+        padding: 8px;
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        gap: 8px;
+        align-items: flex-start;
+        margin-bottom: 7px;
+      }
+
+      .task-check {
+        width: 17px;
+        height: 17px;
+        border-radius: 50%;
+        border: 2px solid var(--line);
+        margin-top: 3px;
+      }
+
+      .task-title {
+        font-size: 13px;
+        color: var(--text);
+        font-weight: 560;
+      }
+
+      .task-meta {
+        margin-top: 4px;
+        font-size: 11px;
+        color: var(--text-muted);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+      }
+
+      .task-right {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 6px;
+      }
+
+      .due {
+        border: 1px solid rgba(255, 207, 102, 0.5);
+        color: var(--warn);
+        border-radius: 999px;
+        padding: 3px 8px;
+        font-size: 10px;
+      }
+
+      .tags {
+        display: flex;
+        gap: 5px;
+      }
+
+      .tag {
+        border: 1px solid var(--line-soft);
+        border-radius: 999px;
+        padding: 2px 6px;
+        font-size: 10px;
+        color: var(--text-soft);
+      }
+
+      .task-bottom {
+        margin-top: 10px;
+        border: 1px solid var(--line-soft);
+        border-radius: 11px;
+        background: var(--card);
+        padding: 8px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .task-bottom button {
+        border: 1px solid var(--line-soft);
+        border-radius: 9px;
+        background: var(--card-3);
+        color: var(--text-muted);
+        font: inherit;
+        font-size: 12px;
+        padding: 6px 10px;
+        cursor: pointer;
+      }
+
+      .task-bottom button.primary {
+        border-color: var(--pill-line);
+        background: var(--pill-bg);
+        color: var(--text);
+      }
+
+      .tasks-right {
+        padding: 11px;
+        display: grid;
+        grid-template-rows: auto auto 1fr;
+        gap: 10px;
+      }
+
+      .inspect {
+        border: 1px solid var(--line-soft);
+        border-radius: 12px;
+        background: var(--card-3);
+        padding: 10px;
+      }
+
+      .inspect h4 {
+        margin: 0;
+        font-size: 12px;
+      }
+
+      .inspect p {
+        margin: 5px 0 0;
+        font-size: 11px;
+        color: var(--text-muted);
+      }
+
+      .inspect-list {
+        margin-top: 8px;
+        display: grid;
+        gap: 6px;
+      }
+
+      .inspect-row {
+        border: 1px solid var(--line-soft);
+        border-radius: 10px;
+        background: var(--card);
+        padding: 7px;
+        font-size: 11px;
+        color: var(--text-muted);
+      }
+
+      .inspect-row strong {
+        color: var(--text);
+        font-weight: 610;
+      }
+
+      .logbook {
+        margin-top: 4px;
+        border: 1px solid var(--line-soft);
+        border-radius: 12px;
+        background: var(--card);
+        padding: 8px;
+        display: grid;
+        gap: 6px;
+      }
+
+      .log-row {
+        border: 1px solid var(--line-soft);
+        border-radius: 9px;
+        background: var(--card-3);
+        padding: 7px;
+        font-size: 11px;
+        color: var(--text-muted);
+      }
+
+      .log-row strong {
+        color: var(--text);
+      }
+
+      .muted {
+        color: var(--text-soft);
+      }
+
+      @media (max-width: 1350px) {
+        .tasks-shell {
+          grid-template-columns: 240px minmax(0, 1fr);
+        }
+
+        .tasks-right {
+          display: none;
+        }
+
+        .chart-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .grid-4,
+        .finance-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 1060px) {
+        .app {
+          grid-template-columns: 1fr;
+          max-height: none;
+        }
+
+        .app-sidebar {
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+          max-height: 260px;
+        }
+
+        .tasks-shell {
+          grid-template-columns: 1fr;
+        }
+
+        .tasks-left {
+          border-right: 0;
+          border-bottom: 1px solid var(--line-soft);
+        }
+
+        .tasks-main {
+          border-right: 0;
+        }
+      }
+
+      @media (max-width: 740px) {
+        .page {
+          padding: 10px;
+        }
+
+        .window-bar {
+          grid-template-columns: auto 1fr;
+          gap: 8px;
+          height: auto;
+          padding: 10px;
+        }
+
+        .bar-actions {
+          grid-column: span 2;
+          justify-content: flex-end;
+          flex-wrap: wrap;
+        }
+
+        .route-switch {
+          justify-self: start;
+        }
+
+        .grid-4,
+        .finance-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="ambient one"></div>
+    <div class="ambient two"></div>
+
+    <main class="page">
+      <section class="window">
+        <header class="window-bar">
+          <div class="lights"><span></span><span></span><span></span></div>
+          <div class="route-switch" role="tablist" aria-label="Route view">
+            <button type="button" data-route="dashboard" class="active">/ Dashboard</button>
+            <button type="button" data-route="tasks">/tasks</button>
+          </div>
+          <div class="bar-actions">
+            <button id="themeToggle" type="button" class="toggle">Light mode</button>
+            <button type="button" class="chip-btn active" data-variant="frost">Frost</button>
+            <button type="button" class="chip-btn" data-variant="sunset">Sunset</button>
+            <button type="button" class="chip-btn" data-variant="mono">Mono</button>
+          </div>
+        </header>
+
+        <div class="app">
+          <aside class="app-sidebar">
+            <div class="brand">
+              <div class="brand-orb"></div>
+              <div>
+                <h1>JOI</h1>
+                <p>iOS concept from real routes</p>
+              </div>
+            </div>
+
+            <div class="nav-scroll">
+              <div class="nav-group">
+                <h4>Core</h4>
+                <button class="nav-item" data-route="dashboard"><span>Dashboard</span><span class="nav-badge">8</span></button>
+                <button class="nav-item"><span>Chats</span><span class="nav-badge">24</span></button>
+              </div>
+              <div class="nav-group">
+                <h4>CRM</h4>
+                <button class="nav-item"><span>Contacts</span><span class="nav-badge">142</span></button>
+                <button class="nav-item"><span>Quotes</span><span class="nav-badge">17</span></button>
+                <button class="nav-item"><span>Organizations</span><span class="nav-badge">56</span></button>
+              </div>
+              <div class="nav-group">
+                <h4>Workspace</h4>
+                <button class="nav-item" data-route="tasks"><span>Tasks</span><span class="nav-badge">46</span></button>
+                <button class="nav-item"><span>Reports</span><span class="nav-badge">30d</span></button>
+                <button class="nav-item"><span>Media</span><span class="nav-badge">81</span></button>
+              </div>
+            </div>
+
+            <div class="sidebar-note">
+              Test-only concept. Structure follows the real JOI `/` and `/tasks` pages so you can evaluate iOS-style direction before native app work.
+            </div>
+          </aside>
+
+          <section id="workspace" class="workspace"></section>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const modelRows = [
+        ["Anthropic", "claude-sonnet", "812", "8.4M", "$129.20", "1.8s"],
+        ["OpenRouter", "gpt-4o-mini", "1204", "5.1M", "$61.30", "1.1s"],
+        ["Ollama", "llama3", "402", "2.9M", "Free", "0.9s"],
+        ["Anthropic", "claude-haiku", "342", "1.6M", "$11.92", "0.8s"],
+        ["OpenRouter", "grok-3-mini", "298", "1.4M", "$8.40", "1.2s"],
+        ["OpenRouter", "qwen-max", "177", "0.8M", "$4.33", "1.4s"],
+        ["Anthropic", "claude-opus", "41", "0.3M", "$17.64", "2.4s"],
+        ["Ollama", "qwen3", "244", "1.1M", "Free", "1.0s"],
+      ];
+
+      const goals = [
+        { area: "Growth", title: "Ship JOI iOS interaction spec", progress: 74, meta: "Target: approval by Q2" },
+        { area: "Operations", title: "Reduce QA failure rate under 4%", progress: 61, meta: "Current: 8.9%" },
+        { area: "Product", title: "Unify task context between chat + CRM", progress: 82, meta: "2 of 3 milestones done" },
+      ];
+
+      const taskRows = [
+        { title: "Finalize Q-205 wording", project: "CRM Pipeline", area: "Client Work", due: "Today", tags: ["quote", "client"], checklist: "2/3" },
+        { title: "Review codex patch #42", project: "JOI Web", area: "Product", due: "Today", tags: ["autodev"], checklist: "4/6" },
+        { title: "Publish daily voice briefing", project: "Voice Ops", area: "System", due: "Today", tags: ["voice", "ops"], checklist: "1/2" },
+        { title: "Fix QA citation mismatch", project: "Quality", area: "DevOps", due: "Tomorrow", tags: ["quality"], checklist: "0/2" },
+        { title: "Refactor chat composer", project: "JOI Web", area: "Product", due: "Tomorrow", tags: ["frontend"], checklist: "3/5" },
+        { title: "Sync Notion roadmap", project: "Integrations", area: "Ops", due: "2d", tags: ["notion"], checklist: "0/1" },
+        { title: "Check cron failure alerts", project: "System", area: "DevOps", due: "2d", tags: ["cron"], checklist: "1/1" },
+        { title: "Validate cloud sync mappings", project: "Cloud Sync", area: "System", due: "3d", tags: ["sync"], checklist: "2/4" },
+        { title: "Link contact tasks to quotes", project: "CRM Pipeline", area: "Client Work", due: "3d", tags: ["crm", "quote"], checklist: "1/3" },
+        { title: "Review inbox triage prompts", project: "Agent Core", area: "AI", due: "4d", tags: ["prompt"], checklist: "0/2" },
+        { title: "Improve Today list drag behavior", project: "JOI Web", area: "Product", due: "5d", tags: ["tasks"], checklist: "2/2" },
+        { title: "Backfill quality replay links", project: "Quality", area: "DevOps", due: "6d", tags: ["qa"], checklist: "1/4" },
+      ];
+
+      const logbookRows = [
+        ["Yesterday", "Restore Telegram routing fallback", "9:41 PM"],
+        ["Yesterday", "Mark Q-204 accepted", "4:13 PM"],
+        ["Thursday", "Close iMessage pending issue", "11:08 AM"],
+        ["Wednesday", "Ship report model table pagination", "7:52 PM"],
+        ["Wednesday", "Tune voice latency profile", "3:11 PM"],
+        ["Tuesday", "Archive stale contact tasks", "10:02 AM"],
+      ];
+
+      const state = {
+        route: "dashboard",
+        theme: "dark",
+        variant: "frost",
+        modelPage: 1,
+        taskPage: 1,
+        logbookPage: 1,
+      };
+
+      const pageSizeModels = 4;
+      const pageSizeTasks = 5;
+      const pageSizeLogbook = 3;
+
+      const workspace = document.getElementById("workspace");
+      const themeToggle = document.getElementById("themeToggle");
+
+      function safeStorageGet(key) {
+        try {
+          return localStorage.getItem(key);
+        } catch {
+          return null;
+        }
+      }
+
+      function safeStorageSet(key, value) {
+        try {
+          localStorage.setItem(key, value);
+        } catch {
+          // ignore
+        }
+      }
+
+      function applyTheme(theme) {
+        state.theme = theme;
+        document.documentElement.setAttribute("data-theme", theme);
+        themeToggle.textContent = theme === "dark" ? "Light mode" : "Dark mode";
+        safeStorageSet("joi-ios-route-theme", theme);
+      }
+
+      function applyVariant(variant) {
+        state.variant = variant;
+        document.documentElement.setAttribute("data-variant", variant);
+        safeStorageSet("joi-ios-route-variant", variant);
+        document.querySelectorAll("[data-variant]").forEach((el) => {
+          el.classList.toggle("active", el.getAttribute("data-variant") === variant);
+        });
+      }
+
+      function setRoute(route) {
+        state.route = route;
+        safeStorageSet("joi-ios-route-view", route);
+        const nextHash = route === "tasks" ? "#tasks" : "#dashboard";
+        if (location.hash !== nextHash) {
+          history.replaceState(null, "", nextHash);
+        }
+        document.querySelectorAll("[data-route]").forEach((btn) => {
+          btn.classList.toggle("active", btn.getAttribute("data-route") === route);
+        });
+        render();
+      }
+
+      function groupByProject(rows) {
+        const grouped = new Map();
+        rows.forEach((row) => {
+          if (!grouped.has(row.project)) grouped.set(row.project, []);
+          grouped.get(row.project).push(row);
+        });
+        return Array.from(grouped.entries());
+      }
+
+      function renderDashboard() {
+        const totalPages = Math.max(1, Math.ceil(modelRows.length / pageSizeModels));
+        state.modelPage = Math.min(Math.max(state.modelPage, 1), totalPages);
+        const start = (state.modelPage - 1) * pageSizeModels;
+        const visible = modelRows.slice(start, start + pageSizeModels);
+
+        return `
+          <div class="route-tag-row">
+            <span class="route-tag">Real route: /</span>
+            <span class="route-tag">Source: Dashboard.tsx</span>
+            <span class="route-tag">Concept mode: iOS desktop shell</span>
+          </div>
+          <h1 class="page-title">Dashboard</h1>
+          <p class="page-sub">Owner, system posture, usage, cost, and quarter objectives with a native Apple visual language.</p>
+
+          <div class="seg-row">
+            <span class="seg active">System Status</span>
+            <span class="seg active">Usage Statistics</span>
+            <span class="seg">Usage by Model</span>
+            <span class="seg">Quarter Objectives</span>
+            <span class="seg">Finance Pulse</span>
+          </div>
+
+          <h3 class="section-title">System Status</h3>
+          <div class="grid-4">
+            <article class="card stat"><div class="label">Gateway</div><div class="value">Online</div><div class="meta">Uptime 12h 44m</div></article>
+            <article class="card stat"><div class="label">Database</div><div class="value">Connected</div><div class="meta">Steady latency</div></article>
+            <article class="card stat"><div class="label">Ollama</div><div class="value">Running</div><div class="meta">Model loaded</div></article>
+            <article class="card stat"><div class="label">API Keys</div><div class="value">Anthropic + OpenRouter</div><div class="meta">5/6 available</div></article>
+            <article class="card stat"><div class="label">Memories</div><div class="value">2,810</div><div class="meta">crm 1,120 / product 730</div></article>
+            <article class="card stat"><div class="label">Documents</div><div class="value">420</div><div class="meta">knowledge synced</div></article>
+            <article class="card stat"><div class="label">Cron Jobs</div><div class="value">9</div><div class="meta">1 pending check</div></article>
+            <article class="card stat"><div class="label">Contacts</div><div class="value">142</div><div class="meta">58 companies</div></article>
+          </div>
+
+          <h3 class="section-title">Usage Statistics</h3>
+          <div class="grid-4">
+            <article class="card stat"><div class="label">Total Calls</div><div class="value">3,456</div><div class="meta">Today 128</div></article>
+            <article class="card stat"><div class="label">Total Tokens</div><div class="value">19.2M</div><div class="meta">Today 0.72M</div></article>
+            <article class="card stat"><div class="label">Total Cost</div><div class="value">$214.30</div><div class="meta">Today $7.14</div></article>
+            <article class="card stat"><div class="label">Avg Latency</div><div class="value">1.4s</div><div class="meta">Shadow mode</div></article>
+          </div>
+
+          <div class="chart-grid">
+            <article class="card block">
+              <h3>Daily Token Usage (30d)</h3>
+              <div class="spark">
+                <span style="height:24%"></span><span style="height:32%"></span><span style="height:36%"></span>
+                <span style="height:44%"></span><span style="height:52%"></span><span style="height:66%"></span>
+                <span style="height:58%"></span><span style="height:72%"></span><span style="height:84%"></span>
+                <span style="height:62%"></span><span style="height:68%"></span><span style="height:74%"></span>
+              </div>
+              <div class="provider-list">
+                <div class="provider-row"><span>Anthropic</span><strong>8.9M tokens</strong></div>
+                <div class="provider-row"><span>OpenRouter</span><strong>6.7M tokens</strong></div>
+                <div class="provider-row"><span>Ollama</span><strong>3.6M tokens</strong></div>
+              </div>
+            </article>
+
+            <article class="card block">
+              <h3>Cost by Provider</h3>
+              <div class="donut"></div>
+              <div class="provider-list">
+                <div class="provider-row"><span>Anthropic</span><strong>$146.20</strong></div>
+                <div class="provider-row"><span>OpenRouter</span><strong>$68.10</strong></div>
+                <div class="provider-row"><span>Ollama</span><strong>Free</strong></div>
+              </div>
+            </article>
+          </div>
+
+          <h3 class="section-title">Usage by Model</h3>
+          <article class="card block table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Provider</th><th>Model</th><th>Calls</th><th>Tokens</th><th>Cost</th><th>Latency</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${visible
+                  .map((row) => {
+                    const statusClass = row[4] === "Free" ? "ok" : "warn";
+                    return `<tr><td><strong>${row[0]}</strong></td><td>${row[1]}</td><td>${row[2]}</td><td>${row[3]}</td><td><span class="pill ${statusClass}">${row[4]}</span></td><td>${row[5]}</td></tr>`;
+                  })
+                  .join("")}
+              </tbody>
+            </table>
+            <div class="pager">
+              <div class="pager-info">Page ${state.modelPage} / ${totalPages} | ${modelRows.length} models</div>
+              <div class="pager-actions">
+                <button type="button" data-action="models-prev" ${state.modelPage <= 1 ? "disabled" : ""}>Prev</button>
+                <button type="button" data-action="models-next" ${state.modelPage >= totalPages ? "disabled" : ""}>Next</button>
+              </div>
+            </div>
+          </article>
+
+          <h3 class="section-title">Quarter Objectives</h3>
+          <div class="goal-list">
+            ${goals
+              .map(
+                (goal) => `
+                  <article class="goal">
+                    <div class="top"><div><div class="area">${goal.area}</div><div class="title">${goal.title}</div></div><strong>${goal.progress}%</strong></div>
+                    <div class="meta">${goal.meta}</div>
+                    <div class="track"><div class="fill" style="width:${goal.progress}%"></div></div>
+                  </article>
+                `,
+              )
+              .join("")}
+          </div>
+
+          <h3 class="section-title">Finance Pulse</h3>
+          <div class="finance-grid">
+            <article class="mini"><div class="label">Core Income</div><div class="value">246,000 EUR</div></article>
+            <article class="mini"><div class="label">Core Expense</div><div class="value">171,000 EUR</div></article>
+            <article class="mini"><div class="label">Core Net</div><div class="value">75,000 EUR</div></article>
+            <article class="mini"><div class="label">Cash Reserve</div><div class="value">64,500 EUR</div></article>
+          </div>
+        `;
+      }
+
+      function renderTasks() {
+        const totalTaskPages = Math.max(1, Math.ceil(taskRows.length / pageSizeTasks));
+        state.taskPage = Math.min(Math.max(state.taskPage, 1), totalTaskPages);
+        const taskStart = (state.taskPage - 1) * pageSizeTasks;
+        const visibleTasks = taskRows.slice(taskStart, taskStart + pageSizeTasks);
+        const grouped = groupByProject(visibleTasks);
+
+        const totalLogPages = Math.max(1, Math.ceil(logbookRows.length / pageSizeLogbook));
+        state.logbookPage = Math.min(Math.max(state.logbookPage, 1), totalLogPages);
+        const logStart = (state.logbookPage - 1) * pageSizeLogbook;
+        const visibleLogbook = logbookRows.slice(logStart, logStart + pageSizeLogbook);
+
+        const selectedTask = visibleTasks[0] || taskRows[0];
+
+        return `
+          <div class="route-tag-row">
+            <span class="route-tag">Real route: /tasks</span>
+            <span class="route-tag">Source: Tasks.tsx (Things-style)</span>
+            <span class="route-tag">Concept mode: iOS + macOS productivity</span>
+          </div>
+          <h1 class="page-title">Tasks</h1>
+          <p class="page-sub">Recreated Things-like flow from JOI: left list tree, project sections, task rows, context, and logbook pagination.</p>
+
+          <div class="tasks-shell">
+            <aside class="tasks-left">
+              <div class="search"><input type="text" value="" placeholder="Search" readonly /></div>
+
+              <div class="things-group">
+                <div class="things-row active"><span class="things-label"><span class="dot blue"></span>Inbox</span><span>6</span></div>
+                <div class="things-row"><span class="things-label"><span class="dot yellow"></span>Today</span><span>12</span></div>
+                <div class="things-row"><span class="things-label"><span class="dot red"></span>Upcoming</span><span>9</span></div>
+                <div class="things-row"><span class="things-label"><span class="dot green"></span>Anytime</span><span>14</span></div>
+                <div class="things-row"><span class="things-label"><span class="dot gold"></span>Someday</span><span>5</span></div>
+              </div>
+
+              <div class="things-group">
+                <div class="things-row"><span class="things-label"><span class="dot green"></span>Logbook</span><span>189</span></div>
+              </div>
+
+              <div class="things-group">
+                <div class="things-row"><span class="things-label"><span class="dot gray"></span>Client Work</span><span>18</span></div>
+                <div class="things-row"><span class="things-label"><span class="dot gray"></span>Product</span><span>16</span></div>
+                <div class="things-row"><span class="things-label"><span class="dot gray"></span>DevOps</span><span>12</span></div>
+              </div>
+
+              <div class="things-group">
+                <div class="things-row"><span class="things-label"><span class="dot blue"></span>CRM Pipeline</span><span>7</span></div>
+                <div class="things-row"><span class="things-label"><span class="dot blue"></span>JOI Web</span><span>9</span></div>
+                <div class="things-row"><span class="things-label"><span class="dot blue"></span>Quality</span><span>6</span></div>
+                <div class="things-row"><span class="things-label"><span class="dot blue"></span>Integrations</span><span>4</span></div>
+              </div>
+            </aside>
+
+            <section class="tasks-main">
+              <div class="tasks-head">
+                <div>
+                  <h2>Today</h2>
+                  <p>${taskRows.length} active tasks | page ${state.taskPage} of ${totalTaskPages}</p>
+                </div>
+                <div class="chip-row">
+                  <span class="seg active">Priority</span>
+                  <span class="seg active">Due</span>
+                  <span class="seg">Tags</span>
+                  <span class="seg">Checklist</span>
+                </div>
+              </div>
+
+              <div class="task-list">
+                ${grouped
+                  .map(
+                    ([project, rows]) => `
+                      <article class="task-section">
+                        <h4>${project}</h4>
+                        ${rows
+                          .map(
+                            (task) => `
+                              <div class="task-row">
+                                <span class="task-check"></span>
+                                <div>
+                                  <div class="task-title">${task.title}</div>
+                                  <div class="task-meta">
+                                    <span>${task.area}</span>
+                                    <span class="muted">Checklist ${task.checklist}</span>
+                                    <span class="tags">${task.tags.map((tag) => `<span class="tag">${tag}</span>`).join("")}</span>
+                                  </div>
+                                </div>
+                                <div class="task-right"><span class="due">${task.due}</span></div>
+                              </div>
+                            `,
+                          )
+                          .join("")}
+                      </article>
+                    `,
+                  )
+                  .join("")}
+              </div>
+
+              <div class="task-bottom">
+                <button type="button" class="primary">+ New To-Do</button>
+                <div class="pager-actions">
+                  <button type="button" data-action="tasks-prev" ${state.taskPage <= 1 ? "disabled" : ""}>Prev</button>
+                  <button type="button" data-action="tasks-next" ${state.taskPage >= totalTaskPages ? "disabled" : ""}>Next</button>
+                </div>
+              </div>
+            </section>
+
+            <aside class="tasks-right">
+              <article class="inspect">
+                <h4>Task Context</h4>
+                <p>Matches JOI pattern: tasks linked to CRM + chat + quote objects.</p>
+                <div class="inspect-list">
+                  <div class="inspect-row"><strong>Selected:</strong> ${selectedTask.title}</div>
+                  <div class="inspect-row"><strong>Contact:</strong> Markus Leitner</div>
+                  <div class="inspect-row"><strong>Conversation:</strong> WhatsApp #123</div>
+                  <div class="inspect-row"><strong>Quote:</strong> Q-205</div>
+                  <div class="inspect-row"><strong>Generated by:</strong> codex-cli</div>
+                </div>
+              </article>
+
+              <article class="inspect">
+                <h4>Inline Controls</h4>
+                <p>When, tags, deadline, checklist, move/duplicate, and project notes remain available in the iOS visual system.</p>
+              </article>
+
+              <article class="inspect">
+                <h4>Logbook Preview</h4>
+                <div class="logbook">
+                  ${visibleLogbook
+                    .map(
+                      (item) => `<div class="log-row"><strong>${item[0]}</strong><br />${item[1]} <span class="muted">${item[2]}</span></div>`,
+                    )
+                    .join("")}
+                </div>
+                <div class="pager" style="margin-top:8px;">
+                  <div class="pager-info">Page ${state.logbookPage} / ${totalLogPages}</div>
+                  <div class="pager-actions">
+                    <button type="button" data-action="log-prev" ${state.logbookPage <= 1 ? "disabled" : ""}>Prev</button>
+                    <button type="button" data-action="log-next" ${state.logbookPage >= totalLogPages ? "disabled" : ""}>Next</button>
+                  </div>
+                </div>
+              </article>
+            </aside>
+          </div>
+        `;
+      }
+
+      function render() {
+        workspace.innerHTML = state.route === "dashboard" ? renderDashboard() : renderTasks();
+      }
+
+      document.addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+
+        const routeButton = target.closest("[data-route]");
+        if (routeButton) {
+          const route = routeButton.getAttribute("data-route");
+          if (route === "dashboard" || route === "tasks") {
+            setRoute(route);
+            return;
+          }
+        }
+
+        const variantButton = target.closest("[data-variant]");
+        if (variantButton) {
+          const nextVariant = variantButton.getAttribute("data-variant");
+          if (nextVariant) {
+            applyVariant(nextVariant);
+            return;
+          }
+        }
+
+        const actionButton = target.closest("[data-action]");
+        if (!actionButton) return;
+
+        const action = actionButton.getAttribute("data-action");
+        if (action === "models-prev") state.modelPage -= 1;
+        if (action === "models-next") state.modelPage += 1;
+        if (action === "tasks-prev") state.taskPage -= 1;
+        if (action === "tasks-next") state.taskPage += 1;
+        if (action === "log-prev") state.logbookPage -= 1;
+        if (action === "log-next") state.logbookPage += 1;
+
+        render();
+      });
+
+      themeToggle.addEventListener("click", () => {
+        applyTheme(state.theme === "dark" ? "light" : "dark");
+      });
+
+      const savedTheme = safeStorageGet("joi-ios-route-theme");
+      const savedVariant = safeStorageGet("joi-ios-route-variant");
+      const savedRoute = safeStorageGet("joi-ios-route-view");
+      const hashRoute = location.hash === "#tasks" ? "tasks" : (location.hash === "#dashboard" ? "dashboard" : null);
+
+      applyTheme(savedTheme === "light" ? "light" : "dark");
+      applyVariant(savedVariant || "frost");
+      setRoute(hashRoute || (savedRoute === "tasks" ? "tasks" : "dashboard"));
+    </script>
+  </body>
+</html>

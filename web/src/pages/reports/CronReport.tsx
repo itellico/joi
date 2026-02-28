@@ -87,7 +87,7 @@ export default function CronReport({ days }: { days: number }) {
               <XAxis dataKey="day" tick={{ fontSize: 10 }} stroke="var(--text-muted)" tickFormatter={formatDate} />
               <YAxis tick={{ fontSize: 10 }} stroke="var(--text-muted)" tickFormatter={(v) => formatDuration(v)} />
               <Tooltip {...tooltipStyle} labelFormatter={(v: any) => formatDate(String(v))} formatter={(v: any) => [formatDuration(Number(v ?? 0)), ""]} />
-              <Area type="monotone" dataKey="avg_duration_ms" fill="#a78bfa" stroke="#a78bfa" fillOpacity={0.3} name="Avg Duration" />
+              <Area type="monotone" dataKey="avg_duration_ms" fill="#ff5a1f" stroke="#ff5a1f" fillOpacity={0.3} name="Avg Duration" />
             </AreaChart>
           </ResponsiveContainer>
         </Card>

@@ -87,6 +87,7 @@ final class JOIAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
     private var localMonitor: Any?
     private var modelContainer: ModelContainer?
     private var statusIconTimer: Timer?
+    private var pendingTalkStartTask: Task<Void, Never>?
     private var statusIconPhase: CGFloat = 0
     private lazy var statusFirestormImage: NSImage? = {
         if let image = NSImage(named: "JoiFirestormTransparent") {
@@ -130,7 +131,7 @@ final class JOIAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
         let menu = NSMenu()
         menu.delegate = self
 
-        let toggleItem = NSMenuItem(title: "JOI On", action: #selector(toggleVoiceFromMenu), keyEquivalent: "")
+        let toggleItem = NSMenuItem(title: "Voice On", action: #selector(toggleVoiceFromMenu), keyEquivalent: "")
         toggleItem.target = self
         toggleItem.image = NSImage(systemSymbolName: "power.circle", accessibilityDescription: nil)
         menu.addItem(toggleItem)
@@ -196,8 +197,7 @@ final class JOIAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
         }
         voiceEngine.attach(webSocket: webSocket, router: router)
 
-        let gatewayURL = UserDefaults.standard.string(forKey: "gatewayURL")
-            ?? "ws://localhost:3100/ws"
+        let gatewayURL = GatewayURLResolver.configuredGatewayURL()
         webSocket.connect(to: gatewayURL)
 
         Task {
@@ -218,7 +218,7 @@ final class JOIAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
 
     func menuWillOpen(_ menu: NSMenu) {
         guard menu == statusMenu else { return }
-        toggleVoiceMenuItem?.title = voiceEngine.isActive ? "JOI Off" : "JOI On"
+        toggleVoiceMenuItem?.title = voiceEngine.isActive ? "Voice Off" : "Voice On"
         toggleVoiceMenuItem?.state = voiceEngine.isActive ? .on : .off
         toggleVoiceMenuItem?.image = NSImage(
             systemSymbolName: voiceEngine.isActive ? "power.circle.fill" : "power.circle",
@@ -427,18 +427,23 @@ final class JOIAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
     }
 
     @objc private func openTalkFromMenu() {
-        if !voiceEngine.isActive {
-            Task { @MainActor in
-                await voiceEngine.start()
-            }
-        } else if voiceEngine.isMuted {
-            voiceEngine.unmute()
-        }
-        updateStatusItemIcon()
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.showPopover()
             NotificationCenter.default.post(name: .joiOpenChat, object: nil)
+        }
+
+        // Start voice after the chat view is presented so callbacks/context are attached.
+        pendingTalkStartTask?.cancel()
+        pendingTalkStartTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(nanoseconds: 180_000_000)
+            if !self.voiceEngine.isActive {
+                await self.voiceEngine.start()
+            } else if self.voiceEngine.isMuted {
+                self.voiceEngine.unmute()
+            }
+            self.updateStatusItemIcon()
         }
     }
 
@@ -461,6 +466,8 @@ final class JOIAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        pendingTalkStartTask?.cancel()
+        pendingTalkStartTask = nil
         statusIconTimer?.invalidate()
         statusIconTimer = nil
     }

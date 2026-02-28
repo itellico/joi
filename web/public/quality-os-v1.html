@@ -1,0 +1,609 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Quality OS v1 Prototype</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f5f7fb;
+        --panel: rgba(255, 255, 255, 0.82);
+        --panel-solid: #ffffff;
+        --ink: #101828;
+        --muted: #667085;
+        --line: #d0d7e4;
+        --brand: #0071e3;
+        --ok: #17b26a;
+        --warn: #f79009;
+        --danger: #d92d20;
+        --shadow: 0 20px 60px rgba(15, 23, 42, 0.08);
+        --radius-xl: 22px;
+        --radius-lg: 16px;
+        --radius-md: 12px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "SF Pro Display", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: radial-gradient(circle at 20% 0%, #e9f1ff 0%, #f5f7fb 40%), var(--bg);
+        color: var(--ink);
+      }
+
+      .shell {
+        display: grid;
+        grid-template-columns: 240px minmax(0, 1fr);
+        min-height: 100vh;
+      }
+
+      .rail {
+        border-right: 1px solid var(--line);
+        background: rgba(248, 250, 253, 0.86);
+        padding: 26px 18px;
+        backdrop-filter: blur(8px);
+      }
+
+      .logo {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 26px;
+      }
+
+      .orb {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        background: radial-gradient(circle at 35% 25%, #ffd39d 0%, #c26a1f 40%, #3b1f0f 100%);
+        box-shadow: inset 0 0 8px rgba(255, 255, 255, 0.5);
+      }
+
+      .logo b {
+        font-size: 18px;
+      }
+
+      .rail h4 {
+        margin: 18px 8px 8px;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #8a94a8;
+      }
+
+      .nav {
+        display: grid;
+        gap: 6px;
+      }
+
+      .nav button {
+        border: 0;
+        background: transparent;
+        text-align: left;
+        border-radius: 10px;
+        padding: 10px 12px;
+        color: #475467;
+        font-size: 14px;
+        cursor: pointer;
+      }
+
+      .nav button.active {
+        background: rgba(0, 113, 227, 0.12);
+        color: #005fc0;
+        font-weight: 600;
+      }
+
+      .main {
+        padding: 20px;
+        display: grid;
+        gap: 16px;
+      }
+
+      .top {
+        background: var(--panel);
+        border: 1px solid rgba(208, 215, 228, 0.7);
+        border-radius: var(--radius-xl);
+        box-shadow: var(--shadow);
+        padding: 16px 18px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .top h1 {
+        margin: 0;
+        font-size: 22px;
+        font-weight: 650;
+      }
+
+      .top p {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .chip {
+        padding: 8px 12px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: #fff;
+        font-size: 12px;
+        color: #344054;
+      }
+
+      .chip.brand {
+        border-color: #a6cdf5;
+        color: #005fc0;
+        background: rgba(0, 113, 227, 0.09);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: 1.5fr 1fr;
+        gap: 16px;
+      }
+
+      .stack {
+        display: grid;
+        gap: 16px;
+      }
+
+      .card {
+        background: var(--panel-solid);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        padding: 16px;
+        box-shadow: 0 12px 30px rgba(15, 23, 42, 0.05);
+      }
+
+      .card h2 {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 640;
+      }
+
+      .card .sub {
+        margin: 6px 0 0;
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      .kpis {
+        margin-top: 14px;
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .kpi {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        padding: 10px;
+      }
+
+      .kpi .label {
+        color: #667085;
+        font-size: 12px;
+      }
+
+      .kpi b {
+        display: block;
+        margin-top: 3px;
+        font-size: 22px;
+      }
+
+      .sim-form {
+        margin-top: 12px;
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .sim-form label {
+        font-size: 12px;
+        color: #667085;
+        display: grid;
+        gap: 6px;
+      }
+
+      select,
+      input,
+      textarea {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fff;
+        padding: 10px;
+        font: inherit;
+        color: #101828;
+      }
+
+      .span-2 {
+        grid-column: span 2;
+      }
+
+      .actions {
+        display: flex;
+        justify-content: flex-end;
+        align-items: end;
+      }
+
+      .btn {
+        border: 1px solid transparent;
+        border-radius: 11px;
+        padding: 10px 14px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+
+      .btn.primary {
+        background: var(--brand);
+        color: #fff;
+      }
+
+      .btn.ghost {
+        border-color: var(--line);
+        background: #fff;
+        color: #344054;
+      }
+
+      .timeline {
+        margin-top: 12px;
+        display: grid;
+        gap: 10px;
+      }
+
+      .step {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 10px 12px;
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .step b {
+        font-size: 13px;
+      }
+
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        margin-top: 4px;
+      }
+
+      .ok { background: var(--ok); }
+      .warn { background: var(--warn); }
+      .danger { background: var(--danger); }
+
+      .agent-table {
+        margin-top: 12px;
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+
+      .agent-table th,
+      .agent-table td {
+        text-align: left;
+        border-bottom: 1px solid #e3e8f1;
+        padding: 10px 8px;
+      }
+
+      .agent {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .bubble {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--brand);
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border-radius: 999px;
+        padding: 5px 8px;
+        border: 1px solid #d8e3f7;
+        font-size: 11px;
+      }
+
+      .queue {
+        margin-top: 12px;
+        display: grid;
+        gap: 8px;
+      }
+
+      .issue {
+        border: 1px solid #e3e8f1;
+        border-radius: 12px;
+        padding: 10px;
+      }
+
+      .issue h4 {
+        margin: 0;
+        font-size: 13px;
+      }
+
+      .issue p {
+        margin: 4px 0 0;
+        font-size: 12px;
+        color: #667085;
+      }
+
+      .feed {
+        margin-top: 12px;
+        display: grid;
+        gap: 10px;
+      }
+
+      .post {
+        border-left: 3px solid #c7dbf8;
+        padding: 8px 10px;
+        background: #f9fbff;
+        border-radius: 10px;
+      }
+
+      .post b {
+        font-size: 12px;
+      }
+
+      .post p {
+        margin: 4px 0 0;
+        font-size: 12px;
+        color: #475467;
+      }
+
+      .logs {
+        margin-top: 12px;
+        border: 1px solid #d5deed;
+        background: #0d1320;
+        color: #e4ecfa;
+        border-radius: 12px;
+        padding: 10px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        max-height: 200px;
+        overflow: auto;
+      }
+
+      @media (max-width: 1100px) {
+        .shell {
+          grid-template-columns: 1fr;
+        }
+
+        .rail {
+          display: none;
+        }
+
+        .grid {
+          grid-template-columns: 1fr;
+        }
+
+        .kpis {
+          grid-template-columns: 1fr 1fr;
+        }
+
+        .sim-form {
+          grid-template-columns: 1fr;
+        }
+
+        .span-2 {
+          grid-column: span 1;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="rail">
+        <div class="logo"><span class="orb"></span><b>JOI Quality OS</b></div>
+
+        <h4>Main</h4>
+        <div class="nav">
+          <button class="active">Command Deck</button>
+          <button>Simulate</button>
+          <button>Repairs</button>
+          <button>Learning</button>
+        </div>
+
+        <h4>Entities</h4>
+        <div class="nav">
+          <button>Agents</button>
+          <button>Skills</button>
+          <button>Flows</button>
+          <button>Social Feed</button>
+        </div>
+
+        <h4>Debug</h4>
+        <div class="nav">
+          <button>Runs</button>
+          <button>Issues</button>
+          <button>Logs</button>
+        </div>
+      </aside>
+
+      <main class="main">
+        <section class="top">
+          <div>
+            <h1>Quality Center, but simple</h1>
+            <p>Agent-first testing with one flow: Simulate -> Review -> Repair -> Learn</p>
+          </div>
+          <div class="chips">
+            <span class="chip brand">Personal JOI linked to 6 agents</span>
+            <span class="chip">Shadow default</span>
+            <span class="chip">Latency realistic</span>
+          </div>
+        </section>
+
+        <div class="grid">
+          <div class="stack">
+            <section class="card">
+              <h2>1. Simulate</h2>
+              <p class="sub">Pick agent + skill + scenario, then run directly in chat simulation mode.</p>
+
+              <div class="kpis">
+                <div class="kpi"><span class="label">Agents in scope</span><b>12</b></div>
+                <div class="kpi"><span class="label">Runs today</span><b>84</b></div>
+                <div class="kpi"><span class="label">Median latency</span><b>1.2s</b></div>
+                <div class="kpi"><span class="label">Open repairs</span><b>17</b></div>
+              </div>
+
+              <div class="sim-form">
+                <label>Agent
+                  <select>
+                    <option>personal (JOI)</option>
+                    <option>knowledge-sync</option>
+                    <option>skill-scout</option>
+                    <option>store-auditor</option>
+                  </select>
+                </label>
+                <label>Skill
+                  <select>
+                    <option>memory_recall</option>
+                    <option>tool_selection</option>
+                    <option>latency_under_load</option>
+                  </select>
+                </label>
+                <label>Profile
+                  <select>
+                    <option>shadow + realistic (recommended)</option>
+                    <option>dry_run + stress</option>
+                    <option>live + none</option>
+                  </select>
+                </label>
+                <label class="span-2">Scenario prompt
+                  <textarea rows="2">Who is my son and which project is currently blocked?</textarea>
+                </label>
+                <div class="actions">
+                  <button class="btn primary">Open in Chat Simulator</button>
+                </div>
+              </div>
+            </section>
+
+            <section class="card">
+              <h2>2. Run Story</h2>
+              <p class="sub">See exactly which agents and skills were involved, with latency and status.</p>
+
+              <div class="timeline">
+                <div class="step">
+                  <div class="agent"><span class="dot ok"></span><div><b>personal -> route_decision</b><div class="sub">selected knowledge-sync (confidence 91%)</div></div></div>
+                  <span class="status">95ms</span>
+                </div>
+                <div class="step">
+                  <div class="agent"><span class="dot ok"></span><div><b>knowledge-sync -> document_search</b><div class="sub">2 sources queried (obsidian + outline)</div></div></div>
+                  <span class="status">420ms</span>
+                </div>
+                <div class="step">
+                  <div class="agent"><span class="dot warn"></span><div><b>personal -> response_compose</b><div class="sub">missing one expected memory field</div></div></div>
+                  <span class="status">780ms</span>
+                </div>
+              </div>
+            </section>
+
+            <section class="card">
+              <h2>3. Agent Improvement</h2>
+              <p class="sub">Track if each agent/skill actually gets better over time.</p>
+
+              <table class="agent-table">
+                <thead>
+                  <tr>
+                    <th>Agent</th>
+                    <th>Tests (7d)</th>
+                    <th>Pass Rate</th>
+                    <th>Latency</th>
+                    <th>Skill Trend</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><div class="agent"><span class="bubble"></span>personal</div></td>
+                    <td>228</td>
+                    <td>81%</td>
+                    <td>1.1s</td>
+                    <td><span class="status"><span class="dot ok"></span>+6%</span></td>
+                  </tr>
+                  <tr>
+                    <td><div class="agent"><span class="bubble"></span>knowledge-sync</div></td>
+                    <td>171</td>
+                    <td>74%</td>
+                    <td>1.4s</td>
+                    <td><span class="status"><span class="dot warn"></span>+1%</span></td>
+                  </tr>
+                  <tr>
+                    <td><div class="agent"><span class="bubble"></span>skill-scout</div></td>
+                    <td>95</td>
+                    <td>62%</td>
+                    <td>1.9s</td>
+                    <td><span class="status"><span class="dot danger"></span>-4%</span></td>
+                  </tr>
+                </tbody>
+              </table>
+            </section>
+          </div>
+
+          <div class="stack">
+            <section class="card">
+              <h2>Repair Queue (AutoDev linked)</h2>
+              <p class="sub">Only 3 states: Needs Repair -> AutoDev Running -> Ready to Verify.</p>
+
+              <div class="queue">
+                <div class="issue">
+                  <h4>P1: Wrong tool selected in memory recall</h4>
+                  <p>agent: personal · skill: tool_selection · moved to AutoDev 4m ago</p>
+                </div>
+                <div class="issue">
+                  <h4>P2: Latency spike under realistic profile</h4>
+                  <p>agent: knowledge-sync · skill: latency_under_load · ready for verify</p>
+                </div>
+                <div class="issue">
+                  <h4>P1: Missing context in final answer</h4>
+                  <p>agent: personal · skill: response_quality · needs repair</p>
+                </div>
+              </div>
+            </section>
+
+            <section class="card">
+              <h2>Contextual Logs</h2>
+              <p class="sub">Logs are filtered by selected run, not a separate disconnected page.</p>
+              <div class="logs">
+[12:44:10] run: 9d2f... start (shadow, realistic)
+[12:44:10] route: personal -> knowledge-sync (0.91)
+[12:44:11] tool: document_search ok (420ms)
+[12:44:12] judge: response_quality=0.62 (threshold=0.70)
+[12:44:12] issue: created P1 "Missing context in final answer"
+[12:44:13] autodev: task queued (repair/response-quality)
+              </div>
+            </section>
+
+            <section class="card">
+              <h2>Agent Social</h2>
+              <p class="sub">Human-readable feed: what improved, what regressed, and why.</p>
+              <div class="feed">
+                <div class="post"><b>@personal improved tool_selection (+5%)</b><p>Reason: route prompt updated + fallback rule tightened.</p></div>
+                <div class="post"><b>@knowledge-sync regression in latency (+280ms)</b><p>Cause: additional retrieval pass in obsidian_search.</p></div>
+                <div class="post"><b>@skill-scout fixed hallucinated skill suggestions</b><p>Verification: 12/12 recent simulations passed.</p></div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </main>
+    </div>
+  </body>
+</html>

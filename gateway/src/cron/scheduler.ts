@@ -19,6 +19,7 @@ import { checkHeartbeats } from "../agent/heartbeat.js";
 import { normalizeExecutionMode } from "../agent/execution-mode.js";
 import type { JoiConfig } from "../config/schema.js";
 import { evaluateAllActiveSoulRollouts, getSoulGovernanceSummary } from "../agent/soul-rollouts.js";
+import { runHumanizerAudit, summarizeHumanizerAudit } from "../humanizer/service.js";
 
 export interface CronJob {
   id: string;
@@ -51,6 +52,8 @@ const activeTimers = new Map<string, { timer: ReturnType<typeof setTimeout> | Cr
 let schedulerConfig: JoiConfig | null = null;
 let tickInterval: ReturnType<typeof setInterval> | null = null;
 let retentionInterval: ReturnType<typeof setInterval> | null = null;
+const RUN_LOG_RETENTION_DAYS = 30;
+const STALE_RUNNING_LOCK_MAX_AGE_SECONDS = 6 * 60 * 60;
 
 // Start the scheduler - polls DB every 30s for jobs to run
 export function startScheduler(config: JoiConfig): void {
@@ -58,13 +61,13 @@ export function startScheduler(config: JoiConfig): void {
 
   console.log("[Cron] Scheduler started");
 
-  // Initial load
-  loadAndScheduleJobs();
+  // Initial bootstrap
+  void bootstrapScheduler();
 
   // Poll for changes every 30 seconds
   tickInterval = setInterval(loadAndScheduleJobs, 30_000);
 
-  // Purge old run logs every hour
+  // Purge old run logs + completed one-time reminders every hour
   retentionInterval = setInterval(purgeOldRuns, 60 * 60 * 1000);
 }
 
@@ -112,6 +115,31 @@ async function loadAndScheduleJobs(): Promise<void> {
     }
   } catch (err) {
     console.error("[Cron] Failed to load jobs:", err);
+  }
+}
+
+async function bootstrapScheduler(): Promise<void> {
+  await releaseStaleRunningLocks();
+  await loadAndScheduleJobs();
+  await purgeOldRuns();
+}
+
+async function releaseStaleRunningLocks(): Promise<void> {
+  try {
+    const result = await query<{ id: string }>(
+      `UPDATE cron_jobs
+       SET running_at = NULL, updated_at = NOW()
+       WHERE running_at IS NOT NULL
+         AND running_at < NOW() - ($1::int * INTERVAL '1 second')
+       RETURNING id`,
+      [STALE_RUNNING_LOCK_MAX_AGE_SECONDS],
+    );
+    const released = result.rows.length;
+    if (released > 0) {
+      console.warn(`[Cron] Released ${released} stale running lock(s)`);
+    }
+  } catch {
+    // Ignore — table may not exist yet
   }
 }
 
@@ -170,30 +198,63 @@ function scheduleJob(job: CronJob): void {
 
 async function purgeOldRuns(): Promise<void> {
   try {
-    await query("DELETE FROM cron_job_runs WHERE created_at < NOW() - INTERVAL '30 days'");
+    await query(
+      "DELETE FROM cron_job_runs WHERE created_at < NOW() - ($1::int * INTERVAL '1 day')",
+      [RUN_LOG_RETENTION_DAYS],
+    );
+
+    const completedReminderRetentionDays = Number(
+      schedulerConfig?.tasks?.completedReminderRetentionDays ?? 14,
+    );
+    if (Number.isFinite(completedReminderRetentionDays) && completedReminderRetentionDays > 0) {
+      await query(
+        `DELETE FROM cron_jobs
+         WHERE schedule_kind = 'at'
+           AND enabled = false
+           AND last_run_at IS NOT NULL
+           AND last_run_at < NOW() - ($1::int * INTERVAL '1 day')`,
+        [Math.floor(completedReminderRetentionDays)],
+      );
+    }
   } catch {
     // Ignore — table may not exist yet
   }
 }
 
-async function executeJob(job: CronJob): Promise<void> {
+async function claimJobForExecution(
+  jobId: string,
+  options?: { allowDisabled?: boolean },
+): Promise<CronJob | null> {
+  const allowDisabled = options?.allowDisabled === true;
+  const result = await query<CronJob>(
+    `UPDATE cron_jobs
+     SET running_at = NOW(), updated_at = NOW()
+     WHERE id = $1
+       AND running_at IS NULL
+       AND ($2::boolean = true OR enabled = true)
+     RETURNING *`,
+    [jobId, allowDisabled],
+  );
+  return result.rows[0] ?? null;
+}
+
+async function executeJob(job: CronJob, options?: { allowDisabled?: boolean }): Promise<void> {
   if (!schedulerConfig) return;
 
-  const startTime = Date.now();
-  console.log(`[Cron] Executing: ${job.name} (${job.id})`);
+  const claimedJob = await claimJobForExecution(job.id, options);
+  if (!claimedJob) {
+    return;
+  }
 
-  // Mark as running on cron_jobs
-  await query(
-    "UPDATE cron_jobs SET running_at = NOW() WHERE id = $1",
-    [job.id],
-  ).catch(() => {});
+  const startTime = Date.now();
+  console.log(`[Cron] Executing: ${claimedJob.name} (${claimedJob.id})`);
 
   // Insert a running row into cron_job_runs
   let runId: string | null = null;
   try {
     const runResult = await query<{ id: string }>(
       "INSERT INTO cron_job_runs (job_id, status) VALUES ($1, 'running') RETURNING id",
-      [job.id],
+      [claimedJob.id],
     );
     runId = runResult.rows[0]?.id ?? null;
   } catch {
@@ -212,15 +273,15 @@ async function executeJob(job: CronJob): Promise<void> {
   console.warn = (...args) => { capturedLogs.push('[WARN] ' + fmt(...args)); origWarn(...args); };
 
   try {
-    if (job.payload_kind === "agent_turn") {
+    if (claimedJob.payload_kind === "agent_turn") {
       await runAgent({
         conversationId: "",
-        agentId: job.agent_id,
-        userMessage: job.payload_text,
+        agentId: claimedJob.agent_id,
+        userMessage: claimedJob.payload_text,
         config: schedulerConfig!,
       });
-    } else if (job.payload_kind === "system_event") {
-      switch (job.payload_text) {
+    } else if (claimedJob.payload_kind === "system_event") {
+      switch (claimedJob.payload_text) {
         case "consolidate_memories":
           await runConsolidation(schedulerConfig!);
           break;
@@ -239,8 +300,8 @@ async function executeJob(job: CronJob): Promise<void> {
         case "audit_store":
           await runStoreAudit({
             config: schedulerConfig!,
-            conversationId: `cron:${job.id}`,
-            agentId: job.agent_id || "store-auditor",
+            conversationId: `cron:${claimedJob.id}`,
+            agentId: claimedJob.agent_id || "store-auditor",
           } as Parameters<typeof runStoreAudit>[0]);
           break;
         case "scan_channels":
@@ -331,8 +392,13 @@ async function executeJob(job: CronJob): Promise<void> {
           console.log("[Soul] Created monthly governance review item");
           break;
         }
+        case "humanizer_audit": {
+          const overview = await runHumanizerAudit(`cron:${claimedJob.id}`);
+          console.log(`[Humanizer] ${summarizeHumanizerAudit(overview)}`);
+          break;
+        }
         default:
-          console.warn(`[Cron] Unknown system_event: ${job.payload_text}`);
+          console.warn(`[Cron] Unknown system_event: ${claimedJob.payload_text}`);
       }
     }
 
@@ -350,7 +416,7 @@ async function executeJob(job: CronJob): Promise<void> {
          consecutive_errors = 0,
          updated_at = NOW()
        WHERE id = $2`,
-      [duration, job.id],
+      [duration, claimedJob.id],
     );
 
     // Update the run row
@@ -361,13 +427,13 @@ async function executeJob(job: CronJob): Promise<void> {
       ).catch(() => {});
     }
 
-    console.log(`[Cron] Completed: ${job.name} (${duration}ms)`);
+    console.log(`[Cron] Completed: ${claimedJob.name} (${duration}ms)`);
 
     // Delete one-shot jobs after execution
-    if (job.delete_after_run || job.schedule_kind === "at") {
-      activeTimers.get(job.id)?.cancel();
-      activeTimers.delete(job.id);
-      await query("UPDATE cron_jobs SET enabled = false WHERE id = $1", [job.id]);
+    if (claimedJob.delete_after_run || claimedJob.schedule_kind === "at") {
+      activeTimers.get(claimedJob.id)?.cancel();
+      activeTimers.delete(claimedJob.id);
+      await query("UPDATE cron_jobs SET enabled = false WHERE id = $1", [claimedJob.id]);
     }
   } catch (err) {
     const duration = Date.now() - startTime;
@@ -385,7 +451,7 @@ async function executeJob(job: CronJob): Promise<void> {
          consecutive_errors = consecutive_errors + 1,
          updated_at = NOW()
        WHERE id = $3`,
-      [message, duration, job.id],
+      [message, duration, claimedJob.id],
     ).catch(() => {});
 
     // Update the run row
@@ -396,18 +462,18 @@ async function executeJob(job: CronJob): Promise<void> {
       ).catch(() => {});
     }
 
-    console.error(`[Cron] Failed: ${job.name} - ${message}`);
+    console.error(`[Cron] Failed: ${claimedJob.name} - ${message}`);
 
     // Disable after 5 consecutive errors
     const jobCheck = await query<{ consecutive_errors: number }>(
       "SELECT consecutive_errors FROM cron_jobs WHERE id = $1",
-      [job.id],
+      [claimedJob.id],
     );
     if (jobCheck.rows[0]?.consecutive_errors >= 5) {
-      await query("UPDATE cron_jobs SET enabled = false WHERE id = $1", [job.id]);
-      activeTimers.get(job.id)?.cancel();
-      activeTimers.delete(job.id);
-      console.warn(`[Cron] Disabled ${job.name} after 5 consecutive errors`);
+      await query("UPDATE cron_jobs SET enabled = false WHERE id = $1", [claimedJob.id]);
+      activeTimers.get(claimedJob.id)?.cancel();
+      activeTimers.delete(claimedJob.id);
+      console.warn(`[Cron] Disabled ${claimedJob.name} after 5 consecutive errors`);
     }
   } finally {
     console.log = origLog; console.error = origErr; console.warn = origWarn;
@@ -543,5 +609,5 @@ export async function deleteJob(id: string): Promise<void> {
 
 /** Trigger a job immediately (for manual "Run now" from the UI). */
 export async function executeJobNow(job: CronJob): Promise<void> {
-  return executeJob(job);
+  return executeJob(job, { allowDisabled: true });
 }

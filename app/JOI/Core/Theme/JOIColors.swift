@@ -13,39 +13,39 @@ extension Color {
 
 enum JOIColors {
     // Core backgrounds
-    static let background = Color(hex: 0x0A0A0F)
-    static let surface = Color(hex: 0x12121A)
-    static let surfaceVariant = Color(hex: 0x1A1A25)
-    static let surfaceHigh = Color(hex: 0x222230)
+    static let background = Color(hex: 0x120A08)
+    static let surface = Color(hex: 0x1B100B)
+    static let surfaceVariant = Color(hex: 0x261611)
+    static let surfaceHigh = Color(hex: 0x321C14)
 
-    // Accent — Cyan
-    static let primary = Color(hex: 0x00E5FF)
-    static let primaryMuted = Color(hex: 0x0097A7)
-    static let primaryGlow = Color(hex: 0x00E5FF, opacity: 0.2)
+    // Accent — Volcanic Arc (flame orange)
+    static let primary = Color(hex: 0xFF5A1F)
+    static let primaryMuted = Color(hex: 0xB93A13)
+    static let primaryGlow = Color(hex: 0xFF5A1F, opacity: 0.24)
 
-    // Accent — Amber
-    static let secondary = Color(hex: 0xFFAB40)
-    static let secondaryMuted = Color(hex: 0xC77800)
-    static let secondaryGlow = Color(hex: 0xFFAB40, opacity: 0.2)
+    // Accent — Ember amber
+    static let secondary = Color(hex: 0xFF9F2E)
+    static let secondaryMuted = Color(hex: 0xD97512)
+    static let secondaryGlow = Color(hex: 0xFF9F2E, opacity: 0.24)
 
-    // Accent — Violet
-    static let tertiary = Color(hex: 0xB388FF)
-    static let tertiaryMuted = Color(hex: 0x7C4DFF)
+    // Accent — Hot magenta
+    static let tertiary = Color(hex: 0xFF2D78)
+    static let tertiaryMuted = Color(hex: 0xB51F5B)
 
     // Semantic
-    static let error = Color(hex: 0xFF5252)
-    static let success = Color(hex: 0x69F0AE)
-    static let warning = Color(hex: 0xFFD740)
-    static let info = Color(hex: 0x40C4FF)
+    static let error = Color(hex: 0xFF5B5B)
+    static let success = Color(hex: 0x70D68B)
+    static let warning = Color(hex: 0xFFC04A)
+    static let info = Color(hex: 0xFF8A3A)
 
     // Text
-    static let textPrimary = Color(hex: 0xF5F5F7)
-    static let textSecondary = Color(hex: 0xB0B0C0)
-    static let textTertiary = Color(hex: 0x6B6B80)
-    static let textOnPrimary = Color(hex: 0x0A0A0F)
+    static let textPrimary = Color(hex: 0xFFF1EA)
+    static let textSecondary = Color(hex: 0xE0B8A4)
+    static let textTertiary = Color(hex: 0x9E6A52)
+    static let textOnPrimary = Color(hex: 0x1B100B)
 
     // Borders & dividers
-    static let border = Color(hex: 0x2A2A3A)
-    static let borderSubtle = Color(hex: 0x1E1E2E)
-    static let divider = Color(hex: 0x1A1A25)
+    static let border = Color(hex: 0x4A2718)
+    static let borderSubtle = Color(hex: 0x372013)
+    static let divider = Color(hex: 0x261611)
 }

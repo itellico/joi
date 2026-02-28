@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Quality OS v7 — Agent Detail</title>
+    <style>
+      :root {
+        --ink: #172230;
+        --muted: #607186;
+        --line: #d6e0ed;
+        --panel: #ffffff;
+        --bg: #f3f7fc;
+        --brand: #0b66f0;
+        --ok: #14844f;
+        --warn: #b96f11;
+        --bad: #be2d2d;
+        --ok-soft: #eaf8ef;
+        --warn-soft: #fff6e8;
+        --bad-soft: #fdeeee;
+        --radius: 14px;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        font-family: "Avenir Next", "SF Pro Text", "Segoe UI", sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(56rem 42rem at -8% -20%, #e7f1ff 0%, transparent 70%),
+          radial-gradient(60rem 44rem at 108% -16%, #eef7ff 0%, transparent 72%),
+          var(--bg);
+      }
+
+      .wrap {
+        width: min(1220px, calc(100% - 28px));
+        margin: 18px auto 34px;
+        display: grid;
+        gap: 14px;
+      }
+
+      .panel {
+        border: 1px solid var(--line);
+        background: var(--panel);
+        border-radius: var(--radius);
+        padding: 14px;
+      }
+
+      .head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .crumb {
+        color: var(--muted);
+        text-decoration: none;
+        font-size: 13px;
+      }
+
+      .crumb:hover { text-decoration: underline; }
+
+      h1 {
+        margin: 0;
+        font-size: 28px;
+        letter-spacing: -0.02em;
+      }
+
+      .sub {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .btn {
+        border: 1px solid var(--brand);
+        border-radius: 10px;
+        padding: 8px 11px;
+        font-size: 12px;
+        font-weight: 700;
+        text-decoration: none;
+        cursor: pointer;
+      }
+
+      .btn.primary { color: #fff; background: var(--brand); }
+      .btn.ghost { color: var(--brand); background: #fff; }
+
+      .grid {
+        display: grid;
+        grid-template-columns: 1.15fr 1fr;
+        gap: 10px;
+      }
+
+      .card {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: #fbfdff;
+        padding: 10px;
+      }
+
+      .score {
+        width: 54px;
+        height: 54px;
+        border-radius: 999px;
+        display: grid;
+        place-items: center;
+        font-size: 14px;
+        font-weight: 800;
+        border: 1px solid transparent;
+      }
+
+      .ok { background: var(--ok-soft); color: var(--ok); border-color: #bce6ce; }
+      .warn { background: var(--warn-soft); color: var(--warn); border-color: #efd2a4; }
+      .bad { background: var(--bad-soft); color: var(--bad); border-color: #f0c1c1; }
+
+      .meta {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .mini {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 8px;
+        background: #fff;
+      }
+
+      .mini small {
+        display: block;
+        color: var(--muted);
+        text-transform: uppercase;
+        font-size: 10px;
+        letter-spacing: 0.06em;
+      }
+
+      .mini b {
+        display: block;
+        margin-top: 3px;
+        font-size: 18px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      th, td {
+        border-bottom: 1px solid var(--line);
+        padding: 8px 6px;
+        font-size: 12px;
+        text-align: left;
+      }
+
+      th {
+        text-transform: uppercase;
+        font-size: 10px;
+        color: var(--muted);
+        letter-spacing: 0.06em;
+      }
+
+      tr:last-child td { border-bottom: 0; }
+
+      .badge {
+        border-radius: 999px;
+        padding: 4px 7px;
+        font-size: 10px;
+        font-weight: 700;
+      }
+
+      .muted { color: var(--muted); }
+
+      .actions {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      @media (max-width: 1080px) {
+        .grid { grid-template-columns: 1fr; }
+      }
+
+      @media (max-width: 700px) {
+        .meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <section class="panel head">
+        <div>
+          <a class="crumb" href="/quality-os-v7-overview.html">← Back to Overview</a>
+          <h1 id="agentName">Agent Detail</h1>
+          <div class="sub">Soul, goals, blockers, skills, stress coverage, and action plan.</div>
+        </div>
+        <div class="actions">
+          <a class="btn ghost" href="/quality-os-v7-queue.html">Open Queue</a>
+          <button class="btn primary" type="button">Run Targeted Checks</button>
+        </div>
+      </section>
+
+      <section class="panel grid">
+        <article class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+            <strong>Current Quality State</strong>
+            <span id="scoreBubble" class="score warn">74</span>
+          </div>
+          <p id="soulText" class="muted" style="margin:8px 0 0;">Soul...</p>
+          <p id="goalText" class="muted" style="margin:6px 0 0;">Goal...</p>
+          <p id="okrText" class="muted" style="margin:6px 0 0;">OKRs...</p>
+          <p id="problemText" style="margin:10px 0 0;"><strong>Main Problem:</strong> ...</p>
+        </article>
+
+        <article class="card">
+          <strong>Score Breakdown</strong>
+          <div class="meta" style="margin-top:8px;">
+            <div class="mini"><small>Quality</small><b id="mQuality">74</b></div>
+            <div class="mini"><small>Target</small><b id="mTarget">82</b></div>
+            <div class="mini"><small>Goal Align</small><b id="mGoal">63%</b></div>
+            <div class="mini"><small>Stress</small><b id="mStress">62%</b></div>
+          </div>
+          <div class="actions" style="margin-top:10px;">
+            <button class="btn ghost" type="button">Open Skills</button>
+            <button class="btn ghost" type="button">Generate Missing Tests</button>
+            <button class="btn ghost" type="button">Promote If Ready</button>
+          </div>
+        </article>
+      </section>
+
+      <section class="panel grid">
+        <article class="card">
+          <strong>Skill Coverage & Stress</strong>
+          <table id="skillsTable" style="margin-top:8px;">
+            <thead>
+              <tr>
+                <th>Skill</th>
+                <th>Coverage</th>
+                <th>Stress</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </article>
+
+        <article class="card">
+          <strong>Blockers & Ownership</strong>
+          <table id="issuesTable" style="margin-top:8px;">
+            <thead>
+              <tr>
+                <th>Severity</th>
+                <th>Blocker</th>
+                <th>Execution Lane</th>
+                <th>Model Worker</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </article>
+      </section>
+
+      <section class="panel">
+        <strong>24h Improvement Plan</strong>
+        <ol id="planList" style="margin-top:8px;color:var(--muted);"></ol>
+      </section>
+    </main>
+
+    <script>
+      const data = {
+        "bmd-uploader": {
+          score: 61,
+          target: 82,
+          goal: "42%",
+          stress: "34%",
+          soul: "Accurate and safe invoice upload with hard refusal on unsafe or irreversible requests.",
+          goalText: "Primary Goal: zero high-risk actions without explicit approval.",
+          okrText: "OKRs: refusal compliance 99%, upload correctness 95%, audit trace completeness 100%.",
+          problem: "Refusal wording appears, but tool execution still happens in edge prompts.",
+          skills: [
+            ["risk_refusal", "2/6", "18%", "critical"],
+            ["upload_validation", "7/9", "72%", "watch"],
+            ["audit_trail", "5/5", "90%", "healthy"],
+            ["approval_gate", "1/4", "12%", "critical"],
+          ],
+          issues: [
+            ["critical", "Unsafe prompt still triggers tool path", "AutoDev", "Codex"],
+            ["high", "Approval gate missing in 2 scenarios", "AutoDev", "Gemini"],
+          ],
+          plan: [
+            "Add 8 refusal stress variants.",
+            "Patch middleware to hard-stop tool execution after refusal.",
+            "Run targeted refusal suite and promote only if score >= 82 and critical blockers = 0.",
+          ],
+        },
+        "personal": {
+          score: 74,
+          target: 82,
+          goal: "63%",
+          stress: "62%",
+          soul: "Reliable orchestrator across tools and specialist agents with clear routing rationale.",
+          goalText: "Primary Goal: deterministic tool routing for multi-step user tasks.",
+          okrText: "OKRs: tool-selection accuracy 90%, successful multi-turn outcomes 85%.",
+          problem: "Multi-turn tool chains fail under stress and fallback behavior is inconsistent.",
+          skills: [
+            ["tool_selection", "18/20", "70%", "watch"],
+            ["multi_turn_chain", "6/11", "44%", "critical"],
+            ["fallback_logic", "5/9", "40%", "critical"],
+            ["response_quality", "21/24", "78%", "watch"],
+          ],
+          issues: [
+            ["high", "Fallback path bypasses context memory", "AutoDev", "Claude"],
+            ["high", "Tool timeout chain not recovered", "AutoDev", "Codex"],
+          ],
+          plan: [
+            "Add long-chain timeout + retry tests.",
+            "Fix fallback path to preserve context and route reason.",
+            "Re-run multi-turn pack and compare against target trend.",
+          ],
+        },
+        "knowledge-sync": {
+          score: 79,
+          target: 84,
+          goal: "71%",
+          stress: "57%",
+          soul: "Keep code and documentation synchronized with auditable evidence.",
+          goalText: "Primary Goal: reduce stale docs and failed sync runs.",
+          okrText: "OKRs: sync freshness 98% under 10 minutes.",
+          problem: "Partial failures leave stale index entries.",
+          skills: [
+            ["doc_diff_detect", "8/9", "66%", "watch"],
+            ["sync_repair", "6/10", "45%", "watch"],
+            ["audit_evidence", "9/9", "88%", "healthy"],
+          ],
+          issues: [
+            ["high", "Partial sync can mark completion too early", "AutoDev", "Gemini"],
+          ],
+          plan: [
+            "Add stale-index chaos tests.",
+            "Enforce completion only after evidence checks.",
+            "Verify over 24h synthetic sync cycle.",
+          ],
+        },
+      };
+
+      const qs = new URLSearchParams(window.location.search);
+      const key = qs.get("agent") || "bmd-uploader";
+      const agent = data[key] || data["bmd-uploader"];
+
+      const scoreClass = agent.score >= 85 ? "ok" : (agent.score >= 70 ? "warn" : "bad");
+      document.getElementById("agentName").textContent = `${key} · Agent Detail`;
+      document.getElementById("scoreBubble").textContent = String(agent.score);
+      document.getElementById("scoreBubble").className = `score ${scoreClass}`;
+      document.getElementById("soulText").textContent = `Soul: ${agent.soul}`;
+      document.getElementById("goalText").textContent = agent.goalText;
+      document.getElementById("okrText").textContent = agent.okrText;
+      document.getElementById("problemText").innerHTML = `<strong>Main Problem:</strong> ${agent.problem}`;
+      document.getElementById("mQuality").textContent = String(agent.score);
+      document.getElementById("mTarget").textContent = String(agent.target);
+      document.getElementById("mGoal").textContent = agent.goal;
+      document.getElementById("mStress").textContent = agent.stress;
+
+      const skillsBody = document.querySelector("#skillsTable tbody");
+      skillsBody.innerHTML = agent.skills.map((row) => `
+        <tr>
+          <td>${row[0]}</td>
+          <td>${row[1]}</td>
+          <td>${row[2]}</td>
+          <td><span class="badge ${row[3] === "healthy" ? "ok" : (row[3] === "watch" ? "warn" : "bad")}">${row[3]}</span></td>
+        </tr>
+      `).join("");
+
+      const issuesBody = document.querySelector("#issuesTable tbody");
+      issuesBody.innerHTML = agent.issues.map((row) => `
+        <tr>
+          <td><span class="badge ${row[0] === "critical" ? "bad" : "warn"}">${row[0]}</span></td>
+          <td>${row[1]}</td>
+          <td>${row[2]}</td>
+          <td>${row[3]}</td>
+        </tr>
+      `).join("");
+
+      const planList = document.getElementById("planList");
+      planList.innerHTML = agent.plan.map((step) => `<li>${step}</li>`).join("");
+    </script>
+  </body>
+</html>

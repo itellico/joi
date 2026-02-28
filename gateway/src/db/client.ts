@@ -2,6 +2,7 @@ import pg from "pg";
 import dotenv from "dotenv";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 
 let pool: pg.Pool | null = null;
 let consecutiveFailures = 0;
@@ -103,6 +104,19 @@ export async function reloadFromEnv(): Promise<{ old: string; new: string }> {
   const oldUrl = process.env.DATABASE_URL || "(unset)";
   const envPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../.env");
   dotenv.config({ path: envPath, override: true });
+  const runtimeScript = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../scripts/mini-runtime-env.sh");
+  const result = spawnSync(runtimeScript, ["--plain"], { encoding: "utf-8", env: process.env });
+  if (!result.error && result.status === 0) {
+    const lines = (result.stdout || "").split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
+    for (const line of lines) {
+      const equalIndex = line.indexOf("=");
+      if (equalIndex <= 0) continue;
+      const key = line.slice(0, equalIndex).trim();
+      const value = line.slice(equalIndex + 1);
+      if (!key) continue;
+      process.env[key] = value;
+    }
+  }
   const newUrl = process.env.DATABASE_URL || "(unset)";
   await resetPool();
   return { old: oldUrl, new: newUrl };

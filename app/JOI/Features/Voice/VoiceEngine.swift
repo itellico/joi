@@ -89,6 +89,21 @@ final class VoiceEngine {
         }
     }
 
+    var livekitNetworkMode: String? {
+        guard activeEngine == .livekit else { return nil }
+        return livekit.networkMode
+    }
+
+    var livekitNetworkTargetIp: String? {
+        guard activeEngine == .livekit else { return nil }
+        return livekit.networkTargetIp
+    }
+
+    var livekitNetworkClientIp: String? {
+        guard activeEngine == .livekit else { return nil }
+        return livekit.networkClientIp
+    }
+
     var isLegacyState: VoicePipeline.State {
         legacy.state
     }

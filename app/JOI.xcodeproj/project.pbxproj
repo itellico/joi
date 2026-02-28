@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 77;
+	objectVersion = 63;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -15,7 +15,6 @@
 		0DF2F61E80084D6D72AFFA52 /* FrameProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5701DA03969D92E3ABEDD4 /* FrameProtocol.swift */; };
 		105445BAFC46AD68DC0A1CF9 /* SpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A5619FD51D9227ABED3463E /* SpeechService.swift */; };
 		12E493AC2868EBBE55F23A92 /* PhoneWatchBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2677AE178533C5AC08DCBEB1 /* PhoneWatchBridge.swift */; };
-		13AB0E8274F4A9D938193325 /* JOI_watchOS Extension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 933C04404CCAAD68C5BEAD25 /* JOI_watchOS Extension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		14F49F800C76A8D4FD7E84CC /* SentenceBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CA104D89A62D7D34F12AA40 /* SentenceBuffer.swift */; };
 		1CFD48507BCD10EC9F4DFD37 /* WatchBridgeProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 857C47315E3DFA76B1262DCA /* WatchBridgeProtocol.swift */; };
 		1EC4B738B93F54E8ED05663D /* GlassCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FB92EFFF312FE16FE9E5719 /* GlassCard.swift */; };
@@ -55,6 +54,7 @@
 		7EE80A81F46B1172E6071E01 /* ConversationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A5FF9EAE21534BF2A2792A1 /* ConversationsView.swift */; };
 		87881159197FC36F548F7792 /* WatchHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0933CC190580B94F48E03E80 /* WatchHomeView.swift */; };
 		8AE55E546BEB338CE9BFD675 /* TokenService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4060EFB89D34E7640D723857 /* TokenService.swift */; };
+		90CB0C57832AA05C00D1E5A4 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5E6ADFB9F605CF95CD852822 /* Assets.xcassets */; };
 		93F7042BF0A1AF76C10AA71E /* ChatViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4986D22E95E533098FA77B4 /* ChatViewModel.swift */; };
 		9586A7348D7D6B3A9EBB8A6A /* ConversationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A5FF9EAE21534BF2A2792A1 /* ConversationsView.swift */; };
 		962B0DE2C88D371ACF95F457 /* JOIIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5144C1CA62B16060F8CBBF3D /* JOIIntents.swift */; };
@@ -77,6 +77,7 @@
 		CCEBFFA768FD2B4395BE3F10 /* joi_firestorm_transparent.png in Resources */ = {isa = PBXBuildFile; fileRef = 8C67C0C0B512A9F27CEF2C1A /* joi_firestorm_transparent.png */; };
 		CD1CD5CDFBFDF168FF500AAE /* LiveKitVoicePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2219170A5E6539693FD083 /* LiveKitVoicePipeline.swift */; };
 		CD7F3DF00316E11148CA6DC8 /* joi_firestorm_transparent.png in Resources */ = {isa = PBXBuildFile; fileRef = 8C67C0C0B512A9F27CEF2C1A /* joi_firestorm_transparent.png */; };
+		D0C71DC72E9A20B4409C1170 /* GatewayURLResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0844D3DBEECC916CF401426 /* GatewayURLResolver.swift */; };
 		D3A34D09576FBA458C75CA79 /* MessageBubble.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5111E7F5C724B43EFD6F78C9 /* MessageBubble.swift */; };
 		D50960D789646CB90500482A /* WebSocketClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42FDF36D2C98707D0A08A642 /* WebSocketClient.swift */; };
 		D99979CD7E0FFAFA946CEADE /* TTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 899DC3216691616001DED75C /* TTSService.swift */; };
@@ -85,9 +86,12 @@
 		DB9F2B39E9B9C2957C84E671 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 56A5DE4530307279B00E0B4C /* Assets.xcassets */; };
 		E15CB56D4E1F0CE5033404EF /* VoiceDebugLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 815414F955595FF4ECD1F110 /* VoiceDebugLog.swift */; };
 		E3F639222AD4B60692F9E65B /* ConnectionBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71E67E9E86D447156F066233 /* ConnectionBanner.swift */; };
+		E8A79CE468A4EF2260F51D1F /* JOI.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 950B4357B64423DEC7CE21E7 /* JOI.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		EAB8DE7A00FF71ED08D20C25 /* GatewayURLResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0844D3DBEECC916CF401426 /* GatewayURLResolver.swift */; };
 		EBCF2F8E0925488E8733023C /* PushService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8849A413A5BB7E0E93D91885 /* PushService.swift */; };
 		EE502BBCC4C84EDC41E1A0A9 /* WatchBridgeProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 857C47315E3DFA76B1262DCA /* WatchBridgeProtocol.swift */; };
 		F19C8D7DD0371D302288712B /* joi-avatar.jpg in Resources */ = {isa = PBXBuildFile; fileRef = E5A36FB64310B7D7AF16E96B /* joi-avatar.jpg */; };
+		F444CBBA6707502224F020DF /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = B7F1672FB7FA572CBB43EE76 /* LaunchScreen.storyboard */; };
 		F904513B7E26EAA1A05498C8 /* TTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 899DC3216691616001DED75C /* TTSService.swift */; };
 		F9F05AB931A1DDEE02CBD304 /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = EB07E75D1DB69693D7B13495 /* README.md */; };
 		FD4821C2D9C22907CD2E33BD /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 468E952C6F77BF23F6082339 /* AppDelegate.swift */; };
@@ -109,25 +113,25 @@
 			remoteGlobalIDString = B7FDD4AEF3400CE7BB1C4F0E;
 			remoteInfo = JOI_macOS;
 		};
-		E64149AB88FF3B033DFEA13B /* PBXContainerItemProxy */ = {
+		B5E5779176FCFBC4C2D9655C /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 2C01D976107492F06C23DB82 /* Project object */;
 			proxyType = 1;
-			remoteGlobalIDString = ED06FB460A9D2F48FA3D01BC;
-			remoteInfo = "JOI_watchOS Extension";
+			remoteGlobalIDString = 20B22437D829487672A06183;
+			remoteInfo = JOI_watchOS;
 		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
-		0062EB3DD4E1A9E41D5B9341 /* Embed Foundation Extensions */ = {
+		51CB7FDA0067770C575226C2 /* Embed Watch Content */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
-			dstPath = "";
-			dstSubfolderSpec = 13;
+			dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
+			dstSubfolderSpec = 16;
 			files = (
-				13AB0E8274F4A9D938193325 /* JOI_watchOS Extension.appex in Embed Foundation Extensions */,
+				E8A79CE468A4EF2260F51D1F /* JOI.app in Embed Watch Content */,
 			);
-			name = "Embed Foundation Extensions";
+			name = "Embed Watch Content";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXCopyFilesBuildPhase section */
@@ -138,7 +142,7 @@
 		0DB61506B86E77CF73493DAD /* JOITypography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JOITypography.swift; sourceTree = "<group>"; };
 		2677AE178533C5AC08DCBEB1 /* PhoneWatchBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneWatchBridge.swift; sourceTree = "<group>"; };
 		2FB92EFFF312FE16FE9E5719 /* GlassCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassCard.swift; sourceTree = "<group>"; };
-		349041088914618280F2D345 /* JOITests_iOS.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = JOITests_iOS.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		349041088914618280F2D345 /* JOITests_iOS.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = JOITests_iOS.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		3CA104D89A62D7D34F12AA40 /* SentenceBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SentenceBuffer.swift; sourceTree = "<group>"; };
 		4060EFB89D34E7640D723857 /* TokenService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenService.swift; sourceTree = "<group>"; };
 		41C1A382475FD84B6A32D34C /* VoicePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicePipeline.swift; sourceTree = "<group>"; };
@@ -154,6 +158,7 @@
 		56A5DE4530307279B00E0B4C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		5943D22E7D1DB807673FC573 /* WakeWordGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WakeWordGate.swift; sourceTree = "<group>"; };
 		5A5FF9EAE21534BF2A2792A1 /* ConversationsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationsView.swift; sourceTree = "<group>"; };
+		5E6ADFB9F605CF95CD852822 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		657DD49FE34AD00D763A43BD /* JOIApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JOIApp.swift; sourceTree = "<group>"; };
 		6893B47088FFFCC5F95B1D10 /* JOIColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JOIColors.swift; sourceTree = "<group>"; };
 		71D0B6AEF5302C529DD807EF /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
@@ -167,19 +172,22 @@
 		899DC3216691616001DED75C /* TTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TTSService.swift; sourceTree = "<group>"; };
 		89CFBB9FFCC23675679DA5EE /* JOITests_macOS.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = JOITests_macOS.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		8C67C0C0B512A9F27CEF2C1A /* joi_firestorm_transparent.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = joi_firestorm_transparent.png; sourceTree = "<group>"; };
-		933C04404CCAAD68C5BEAD25 /* JOI_watchOS Extension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "JOI_watchOS Extension.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
-		950B4357B64423DEC7CE21E7 /* JOI_watchOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = JOI_watchOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		950B4357B64423DEC7CE21E7 /* JOI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = JOI.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A1AB112F6C07DA16F2A7F57C /* JOIAvatarImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JOIAvatarImage.swift; sourceTree = "<group>"; };
+		A24069CA4B417B8B0A46C5D3 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		A24937BA5E82D136370A6014 /* StreamingDots.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingDots.swift; sourceTree = "<group>"; };
 		A4986D22E95E533098FA77B4 /* ChatViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatViewModel.swift; sourceTree = "<group>"; };
 		AA2219170A5E6539693FD083 /* LiveKitVoicePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveKitVoicePipeline.swift; sourceTree = "<group>"; };
 		AAC41988FB91934C81EAE6FF /* JOI-Debug.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "JOI-Debug.entitlements"; sourceTree = "<group>"; };
 		B79143405C3FC2914CF421C9 /* WakeWordService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WakeWordService.swift; sourceTree = "<group>"; };
 		B7B695CF9A5494AA4B20DC10 /* joi_universe_firestorm.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = joi_universe_firestorm.icns; sourceTree = "<group>"; };
-		C75F301B573FE5816632BA09 /* JOI_macOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = JOI_macOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B7F1672FB7FA572CBB43EE76 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
+		C75F301B573FE5816632BA09 /* JOI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = JOI.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C8EC6B825F63C74DAED984A2 /* JOI.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = JOI.entitlements; sourceTree = "<group>"; };
-		C961648FFC84D464C266E010 /* JOI_iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = JOI_iOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C961648FFC84D464C266E010 /* JOI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = JOI.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D0844D3DBEECC916CF401426 /* GatewayURLResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayURLResolver.swift; sourceTree = "<group>"; };
 		D14359BF4424850B108A82BA /* FrameRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FrameRouter.swift; sourceTree = "<group>"; };
+		E0A31E240413ECCFB2C56B74 /* JOI_iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = JOI_iOS.entitlements; sourceTree = "<group>"; };
 		E4BCE31B4137F8674CAC2C41 /* WakeWordGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WakeWordGateTests.swift; sourceTree = "<group>"; };
 		E5A36FB64310B7D7AF16E96B /* joi-avatar.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = "joi-avatar.jpg"; sourceTree = "<group>"; };
 		EB07E75D1DB69693D7B13495 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
@@ -221,6 +229,7 @@
 				AAC41988FB91934C81EAE6FF /* JOI-Debug.entitlements */,
 				C8EC6B825F63C74DAED984A2 /* JOI.entitlements */,
 				657DD49FE34AD00D763A43BD /* JOIApp.swift */,
+				B7F1672FB7FA572CBB43EE76 /* LaunchScreen.storyboard */,
 				BE46736192C2E5D44F5502B0 /* Core */,
 				D25A65C2DEAF8F2F0681ED37 /* Features */,
 				6495884BAB5A7B387FE53017 /* iOS */,
@@ -234,6 +243,7 @@
 		1F65FB8F6D97FB7AEEEDE0F4 /* Extension */ = {
 			isa = PBXGroup;
 			children = (
+				A24069CA4B417B8B0A46C5D3 /* Info.plist */,
 				4BB507245EAF74F0E9866574 /* JOIWatchExtensionApp.swift */,
 				0933CC190580B94F48E03E80 /* WatchHomeView.swift */,
 				80DD50F89D04A37D5BADA917 /* WatchSessionClient.swift */,
@@ -244,10 +254,9 @@
 		25EDC6E538669E521E250800 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				C961648FFC84D464C266E010 /* JOI_iOS.app */,
-				C75F301B573FE5816632BA09 /* JOI_macOS.app */,
-				933C04404CCAAD68C5BEAD25 /* JOI_watchOS Extension.appex */,
-				950B4357B64423DEC7CE21E7 /* JOI_watchOS.app */,
+				C961648FFC84D464C266E010 /* JOI.app */,
+				C75F301B573FE5816632BA09 /* JOI.app */,
+				950B4357B64423DEC7CE21E7 /* JOI.app */,
 				349041088914618280F2D345 /* JOITests_iOS.xctest */,
 				89CFBB9FFCC23675679DA5EE /* JOITests_macOS.xctest */,
 			);
@@ -293,6 +302,7 @@
 		6495884BAB5A7B387FE53017 /* iOS */ = {
 			isa = PBXGroup;
 			children = (
+				E0A31E240413ECCFB2C56B74 /* JOI_iOS.entitlements */,
 				2677AE178533C5AC08DCBEB1 /* PhoneWatchBridge.swift */,
 				71D0B6AEF5302C529DD807EF /* RootView.swift */,
 			);
@@ -326,6 +336,7 @@
 		B01ABB4EE25F36771C64A613 /* App */ = {
 			isa = PBXGroup;
 			children = (
+				5E6ADFB9F605CF95CD852822 /* Assets.xcassets */,
 				EB07E75D1DB69693D7B13495 /* README.md */,
 			);
 			path = App;
@@ -364,6 +375,7 @@
 			children = (
 				EF5701DA03969D92E3ABEDD4 /* FrameProtocol.swift */,
 				D14359BF4424850B108A82BA /* FrameRouter.swift */,
+				D0844D3DBEECC916CF401426 /* GatewayURLResolver.swift */,
 				4060EFB89D34E7640D723857 /* TokenService.swift */,
 				42FDF36D2C98707D0A08A642 /* WebSocketClient.swift */,
 			);
@@ -449,19 +461,18 @@
 			buildConfigurationList = 9451045092B842D69BB33BD5 /* Build configuration list for PBXNativeTarget "JOI_watchOS" */;
 			buildPhases = (
 				90333D451F076FFD0F94789A /* Resources */,
-				0062EB3DD4E1A9E41D5B9341 /* Embed Foundation Extensions */,
+				CE6AB08678EB08BE9E216F42 /* Sources */,
 			);
 			buildRules = (
 			);
 			dependencies = (
-				3A67A0E746C8C706D20CDE0E /* PBXTargetDependency */,
 			);
 			name = JOI_watchOS;
 			packageProductDependencies = (
 			);
 			productName = JOI_watchOS;
-			productReference = 950B4357B64423DEC7CE21E7 /* JOI_watchOS.app */;
-			productType = "com.apple.product-type.application.watchapp2";
+			productReference = 950B4357B64423DEC7CE21E7 /* JOI.app */;
+			productType = "com.apple.product-type.application";
 		};
 		2E0740FE8AA753884AEA5F5F /* JOITests_iOS */ = {
 			isa = PBXNativeTarget;
@@ -488,17 +499,19 @@
 				B4516DA0A877481002C69490 /* Sources */,
 				88507617B604AE800547AF59 /* Resources */,
 				270C5DB4889ADA33EC3E350F /* Frameworks */,
+				51CB7FDA0067770C575226C2 /* Embed Watch Content */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				09CAD350E6482D85494FE6DA /* PBXTargetDependency */,
 			);
 			name = JOI_iOS;
 			packageProductDependencies = (
 				DACACEDB768AF632E8057216 /* LiveKit */,
 			);
 			productName = JOI_iOS;
-			productReference = C961648FFC84D464C266E010 /* JOI_iOS.app */;
+			productReference = C961648FFC84D464C266E010 /* JOI.app */;
 			productType = "com.apple.product-type.application";
 		};
 		B7FDD4AEF3400CE7BB1C4F0E /* JOI_macOS */ = {
@@ -518,7 +531,7 @@
 				C9D00215D0CB2BE3F84369DC /* LiveKit */,
 			);
 			productName = JOI_macOS;
-			productReference = C75F301B573FE5816632BA09 /* JOI_macOS.app */;
+			productReference = C75F301B573FE5816632BA09 /* JOI.app */;
 			productType = "com.apple.product-type.application";
 		};
 		E3D06561F38D16A9BD4AE332 /* JOITests_macOS */ = {
@@ -539,23 +552,6 @@
 			productReference = 89CFBB9FFCC23675679DA5EE /* JOITests_macOS.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
-		ED06FB460A9D2F48FA3D01BC /* JOI_watchOS Extension */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = A6DC23FE131AD666E72BFE44 /* Build configuration list for PBXNativeTarget "JOI_watchOS Extension" */;
-			buildPhases = (
-				CE6AB08678EB08BE9E216F42 /* Sources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			name = "JOI_watchOS Extension";
-			packageProductDependencies = (
-			);
-			productName = "JOI_watchOS Extension";
-			productReference = 933C04404CCAAD68C5BEAD25 /* JOI_watchOS Extension.appex */;
-			productType = "com.apple.product-type.watchkit2-extension";
-		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -563,8 +559,14 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
-				LastUpgradeCheck = 2600;
+				LastUpgradeCheck = 2630;
 				TargetAttributes = {
+					20B22437D829487672A06183 = {
+						ProvisioningStyle = Automatic;
+					};
+					8D047244656F2C55F07CDD44 = {
+						ProvisioningStyle = Automatic;
+					};
 					B7FDD4AEF3400CE7BB1C4F0E = {
 						ProvisioningStyle = Automatic;
 					};
@@ -583,7 +585,6 @@
 			packageReferences = (
 				480616FF4AC630C90BE9F807 /* XCRemoteSwiftPackageReference "client-sdk-swift" */,
 			);
-			preferredProjectObjectVersion = 77;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -592,7 +593,6 @@
 				8D047244656F2C55F07CDD44 /* JOI_iOS */,
 				B7FDD4AEF3400CE7BB1C4F0E /* JOI_macOS */,
 				20B22437D829487672A06183 /* JOI_watchOS */,
-				ED06FB460A9D2F48FA3D01BC /* JOI_watchOS Extension */,
 			);
 		};
 /* End PBXProject section */
@@ -614,6 +614,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				DB9F2B39E9B9C2957C84E671 /* Assets.xcassets in Resources */,
+				F444CBBA6707502224F020DF /* LaunchScreen.storyboard in Resources */,
 				F19C8D7DD0371D302288712B /* joi-avatar.jpg in Resources */,
 				CD7F3DF00316E11148CA6DC8 /* joi_firestorm_transparent.png in Resources */,
 				4EA631521C16CFA0A3A7B63B /* joi_universe_firestorm.icns in Resources */,
@@ -624,6 +625,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				90CB0C57832AA05C00D1E5A4 /* Assets.xcassets in Resources */,
 				F9F05AB931A1DDEE02CBD304 /* README.md in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -644,6 +646,7 @@
 				9586A7348D7D6B3A9EBB8A6A /* ConversationsView.swift in Sources */,
 				0DF2F61E80084D6D72AFFA52 /* FrameProtocol.swift in Sources */,
 				4F18B6EBE1F498156C9BA593 /* FrameRouter.swift in Sources */,
+				EAB8DE7A00FF71ED08D20C25 /* GatewayURLResolver.swift in Sources */,
 				1EC4B738B93F54E8ED05663D /* GlassCard.swift in Sources */,
 				9FDEA0E06F516828F226FDDD /* JOIApp.swift in Sources */,
 				9EC4882DB4FC4C6FD8E7448C /* JOIAvatarImage.swift in Sources */,
@@ -684,6 +687,7 @@
 				7EE80A81F46B1172E6071E01 /* ConversationsView.swift in Sources */,
 				042F069F8074DCC874D0BC71 /* FrameProtocol.swift in Sources */,
 				6B30A45193A29BF5093E2806 /* FrameRouter.swift in Sources */,
+				D0C71DC72E9A20B4409C1170 /* GatewayURLResolver.swift in Sources */,
 				3FC71F3F5B8614D1E0B66561 /* GlassCard.swift in Sources */,
 				3EFE694BA94A40C1848C3012 /* JOIApp.swift in Sources */,
 				3B61B49211F51B7752CC376E /* JOIAvatarImage.swift in Sources */,
@@ -742,10 +746,10 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
-		3A67A0E746C8C706D20CDE0E /* PBXTargetDependency */ = {
+		09CAD350E6482D85494FE6DA /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = ED06FB460A9D2F48FA3D01BC /* JOI_watchOS Extension */;
-			targetProxy = E64149AB88FF3B033DFEA13B /* PBXContainerItemProxy */;
+			target = 20B22437D829487672A06183 /* JOI_watchOS */;
+			targetProxy = B5E5779176FCFBC4C2D9655C /* PBXContainerItemProxy */;
 		};
 		5480B6495771AD8E0C5A845F /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -760,34 +764,22 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
-		072D6A468F2BECC16130AC43 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_COMPLICATION_NAME = Complication;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.joi.app.watchkitapp.extension;
-				PRODUCT_NAME = "JOI Watch Extension";
-				SDKROOT = watchos;
-				SKIP_INSTALL = YES;
-				TARGETED_DEVICE_FAMILY = 4;
-			};
-			name = Release;
-		};
 		3872CC650DFA1ABAFDA36568 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = 4K6Z7D66RC;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "com.joi.JOITests-macOS";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = macosx;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/JOI.app/Contents/MacOS/JOI";
 			};
@@ -797,6 +789,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = 4K6Z7D66RC;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -844,9 +837,11 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
@@ -862,6 +857,7 @@
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_STRICT_CONCURRENCY = complete;
@@ -874,13 +870,18 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = 4K6Z7D66RC;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "com.joi.JOITests-macOS";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = macosx;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/JOI.app/Contents/MacOS/JOI";
 			};
@@ -889,9 +890,18 @@
 		8181BA89AC78BAE9454A7524 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.joi.app;
-				PRODUCT_BUNDLE_IDENTIFIER = com.joi.app.watchkitapp;
-				PRODUCT_NAME = "JOI Watch";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_COMPLICATION_NAME = Complication;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 4K6Z7D66RC;
+				INFOPLIST_KEY_CFBundleDisplayName = JOI;
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.joi.app.ios;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.joi.app.ios.watchkitapp;
+				PRODUCT_NAME = JOI;
 				SDKROOT = watchos;
 				SKIP_INSTALL = YES;
 				TARGETED_DEVICE_FAMILY = 4;
@@ -902,16 +912,22 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = JOI/JOI.entitlements;
-				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_ENTITLEMENTS = JOI/JOI_iOS_Release.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 4K6Z7D66RC;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "JOI uses the microphone to hear your voice commands.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "JOI uses speech recognition to transcribe what you say.";
+				INFOPLIST_KEY_UIBackgroundModes = "remote-notification";
+				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.joi.app;
+				PRODUCT_BUNDLE_IDENTIFIER = com.joi.app.ios;
 				PRODUCT_NAME = JOI;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -953,9 +969,11 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -978,6 +996,7 @@
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_STRICT_CONCURRENCY = complete;
@@ -989,9 +1008,18 @@
 		C9B53AE5751FE42571F09980 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.joi.app;
-				PRODUCT_BUNDLE_IDENTIFIER = com.joi.app.watchkitapp;
-				PRODUCT_NAME = "JOI Watch";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_COMPLICATION_NAME = Complication;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 4K6Z7D66RC;
+				INFOPLIST_KEY_CFBundleDisplayName = JOI;
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.joi.app.ios;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.joi.app.ios.watchkitapp;
+				PRODUCT_NAME = JOI;
 				SDKROOT = watchos;
 				SKIP_INSTALL = YES;
 				TARGETED_DEVICE_FAMILY = 4;
@@ -1002,36 +1030,25 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = JOI/JOI.entitlements;
-				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_ENTITLEMENTS = JOI/JOI_iOS_Debug.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 4K6Z7D66RC;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "JOI uses the microphone to hear your voice commands.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "JOI uses speech recognition to transcribe what you say.";
+				INFOPLIST_KEY_UIBackgroundModes = "remote-notification";
+				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.joi.app;
+				PRODUCT_BUNDLE_IDENTIFIER = com.joi.app.ios;
 				PRODUCT_NAME = JOI;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
-			};
-			name = Debug;
-		};
-		DFDDCEE738E1545D1ABB9594 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_COMPLICATION_NAME = Complication;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.joi.app.watchkitapp.extension;
-				PRODUCT_NAME = "JOI Watch Extension";
-				SDKROOT = watchos;
-				SKIP_INSTALL = YES;
-				TARGETED_DEVICE_FAMILY = 4;
 			};
 			name = Debug;
 		};
@@ -1042,6 +1059,11 @@
 				CODE_SIGN_ENTITLEMENTS = "JOI/JOI-Debug.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = 4K6Z7D66RC;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = YES;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "JOI uses the microphone to hear your voice commands.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "JOI uses speech recognition to transcribe what you say.";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1061,6 +1083,10 @@
 				CODE_SIGN_ENTITLEMENTS = JOI/JOI.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
+				DEAD_CODE_STRIPPING = YES;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = YES;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "JOI uses the microphone to hear your voice commands.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "JOI uses speech recognition to transcribe what you say.";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1077,6 +1103,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = 4K6Z7D66RC;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1124,15 +1151,6 @@
 			buildConfigurations = (
 				8181BA89AC78BAE9454A7524 /* Debug */,
 				C9B53AE5751FE42571F09980 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Debug;
-		};
-		A6DC23FE131AD666E72BFE44 /* Build configuration list for PBXNativeTarget "JOI_watchOS Extension" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				DFDDCEE738E1545D1ABB9594 /* Debug */,
-				072D6A468F2BECC16130AC43 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

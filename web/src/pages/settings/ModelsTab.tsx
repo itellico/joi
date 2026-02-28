@@ -3,6 +3,7 @@ import type { ModelRoute, AvailableModels, OllamaStatus, SettingsData } from "./
 
 const taskDescriptions: Record<string, string> = {
   chat: "Final response + reasoning (smart model)",
+  lightweight: "Lightweight replies (greetings, acknowledgements, casual chat)",
   tool: "Tool orchestration (fast/cheap model for actions)",
   utility: "Fact extraction, classification (cheap)",
   triage: "Inbox triage: classify inbound messages",
@@ -127,6 +128,12 @@ export default function ModelsTab({
           <div>
             <MetaText size="sm" className="mr-2">URL:</MetaText>
             <code>{settings.memory.ollamaUrl}</code>
+            {settings.network && (
+              <MetaText size="xs" className="block mt-1 text-secondary">
+                Runtime route: {settings.network.activeMode || settings.network.configuredMode}
+                {settings.network.activeIp ? ` (${settings.network.activeIp})` : ""}
+              </MetaText>
+            )}
           </div>
         </div>
         <div className="flex-row gap-4 flex-wrap">

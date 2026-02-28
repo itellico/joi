@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useChat, type ChatMessage } from "../hooks/useChat";
 import type { Frame } from "../hooks/useWebSocket";
+import { buildSimulationMetadata } from "../chat/simulation";
+import { CHAT_SURFACE_PROFILES } from "../chat/surfaces";
+import { createThingsTicketFromChat, parseTicketCommand } from "../chat/ticketCapture";
 
 interface Task {
   uuid: string;
@@ -33,11 +36,14 @@ export default function ChatWidget({
   mode,
   onModeChange,
 }: ChatWidgetProps) {
+  const surface = CHAT_SURFACE_PROFILES.task_widget;
+  const selectedMode = surface.modeLock || "claude-code";
   const { messages, isStreaming, conversationId, sendMessage, loadConversation, newConversation } = useChat({
     send: ws.send,
     on: ws.on,
   });
   const [input, setInput] = useState("");
+  const [ticketNote, setTicketNote] = useState("");
   const [initialized, setInitialized] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const prevConvIdRef = useRef<string | null>(null);
@@ -77,19 +83,50 @@ export default function ChatWidget({
 
       const prompt = parts.join("\n");
       // Small delay to let the hook mount
-      // Coder agent always uses claude-code mode (delegates to CLI, uses subscription)
+      // Task widget is mode/agent locked by surface profile.
       setTimeout(() => {
-        sendMessage(prompt, "claude-code", "coder", {
+        sendMessage(prompt, selectedMode, surface.agentId, {
+          ...(buildSimulationMetadata(selectedMode, surface.defaultExecutionMode, surface.defaultLatencyPreset) || {}),
           taskUuid: task.uuid,
           taskTitle: task.title,
         });
       }, 100);
     }
-  }, [initialized, initialConversationId, task, loadConversation, newConversation, sendMessage]);
+  }, [initialized, initialConversationId, task, loadConversation, newConversation, selectedMode, sendMessage, surface.agentId, surface.defaultExecutionMode, surface.defaultLatencyPreset]);
 
   const handleSend = () => {
-    if (!input.trim() || isStreaming) return;
-    sendMessage(input.trim(), "claude-code", "coder");
+    const trimmed = input.trim();
+    if (!trimmed || isStreaming) return;
+
+    const ticketCommand = parseTicketCommand(trimmed);
+    if (ticketCommand) {
+      void createThingsTicketFromChat({
+        conversationId,
+        messages,
+        note: ticketCommand.note,
+        kind: ticketCommand.kind,
+        pendingUserMessage: trimmed,
+        commandText: trimmed,
+        source: "chat-main",
+      })
+        .then((result) => {
+          setTicketNote(`Ticket created: ${result.title}`);
+        })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : "Failed to create ticket";
+          setTicketNote(message);
+        });
+      setInput("");
+      return;
+    }
+
+    sendMessage(
+      trimmed,
+      selectedMode,
+      surface.agentId,
+      buildSimulationMetadata(selectedMode, surface.defaultExecutionMode, surface.defaultLatencyPreset),
+    );
+    setTicketNote("");
     setInput("");
   };
 
@@ -99,7 +136,7 @@ export default function ChatWidget({
       <div className="chat-widget-header">
         <div className="chat-widget-header-left">
           <span className="chat-widget-title">{task.title}</span>
-          <span className="chat-widget-badge">coder</span>
+          <span className="chat-widget-badge">{surface.label}</span>
         </div>
         <div className="chat-widget-header-right">
           <button
@@ -134,7 +171,7 @@ export default function ChatWidget({
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-          placeholder={isStreaming ? "Waiting for response..." : "Send a message..."}
+          placeholder={isStreaming ? "JOI is routing voice + tools..." : "Send or dictate a message..."}
           disabled={isStreaming}
           rows={1}
         />
@@ -144,6 +181,7 @@ export default function ChatWidget({
           </svg>
         </button>
       </div>
+      {ticketNote && <div className="chat-widget-ticket-note">{ticketNote}</div>}
     </div>
   );
 }
@@ -158,7 +196,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
         <div className="chat-widget-msg-text">{message.content}</div>
       )}
       {message.isStreaming && !message.content && (
-        <div className="chat-widget-msg-text chat-widget-typing">Thinking...</div>
+        <div className="chat-widget-msg-text chat-widget-typing">Routing through sources...</div>
       )}
       {message.toolCalls && message.toolCalls.length > 0 && (
         <div className="chat-widget-tools">

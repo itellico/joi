@@ -15,7 +15,6 @@ import {
   SectionLabel,
   StatusDot,
 } from "../components/ui";
-import JoiOrb from "../components/JoiOrb";
 
 interface DashboardData {
   generatedAt: string;
@@ -165,18 +164,6 @@ export default function Dashboard() {
       <PageHeader
         title="Dashboard"
         subtitle={data && <>{data.owner} &middot; {data.vision}</>}
-        actions={
-          <JoiOrb
-            className="dashboard-avatar"
-            size={36}
-            active
-            intensity={0.2}
-            variant="transparent"
-            rings={2}
-            animated={false}
-            ariaLabel="JOI"
-          />
-        }
       />
 
       <PageBody>

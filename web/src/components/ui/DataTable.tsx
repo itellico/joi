@@ -27,7 +27,7 @@ export function DataTable<T>({ columns, data, rowKey, onRowClick, emptyMessage =
   }
 
   return (
-    <div className={className} style={{ overflowX: "auto" }}>
+    <div className={`ui-table-wrap ${className}`.trim()}>
       <table className="ui-table">
         <thead>
           <tr>

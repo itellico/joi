@@ -16,6 +16,70 @@ export default function IntegrationsTab({
 }: IntegrationsTabProps) {
   return (
     <div className="flex-col gap-6">
+      <Card>
+        <h3 className="mb-1">Reminders</h3>
+        <MetaText size="sm" className="block mb-4 text-md">
+          Choose whether "remind me" creates only a JOI cron reminder or also mirrors a task into Things3.
+        </MetaText>
+        <FormGrid>
+          <FormField label="Reminder Mode" hint="Cron + Things keeps reminders visible in Things.">
+            <select
+              value={settings.tasks.reminderSyncMode}
+              onChange={(e) =>
+                setSettings((s) => s
+                  ? { ...s, tasks: { ...s.tasks, reminderSyncMode: e.target.value as "cron_only" | "cron_plus_things" } }
+                  : s)
+              }
+            >
+              <option value="cron_plus_things">Cron + Things</option>
+              <option value="cron_only">Cron only</option>
+            </select>
+          </FormField>
+          <FormField label="Completed Reminder Retention" hint="Auto-delete completed one-time cron reminders after this many days.">
+            <select
+              value={String(settings.tasks.completedReminderRetentionDays)}
+              onChange={(e) =>
+                setSettings((s) => s
+                  ? {
+                    ...s,
+                    tasks: {
+                      ...s.tasks,
+                      completedReminderRetentionDays: Math.max(0, Math.floor(Number(e.target.value) || 0)),
+                    },
+                  }
+                  : s)
+              }
+            >
+              <option value="0">Never</option>
+              <option value="7">7 days</option>
+              <option value="14">14 days</option>
+              <option value="30">30 days</option>
+              <option value="90">90 days</option>
+            </select>
+          </FormField>
+          <FormField label="Project Logged Items Page Size" hint="How many completed items to show at once in a project before loading more.">
+            <select
+              value={String(settings.tasks.projectLogbookPageSize)}
+              onChange={(e) =>
+                setSettings((s) => s
+                  ? {
+                    ...s,
+                    tasks: {
+                      ...s.tasks,
+                      projectLogbookPageSize: Math.min(200, Math.max(10, Math.floor(Number(e.target.value) || 25))),
+                    },
+                  }
+                  : s)
+              }
+            >
+              <option value="25">25 items</option>
+              <option value="50">50 items</option>
+              <option value="100">100 items</option>
+            </select>
+          </FormField>
+        </FormGrid>
+      </Card>
+
       {/* Coder Agent */}
       {coderConfig && (
         <Card>

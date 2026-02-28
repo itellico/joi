@@ -7,6 +7,7 @@ struct MenuBarContentView: View {
     @Environment(VoiceEngine.self) private var voiceEngine
     @State private var currentView: PanelView = .chat
     @State private var selectedConversationId: String?
+    @State private var sourceChips: [SourceChipDescriptor] = []
 
     enum PanelView {
         case chat
@@ -32,7 +33,13 @@ struct MenuBarContentView: View {
 
             // Content — ZStack preserves ChatView state.
             ZStack {
-                ChatView(conversationId: selectedConversationId)
+                ChatView(
+                    conversationId: selectedConversationId,
+                    onSnapshotChange: { snapshot in
+                        sourceChips = SourceChipCatalog.topBarSources(
+                            from: snapshot.messages,
+                            isStreaming: snapshot.isStreaming)
+                    })
                     .opacity(currentView == .chat ? 1 : 0)
                     .allowsHitTesting(currentView == .chat)
 
@@ -56,43 +63,61 @@ struct MenuBarContentView: View {
 
     @ViewBuilder
     private var headerBar: some View {
-        HStack(spacing: 10) {
-            if currentView != .chat {
-                Button(action: { currentView = .chat }) {
-                    Label("Chat", systemImage: "chevron.left")
-                        .font(JOITypography.labelMedium)
-                        .foregroundStyle(JOIColors.primary)
-                }
-                .buttonStyle(.plain)
-            } else {
-                HStack(spacing: 8) {
-                    JOIAvatarImage(
-                        style: .transparent,
-                        activityLevel: voiceEngine.isActive ? max(0.20, voiceEngine.micLevel) : 0.10,
-                        isActive: voiceEngine.isActive && !voiceEngine.isMuted,
-                        showPulseRings: false
-                    )
-                    .frame(width: 15, height: 15)
+        VStack(spacing: 6) {
+            HStack(spacing: 10) {
+                if currentView != .chat {
+                    Button(action: { currentView = .chat }) {
+                        Label("Chat", systemImage: "chevron.left")
+                            .font(JOITypography.labelMedium)
+                            .foregroundStyle(JOIColors.primary)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    HStack(spacing: 8) {
+                        JOIAvatarImage(
+                            style: .transparent,
+                            activityLevel: voiceEngine.isActive ? max(0.20, voiceEngine.micLevel) : 0.10,
+                            isActive: voiceEngine.isActive && !voiceEngine.isMuted,
+                            showPulseRings: false
+                        )
+                        .frame(width: 15, height: 15)
 
-                    Text("JOI")
-                        .font(JOITypography.headlineSmall)
-                        .foregroundStyle(JOIColors.textPrimary)
+                        Text("JOI Voice")
+                            .font(JOITypography.headlineSmall)
+                            .foregroundStyle(JOIColors.textPrimary)
+                    }
                 }
+
+                Spacer()
+
+                ConnectionStatusPill(state: webSocket.state)
             }
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
 
-            Spacer()
-
-            ConnectionStatusPill(state: webSocket.state)
+            if currentView == .chat, !sourceChips.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(sourceChips) { chip in
+                            SourceTopBarChip(descriptor: chip)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                }
+                .scrollIndicators(.hidden)
+                .joiHideScrollChrome()
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .animation(.easeOut(duration: 0.2), value: sourceChips)
+        .padding(.bottom, 8)
         .background(JOIColors.surface)
     }
 
     private var quickActionStrip: some View {
         HStack(spacing: 8) {
             quickActionButton(
-                title: voiceEngine.isActive ? "JOI Off" : "JOI On",
+                title: voiceEngine.isActive ? "Voice Off" : "Voice On",
                 symbol: voiceEngine.isActive ? "power.circle.fill" : "power.circle",
                 active: voiceEngine.isActive
             ) {
@@ -106,7 +131,7 @@ struct MenuBarContentView: View {
             }
 
             quickActionButton(
-                title: voiceEngine.isMuted ? "Unmute" : "Mute",
+                title: voiceEngine.isMuted ? "Resume" : "Mute",
                 symbol: voiceEngine.isMuted ? "mic.slash.fill" : "mic.fill",
                 active: !voiceEngine.isMuted
             ) {
@@ -242,6 +267,7 @@ private struct MenuBarConversationsPanel: View {
                         }
                     }
                 }
+                .joiHideScrollChrome()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

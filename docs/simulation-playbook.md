@@ -1,75 +1,50 @@
 # JOI Simulation Playbook
 
-This setup lets you test agent behavior (including tool plans, latency, and failure handling) without polluting your live system.
+## Simple QA Loop
+1. Open `/quality` and click `Simulate` on a case.
+2. You are redirected to `/chat` with `shadow` mode + `realistic` latency + QA capture preconfigured.
+3. Chat auto-captures assistant outputs into QA runs/results.
+4. Flag bad responses inline in chat (`Flag issue`).
+5. Review runs/issues in `/quality` and inspect service logs in `/logs`.
 
-## 1) Start Safe Simulation Mode
+## Why this is simpler
+- One chat runtime (`/chat`) is the simulation surface.
+- `/quality` is the review and triage surface.
+- Same shared chat simulation metadata is used across chat surfaces.
 
-```bash
-pnpm dev:sim
+## Deep Link Format
+`/chat` accepts simulation query params so test cases can launch directly:
+
+- `qa=1`
+- `qaAutoCapture=1`
+- `execution=live|shadow|dry_run`
+- `latency=none|light|realistic|stress`
+- `suiteId=<qa-suite-id>`
+- `caseId=<qa-case-id>`
+- `caseName=<label>`
+- `prompt=<input-message>`
+- `autoSend=1`
+
+Example:
+
+```text
+/chat?qa=1&qaAutoCapture=1&execution=shadow&latency=realistic&suiteId=...&caseId=...&caseName=Memory%20Recall&prompt=who%20is%20my%20son&autoSend=1
 ```
 
-`dev:sim` applies:
-- `JOI_DEFAULT_EXECUTION_MODE=shadow`
-- `JOI_DISABLE_SCHEDULER=1`
-- `JOI_DISABLE_CHANNEL_AUTOSTART=1`
-- `JOI_DISABLE_CLOUD_SYNC=1`
+## Logs
+- UI log viewer: `/logs`
+- AutoDev live log: `GET /api/autodev/log`
+- Structured logs: `GET /api/logs`
+- Local files:
+  - `/tmp/joi-autodev.log`
+  - `/tmp/joi-watchdog.log`
+  - `/tmp/joi-livekit.log`
 
-Optional:
-- Set `JOI_SHADOW_DATABASE_URL` to run against a separate Postgres database.
-- Set `JOI_SIM_GATEWAY_PORT` if you want simulation on a different gateway port.
+## Safe Defaults
+Simulation defaults are tuned for non-destructive QA:
+- execution mode: `shadow`
+- latency profile: `realistic`
+- QA capture: `on`
+- auto-capture: `on`
 
-## 2) Run QA Suites with Profiles
-
-Open `http://localhost:5173/quality`.
-
-Use **Run Profile**:
-- `shadow`: read-only tools execute, mutating tools are blocked/simulated.
-- `dry_run`: all tool calls are simulated (no external actions).
-- `live`: full real execution.
-
-Use:
-- **Latency Profile** (`none`, `light`, `realistic`, `stress`) to emulate chat delays.
-- **Case Timeout (ms)** to prevent hung runs.
-- **Keep QA conversations** only when you need forensic debugging.
-
-## 3) Chat-Level Simulation (WebSocket/API)
-
-`chat.send` now supports:
-- `executionMode`: `"live" | "shadow" | "dry_run"`
-- `latencyProfile`: `{ toolMinMs, toolMaxMs, responseMinMs, responseMaxMs, jitterMs }`
-
-Example payload:
-
-```json
-{
-  "type": "chat.send",
-  "data": {
-    "agentId": "personal",
-    "content": "Create a follow-up task and send a message",
-    "executionMode": "dry_run",
-    "latencyProfile": {
-      "toolMinMs": 200,
-      "toolMaxMs": 900,
-      "responseMinMs": 300,
-      "responseMaxMs": 1200,
-      "jitterMs": 120
-    }
-  }
-}
-```
-
-## 4) What Is Logged for Audit
-
-Each QA run stores its run profile in `qa_test_runs.model_config`, including:
-- execution mode
-- latency profile
-- case timeout
-- keep artifacts flag
-
-This makes runs explainable and comparable later.
-
-## 5) Recommended Workflow
-
-1. Use `dry_run` to test orchestration and prompts safely.
-2. Use `shadow` to validate read paths and tool selection.
-3. Use `live` only on selected suites before production rollout.
+Use `live` only for intentional end-to-end validation with real side effects.

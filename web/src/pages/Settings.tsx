@@ -1,5 +1,5 @@
-import { useEffect, useState, useCallback } from "react";
-import { PageHeader, PageBody, Card, Button, Tabs } from "../components/ui";
+import { useEffect, useState, useCallback, useMemo } from "react";
+import { PageHeader, PageBody, Card, Button, MetaText, Tabs } from "../components/ui";
 import type {
   SettingsData, ModelRoute, AvailableModels, OllamaStatus, CoderConfig, LiveKitKeys, LiveKitEdits,
 } from "./settings/types";
@@ -8,36 +8,44 @@ import VoiceTab from "./settings/VoiceTab";
 import ModelsTab from "./settings/ModelsTab";
 import MemoryTab from "./settings/MemoryTab";
 import IntegrationsTab from "./settings/IntegrationsTab";
+import AutodevTab from "./settings/AutodevTab";
 import CrmTab from "./settings/CrmTab";
+import HumanizerTab from "./settings/HumanizerTab";
+import { LANGUAGE_PRESETS, type LanguagePresetId } from "./settings/languagePresets";
 
-export default function Settings() {
-  const [settings, setSettings] = useState<SettingsData | null>(null);
-  const [routes, setRoutes] = useState<ModelRoute[]>([]);
-  const [models, setModels] = useState<AvailableModels | null>(null);
-  const [ollama, setOllama] = useState<OllamaStatus | null>(null);
-  const [memoryStats, setMemoryStats] = useState<Array<{ area: string; count: number; avg_confidence: number }>>([]);
-  const [coderConfig, setCoderConfig] = useState<CoderConfig | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [pullingModel, setPullingModel] = useState(false);
-  const [pullingLlmModel, setPullingLlmModel] = useState<string | null>(null);
+type SettingsDraftSnapshot = {
+  memory: SettingsData["memory"];
+  obsidian: SettingsData["obsidian"];
+  tasks: SettingsData["tasks"];
+  autodev: SettingsData["autodev"];
+  telegram: {
+    botUsername: string;
+    chatId: string;
+  };
+  livekit: LiveKitEdits;
+  routes: ModelRoute[];
+  coderConfig: CoderConfig | null;
+  applyLanguageToAllChannels: boolean;
+};
 
-  const [apiKeys, setApiKeys] = useState({
-    anthropicApiKey: "",
-    openrouterApiKey: "",
-    openaiApiKey: "",
-    elevenlabsApiKey: "",
-  });
-  const [telegramBotToken, setTelegramBotToken] = useState("");
+const EMPTY_API_KEYS = {
+  anthropicApiKey: "",
+  openrouterApiKey: "",
+  openaiApiKey: "",
+  elevenlabsApiKey: "",
+};
 
-  const [livekitKeys, setLivekitKeys] = useState<LiveKitKeys>({
-    deepgramApiKey: "",
-    cartesiaApiKey: "",
-    apiKey: "",
-    apiSecret: "",
-  });
-  const [livekitEdits, setLivekitEdits] = useState<LiveKitEdits>({
+const EMPTY_LIVEKIT_KEYS: LiveKitKeys = {
+  deepgramApiKey: "",
+  cartesiaApiKey: "",
+  apiKey: "",
+  apiSecret: "",
+};
+
+function createDefaultLivekitEdits(): LiveKitEdits {
+  return {
     url: "",
+    language: "en",
     sttProvider: "deepgram",
     sttModel: "nova-3",
     ttsProvider: "cartesia",
@@ -59,7 +67,83 @@ export default function Settings() {
     ttsCacheRedisTtlSec: 604800,
     ttsCachePrefix: "joi:tts:v1",
     ttsCacheRedisUrl: "",
-  });
+    wakeWordEnabled: true,
+  };
+}
+
+function cloneLivekitEdits(livekitEdits: LiveKitEdits): LiveKitEdits {
+  return {
+    ...livekitEdits,
+    pronunciations: livekitEdits.pronunciations.map((rule) => ({ ...rule })),
+  };
+}
+
+function normalizeRoutes(routes: ModelRoute[]): ModelRoute[] {
+  return [...routes]
+    .map((route) => ({ ...route }))
+    .sort((a, b) => a.task.localeCompare(b.task));
+}
+
+function buildSettingsDraftSnapshot(params: {
+  settings: SettingsData;
+  routes: ModelRoute[];
+  coderConfig: CoderConfig | null;
+  livekitEdits: LiveKitEdits;
+  applyLanguageToAllChannels: boolean;
+}): SettingsDraftSnapshot {
+  return {
+    memory: {
+      ...params.settings.memory,
+      mem0: { ...params.settings.memory.mem0 },
+      mmr: { ...params.settings.memory.mmr },
+      temporalDecay: { ...params.settings.memory.temporalDecay },
+    },
+    obsidian: { ...params.settings.obsidian },
+    tasks: {
+      lockedProjects: [...params.settings.tasks.lockedProjects],
+      reminderSyncMode: params.settings.tasks.reminderSyncMode,
+      completedReminderRetentionDays: params.settings.tasks.completedReminderRetentionDays,
+      projectLogbookPageSize: params.settings.tasks.projectLogbookPageSize,
+    },
+    autodev: {
+      ...params.settings.autodev,
+    },
+    telegram: {
+      botUsername: params.settings.telegram.botUsername || "",
+      chatId: params.settings.telegram.chatId || "",
+    },
+    livekit: cloneLivekitEdits(params.livekitEdits),
+    routes: normalizeRoutes(params.routes),
+    coderConfig: params.coderConfig
+      ? {
+          model: params.coderConfig.model,
+          claudeCodeModel: params.coderConfig.claudeCodeModel,
+          defaultCwd: params.coderConfig.defaultCwd,
+        }
+      : null,
+    applyLanguageToAllChannels: params.applyLanguageToAllChannels,
+  };
+}
+
+export default function Settings() {
+  const [settings, setSettings] = useState<SettingsData | null>(null);
+  const [routes, setRoutes] = useState<ModelRoute[]>([]);
+  const [models, setModels] = useState<AvailableModels | null>(null);
+  const [ollama, setOllama] = useState<OllamaStatus | null>(null);
+  const [memoryStats, setMemoryStats] = useState<Array<{ area: string; count: number; avg_confidence: number }>>([]);
+  const [coderConfig, setCoderConfig] = useState<CoderConfig | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [pullingModel, setPullingModel] = useState(false);
+  const [pullingLlmModel, setPullingLlmModel] = useState<string | null>(null);
+  const [applyLanguageToAllChannels, setApplyLanguageToAllChannels] = useState(false);
+  const [initialDraftSnapshot, setInitialDraftSnapshot] = useState<string>("");
+
+  const [apiKeys, setApiKeys] = useState(EMPTY_API_KEYS);
+  const [telegramBotToken, setTelegramBotToken] = useState("");
+
+  const [livekitKeys, setLivekitKeys] = useState<LiveKitKeys>(EMPTY_LIVEKIT_KEYS);
+  const [livekitEdits, setLivekitEdits] = useState<LiveKitEdits>(createDefaultLivekitEdits);
 
   const fetchAll = useCallback(async () => {
     try {
@@ -84,12 +168,38 @@ export default function Settings() {
             sessionContextLimit: s.memory?.mem0?.sessionContextLimit ?? 8,
           },
         },
+        tasks: {
+          lockedProjects: Array.isArray(s.tasks?.lockedProjects) ? s.tasks.lockedProjects : [],
+          reminderSyncMode: s.tasks?.reminderSyncMode === "cron_only" ? "cron_only" : "cron_plus_things",
+          completedReminderRetentionDays:
+            Number.isFinite(Number(s.tasks?.completedReminderRetentionDays))
+              ? Math.max(0, Math.floor(Number(s.tasks?.completedReminderRetentionDays)))
+              : 14,
+          projectLogbookPageSize:
+            Number.isFinite(Number(s.tasks?.projectLogbookPageSize))
+              ? Math.min(200, Math.max(10, Math.floor(Number(s.tasks?.projectLogbookPageSize))))
+              : 25,
+        },
+        autodev: {
+          executorMode: s.autodev?.executorMode === "claude-code"
+            || s.autodev?.executorMode === "gemini-cli"
+            || s.autodev?.executorMode === "codex-cli"
+            || s.autodev?.executorMode === "auto"
+            ? s.autodev.executorMode
+            : "auto",
+          parallelExecution: s.autodev?.parallelExecution !== false,
+          discussionMode: s.autodev?.discussionMode === true,
+          discussionMaxTurns: Number.isFinite(Number(s.autodev?.discussionMaxTurns))
+            ? Math.min(5, Math.max(1, Math.floor(Number(s.autodev.discussionMaxTurns))))
+            : 5,
+        },
       };
       setSettings(normalized);
 
-      if (s.livekit) {
-        setLivekitEdits({
+      const nextLivekitEdits: LiveKitEdits = s.livekit
+        ? {
           url: s.livekit.url || "",
+          language: s.livekit.language || "en",
           sttProvider: s.livekit.sttProvider || "deepgram",
           sttModel: s.livekit.sttModel || "nova-3",
           ttsProvider: s.livekit.ttsProvider || "cartesia",
@@ -113,11 +223,14 @@ export default function Settings() {
           ttsCacheRedisTtlSec: Number(s.livekit.ttsCacheRedisTtlSec || 604800),
           ttsCachePrefix: s.livekit.ttsCachePrefix || "joi:tts:v1",
           ttsCacheRedisUrl: s.livekit.ttsCacheRedisUrl || "",
-        });
-      }
+          wakeWordEnabled: s.livekit.wakeWordEnabled !== false,
+        }
+        : createDefaultLivekitEdits();
+      setLivekitEdits(nextLivekitEdits);
 
-      const r = await routesRes.json();
-      setRoutes(r.routes || []);
+      const r = await routesRes.json() as { routes?: ModelRoute[] };
+      const nextRoutes = r.routes || [];
+      setRoutes(nextRoutes);
 
       const m = await modelsRes.json();
       setModels(m);
@@ -129,15 +242,27 @@ export default function Settings() {
       setMemoryStats(st.stats || []);
 
       const agentsRes = await fetch("/api/agents");
-      const agentsData = await agentsRes.json();
-      const coder = agentsData.agents?.find((a: { id: string }) => a.id === "coder");
-      if (coder) {
-        setCoderConfig({
+      const agentsData = await agentsRes.json() as {
+        agents?: Array<{ id: string; model?: string; config?: { claudeCodeModel?: string; defaultCwd?: string } }>;
+      };
+      const coder = agentsData.agents?.find((a) => a.id === "coder");
+      const nextCoderConfig = coder
+        ? {
           model: coder.model || "claude-sonnet-4-20250514",
           claudeCodeModel: coder.config?.claudeCodeModel || "",
           defaultCwd: coder.config?.defaultCwd || "~/dev_mm/joi",
-        });
-      }
+        }
+        : null;
+      setCoderConfig(nextCoderConfig);
+
+      const baselineSnapshot = buildSettingsDraftSnapshot({
+        settings: normalized,
+        routes: nextRoutes,
+        coderConfig: nextCoderConfig,
+        livekitEdits: nextLivekitEdits,
+        applyLanguageToAllChannels: false,
+      });
+      setInitialDraftSnapshot(JSON.stringify(baselineSnapshot));
     } catch (err) {
       console.error("Failed to load settings:", err);
     }
@@ -145,9 +270,64 @@ export default function Settings() {
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
-  const saveSettings = async () => {
+  const currentDraftSnapshot = useMemo(() => {
+    if (!settings) return "";
+    const snapshot = buildSettingsDraftSnapshot({
+      settings,
+      routes,
+      coderConfig,
+      livekitEdits,
+      applyLanguageToAllChannels,
+    });
+    return JSON.stringify(snapshot);
+  }, [applyLanguageToAllChannels, coderConfig, livekitEdits, routes, settings]);
+
+  const hasSecretKeyEdits = useMemo(() => {
+    const keyFields = [
+      apiKeys.anthropicApiKey,
+      apiKeys.openrouterApiKey,
+      apiKeys.openaiApiKey,
+      apiKeys.elevenlabsApiKey,
+      telegramBotToken,
+      livekitKeys.deepgramApiKey,
+      livekitKeys.cartesiaApiKey,
+      livekitKeys.apiKey,
+      livekitKeys.apiSecret,
+    ];
+    return keyFields.some((value) => value.trim().length > 0 && !value.includes("***"));
+  }, [apiKeys, livekitKeys, telegramBotToken]);
+
+  const hasUnsavedChanges = useMemo(() => {
+    if (!settings) return false;
+    if (hasSecretKeyEdits) return true;
+    if (!initialDraftSnapshot) return false;
+    return currentDraftSnapshot !== initialDraftSnapshot;
+  }, [currentDraftSnapshot, hasSecretKeyEdits, initialDraftSnapshot, settings]);
+
+  const clearSecretDraftInputs = useCallback(() => {
+    setApiKeys(EMPTY_API_KEYS);
+    setTelegramBotToken("");
+    setLivekitKeys(EMPTY_LIVEKIT_KEYS);
+  }, []);
+
+  useEffect(() => {
+    if (hasUnsavedChanges) {
+      setSaved(false);
+    }
+  }, [hasUnsavedChanges]);
+
+  const saveSettings = async (options?: {
+    livekitEdits?: LiveKitEdits;
+    routes?: ModelRoute[];
+    applyLanguageToAllChannels?: boolean;
+    restartLivekit?: boolean;
+  }) => {
     setSaving(true);
     setSaved(false);
+
+    const effectiveLivekitEdits = options?.livekitEdits ?? livekitEdits;
+    const effectiveRoutes = options?.routes ?? routes;
+    const effectiveApplyLanguageToAllChannels = options?.applyLanguageToAllChannels ?? applyLanguageToAllChannels;
 
     const authUpdates: Record<string, string> = {};
     if (apiKeys.anthropicApiKey && !apiKeys.anthropicApiKey.includes("***")) {
@@ -164,28 +344,31 @@ export default function Settings() {
     }
 
     const livekitUpdates: Record<string, unknown> = {
-      url: livekitEdits.url,
-      sttProvider: livekitEdits.sttProvider,
-      sttModel: livekitEdits.sttModel,
-      ttsProvider: livekitEdits.ttsProvider,
-      ttsModel: livekitEdits.ttsModel,
-      ttsVoice: livekitEdits.ttsVoice,
-      pronunciations: livekitEdits.pronunciations.filter((p) => p.word.trim() && p.replacement.trim()),
-      voicePrompt: livekitEdits.voicePrompt,
-      voiceModel: livekitEdits.voiceModel,
-      voiceHistoryLimit: livekitEdits.voiceHistoryLimit,
-      voiceEnableTools: livekitEdits.voiceEnableTools,
-      voiceIncludeMemory: livekitEdits.voiceIncludeMemory,
-      voiceMinEndpointSec: livekitEdits.voiceMinEndpointSec,
-      voiceMaxEndpointSec: livekitEdits.voiceMaxEndpointSec,
-      ttsCacheEnabled: livekitEdits.ttsCacheEnabled,
-      ttsCacheLocalMaxItems: livekitEdits.ttsCacheLocalMaxItems,
-      ttsCacheLocalMaxBytes: livekitEdits.ttsCacheLocalMaxBytes,
-      ttsCacheMaxTextChars: livekitEdits.ttsCacheMaxTextChars,
-      ttsCacheMaxAudioBytes: livekitEdits.ttsCacheMaxAudioBytes,
-      ttsCacheRedisTtlSec: livekitEdits.ttsCacheRedisTtlSec,
-      ttsCachePrefix: livekitEdits.ttsCachePrefix,
-      ttsCacheRedisUrl: livekitEdits.ttsCacheRedisUrl,
+      url: effectiveLivekitEdits.url,
+      language: effectiveLivekitEdits.language,
+      sttProvider: effectiveLivekitEdits.sttProvider,
+      sttModel: effectiveLivekitEdits.sttModel,
+      ttsProvider: effectiveLivekitEdits.ttsProvider,
+      ttsModel: effectiveLivekitEdits.ttsModel,
+      ttsVoice: effectiveLivekitEdits.ttsVoice,
+      pronunciations: effectiveLivekitEdits.pronunciations.filter((p) => p.word.trim() && p.replacement.trim()),
+      voicePrompt: effectiveLivekitEdits.voicePrompt,
+      voiceModel: effectiveLivekitEdits.voiceModel,
+      voiceHistoryLimit: effectiveLivekitEdits.voiceHistoryLimit,
+      voiceEnableTools: effectiveLivekitEdits.voiceEnableTools,
+      voiceIncludeMemory: effectiveLivekitEdits.voiceIncludeMemory,
+      voiceMinEndpointSec: effectiveLivekitEdits.voiceMinEndpointSec,
+      voiceMaxEndpointSec: effectiveLivekitEdits.voiceMaxEndpointSec,
+      ttsCacheEnabled: effectiveLivekitEdits.ttsCacheEnabled,
+      ttsCacheLocalMaxItems: effectiveLivekitEdits.ttsCacheLocalMaxItems,
+      ttsCacheLocalMaxBytes: effectiveLivekitEdits.ttsCacheLocalMaxBytes,
+      ttsCacheMaxTextChars: effectiveLivekitEdits.ttsCacheMaxTextChars,
+      ttsCacheMaxAudioBytes: effectiveLivekitEdits.ttsCacheMaxAudioBytes,
+      ttsCacheRedisTtlSec: effectiveLivekitEdits.ttsCacheRedisTtlSec,
+      ttsCachePrefix: effectiveLivekitEdits.ttsCachePrefix,
+      ttsCacheRedisUrl: effectiveLivekitEdits.ttsCacheRedisUrl,
+      wakeWordEnabled: effectiveLivekitEdits.wakeWordEnabled,
+      applyLanguageToAllChannels: effectiveApplyLanguageToAllChannels,
     };
     if (livekitKeys.deepgramApiKey && !livekitKeys.deepgramApiKey.includes("***")) {
       livekitUpdates.deepgramApiKey = livekitKeys.deepgramApiKey;
@@ -227,16 +410,18 @@ export default function Settings() {
           auth: Object.keys(authUpdates).length > 0 ? authUpdates : undefined,
           memory: memoryUpdates,
           obsidian: settings?.obsidian,
+          tasks: settings?.tasks,
+          autodev: settings?.autodev,
           telegram: Object.keys(telegramUpdates).length > 0 ? telegramUpdates : undefined,
           livekit: livekitUpdates,
         }),
       });
 
-      if (routes.length > 0) {
+      if (effectiveRoutes.length > 0) {
         await fetch("/api/settings/model-routes", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ routes }),
+          body: JSON.stringify({ routes: effectiveRoutes }),
         });
       }
 
@@ -254,8 +439,18 @@ export default function Settings() {
         });
       }
 
+      if (options?.restartLivekit) {
+        try {
+          await fetch("/api/services/livekit/restart", { method: "POST" });
+        } catch (err) {
+          console.warn("LiveKit restart failed after settings save:", err);
+        }
+      }
+
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
+      clearSecretDraftInputs();
+      setApplyLanguageToAllChannels(false);
       fetchAll();
     } catch (err) {
       console.error("Save failed:", err);
@@ -309,6 +504,53 @@ export default function Settings() {
     );
   };
 
+  const mergePresetRoutes = (existingRoutes: ModelRoute[], presetRoutes: ModelRoute[]): ModelRoute[] => {
+    if (existingRoutes.length === 0) return presetRoutes.map((r) => ({ ...r }));
+
+    const byTask = new Map(presetRoutes.map((r) => [r.task, r]));
+    const next = existingRoutes.map((route) => {
+      const presetRoute = byTask.get(route.task);
+      return presetRoute ? { ...route, model: presetRoute.model, provider: presetRoute.provider } : route;
+    });
+    const knownTasks = new Set(next.map((r) => r.task));
+    for (const route of presetRoutes) {
+      if (!knownTasks.has(route.task)) next.push({ ...route });
+    }
+    return next;
+  };
+
+  const applyLanguagePreset = async (presetId: LanguagePresetId) => {
+    if (saving) return;
+    const preset = LANGUAGE_PRESETS[presetId];
+    const nextLivekitEdits: LiveKitEdits = {
+      ...livekitEdits,
+      ...preset.livekit,
+      pronunciations: preset.livekit.pronunciations.map((rule) => ({ ...rule })),
+    };
+    const nextRoutes = mergePresetRoutes(routes, preset.routes);
+
+    setSaved(false);
+    setApplyLanguageToAllChannels(true);
+    setLivekitEdits(nextLivekitEdits);
+    setRoutes(nextRoutes);
+
+    await saveSettings({
+      livekitEdits: nextLivekitEdits,
+      routes: nextRoutes,
+      applyLanguageToAllChannels: true,
+      restartLivekit: true,
+    });
+  };
+
+  const languageLabelByCode: Record<string, string> = {
+    en: "English",
+    de: "Deutsch",
+    fr: "Français",
+    es: "Español",
+    it: "Italiano",
+    pt: "Português",
+  };
+
   if (!settings) {
     return (
       <>
@@ -327,14 +569,40 @@ export default function Settings() {
         actions={
           <>
             {saved && <span className="text-success text-md">Saved!</span>}
-            <Button variant="primary" size="sm" onClick={saveSettings} disabled={saving}>
-              {saving ? "Saving..." : "Save Changes"}
+            <Button variant="primary" size="sm" onClick={() => void saveSettings()} disabled={saving || !hasUnsavedChanges}>
+              {saving ? "Saving..." : hasUnsavedChanges ? "Save Changes" : "No Changes"}
             </Button>
           </>
         }
       />
 
       <PageBody>
+        <Card className="mb-4">
+          <h3 className="mb-2">Language Presets</h3>
+          <MetaText size="sm" className="block mb-3 text-md">
+            Apply a safe preset for voice language, STT/TTS defaults, and model routing. Presets are saved immediately and LiveKit is restarted automatically.
+          </MetaText>
+          <MetaText size="sm" className="block mb-3 text-md">
+            Current staged language: <strong>{languageLabelByCode[livekitEdits.language] || livekitEdits.language}</strong>
+          </MetaText>
+          <div className="flex-row gap-2 flex-wrap mb-3">
+            <Button size="sm" variant="ghost" onClick={() => void applyLanguagePreset("de_safe")} disabled={saving}>
+              Apply German Safe
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => void applyLanguagePreset("en_safe")} disabled={saving}>
+              Apply English Safe
+            </Button>
+          </div>
+          <label className="flex-row items-center gap-2 text-sm" style={{ cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={applyLanguageToAllChannels}
+              onChange={(e) => setApplyLanguageToAllChannels(e.target.checked)}
+            />
+            Also apply selected language to all existing channels when applying a preset
+          </label>
+        </Card>
+
         <Tabs
           defaultValue="general"
           tabs={[
@@ -398,6 +666,16 @@ export default function Settings() {
               ),
             },
             {
+              value: "autodev",
+              label: "AutoDev",
+              content: (
+                <AutodevTab
+                  settings={settings}
+                  setSettings={setSettings}
+                />
+              ),
+            },
+            {
               value: "integrations",
               label: "Integrations",
               content: (
@@ -411,6 +689,11 @@ export default function Settings() {
                   setTelegramBotToken={setTelegramBotToken}
                 />
               ),
+            },
+            {
+              value: "humanizer",
+              label: "Humanizer",
+              content: <HumanizerTab />,
             },
           ]}
         />

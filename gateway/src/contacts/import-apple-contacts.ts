@@ -38,6 +38,149 @@ interface NotesMap {
   [appleId: string]: string;
 }
 
+interface PreparedAppleContact {
+  contact: AppleContact;
+  memberIds: string[];
+}
+
+function normalizeEmailValue(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function normalizePhoneValue(value: string): string {
+  return value.replace(/\D/g, "");
+}
+
+function normalizeNamePart(value: string): string {
+  return value.trim().replace(/\s+\d+$/, "").replace(/\s+/g, " ").toLowerCase();
+}
+
+function contactNameKey(contact: AppleContact): string {
+  const first = normalizeNamePart(contact.firstName || "");
+  const last = normalizeNamePart(contact.lastName || "");
+  const full = [first, last].filter(Boolean).join(" ").trim();
+  if (full) return full;
+  return normalizeNamePart(contact.nickname || "");
+}
+
+function contactDedupeKey(contact: AppleContact): string {
+  const emails = [...new Set((contact.emails || [])
+    .map((entry) => normalizeEmailValue(entry.value || ""))
+    .filter(Boolean))]
+    .sort();
+  const phones = [...new Set((contact.phones || [])
+    .map((entry) => normalizePhoneValue(entry.value || ""))
+    .filter(Boolean))]
+    .sort();
+  const nameKey = contactNameKey(contact);
+
+  if (emails.length > 0) return `email:${emails.join("|")}|name:${nameKey}`;
+  if (phones.length > 0) return `phone:${phones.join("|")}|name:${nameKey}`;
+  return `id:${contact.id}`;
+}
+
+function hasNumericSuffix(value: string): boolean {
+  return /\s+\d+$/.test(value.trim());
+}
+
+function contactCompletenessScore(contact: AppleContact): number {
+  let score = 0;
+  score += (contact.emails?.length || 0) * 3;
+  score += (contact.phones?.length || 0) * 3;
+  if (contact.organization?.trim()) score += 2;
+  if (contact.jobTitle?.trim()) score += 2;
+  if (contact.birthday?.year && contact.birthday?.month && contact.birthday?.day) score += 2;
+  if (contact.addresses?.length) score += 1;
+  if (contact.socialProfiles?.length) score += 1;
+  if (contact.nickname?.trim()) score += 1;
+  if (contact.firstName?.trim()) score += 1;
+  if (contact.lastName?.trim()) score += 1;
+  if (contact.hasImage) score += 1;
+  if (hasNumericSuffix(contact.firstName || "")) score -= 1;
+  if (hasNumericSuffix(contact.lastName || "")) score -= 1;
+  return score;
+}
+
+function mergeLabeledValues<T extends { label: string; value: string }>(
+  values: T[],
+  normalize: (value: string) => string,
+): T[] {
+  const merged = new Map<string, T>();
+  for (const entry of values) {
+    if (!entry || typeof entry.value !== "string") continue;
+    const normalized = normalize(entry.value);
+    if (!normalized) continue;
+    if (!merged.has(normalized)) {
+      merged.set(normalized, entry);
+    }
+  }
+  return [...merged.values()];
+}
+
+function dedupeAppleContacts(contacts: AppleContact[]): PreparedAppleContact[] {
+  const grouped = new Map<string, AppleContact[]>();
+  for (const contact of contacts) {
+    const key = contactDedupeKey(contact);
+    const group = grouped.get(key);
+    if (group) {
+      group.push(contact);
+    } else {
+      grouped.set(key, [contact]);
+    }
+  }
+
+  const prepared: PreparedAppleContact[] = [];
+  for (const group of grouped.values()) {
+    const sorted = [...group].sort((a, b) => {
+      const scoreDiff = contactCompletenessScore(b) - contactCompletenessScore(a);
+      if (scoreDiff !== 0) return scoreDiff;
+      return a.id.localeCompare(b.id);
+    });
+    const canonical = { ...sorted[0] };
+
+    canonical.emails = mergeLabeledValues(
+      group.flatMap((entry) => entry.emails || []),
+      normalizeEmailValue,
+    );
+    canonical.phones = mergeLabeledValues(
+      group.flatMap((entry) => entry.phones || []),
+      normalizePhoneValue,
+    );
+
+    if ((!canonical.organization || !canonical.organization.trim())) {
+      const org = group.find((entry) => entry.organization?.trim())?.organization;
+      if (org) canonical.organization = org;
+    }
+    if ((!canonical.jobTitle || !canonical.jobTitle.trim())) {
+      const job = group.find((entry) => entry.jobTitle?.trim())?.jobTitle;
+      if (job) canonical.jobTitle = job;
+    }
+    if (!canonical.birthday) {
+      const birthday = group.find((entry) => entry.birthday)?.birthday;
+      if (birthday) canonical.birthday = birthday;
+    }
+    if (!canonical.addresses?.length) {
+      const addresses = group.find((entry) => entry.addresses?.length)?.addresses;
+      if (addresses) canonical.addresses = addresses;
+    }
+    if (!canonical.socialProfiles?.length) {
+      const socialProfiles = group.find((entry) => entry.socialProfiles?.length)?.socialProfiles;
+      if (socialProfiles) canonical.socialProfiles = socialProfiles;
+    }
+    if (!canonical.urls?.length) {
+      const urls = group.find((entry) => entry.urls?.length)?.urls;
+      if (urls) canonical.urls = urls;
+    }
+
+    prepared.push({
+      contact: canonical,
+      memberIds: [...new Set(group.map((entry) => entry.id))],
+    });
+  }
+
+  return prepared;
+}
+
 function loadNotesFromSQLite(): NotesMap {
   const notesMap: NotesMap = {};
   const sourcesDir = path.join(
@@ -106,13 +249,15 @@ export async function importAppleContacts(): Promise<{
   if (jsonStart === -1) throw new Error("No JSON output from contacts-export binary");
   const contacts: AppleContact[] = JSON.parse(stdout.slice(jsonStart));
   console.log(`[Import] Parsed ${contacts.length} contacts from binary`);
+  const preparedContacts = dedupeAppleContacts(contacts);
+  console.log(`[Import] Deduped source contacts: ${contacts.length} -> ${preparedContacts.length}`);
 
   // 2. Load notes from SQLite
   const notesMap = loadNotesFromSQLite();
 
   // 3. Extract unique organizations → upsert companies
   const orgNames = new Set<string>();
-  for (const c of contacts) {
+  for (const { contact: c } of preparedContacts) {
     if (c.organization?.trim()) {
       orgNames.add(c.organization.trim());
     }
@@ -138,7 +283,8 @@ export async function importAppleContacts(): Promise<{
   let imported = 0;
   let notesAttached = 0;
 
-  for (const c of contacts) {
+  for (const prepared of preparedContacts) {
+    const c = prepared.contact;
     const emails = c.emails
       ?.map((e) => e.value)
       .filter(Boolean) ?? [];
@@ -175,7 +321,12 @@ export async function importAppleContacts(): Promise<{
           }))
       : null;
 
-    const notes = notesMap[c.id] || null;
+    const noteCandidates = prepared.memberIds
+      .map((appleId) => notesMap[appleId] || "")
+      .map((text) => text.trim())
+      .filter(Boolean)
+      .sort((a, b) => b.length - a.length);
+    const notes = noteCandidates[0] || null;
     if (notes) notesAttached++;
 
     await query(

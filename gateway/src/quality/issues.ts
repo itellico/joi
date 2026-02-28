@@ -24,6 +24,8 @@ interface AutoDevRuntimeIssueInput {
 const AUTODEV_PROJECT_TITLE = process.env.JOI_AUTODEV_PROJECT_TITLE?.trim() || "JOI";
 const AUTODEV_CLAUDE_HEADING = process.env.JOI_AUTODEV_CLAUDE_HEADING?.trim() || "Claude";
 
+type RunModelConfig = Record<string, unknown> | null;
+
 /** Create issues for all failed results in a test run */
 export async function createIssuesFromRun(run: QATestRun): Promise<QAIssue[]> {
   // Get failed/errored results with case info
@@ -34,11 +36,14 @@ export async function createIssuesFromRun(run: QATestRun): Promise<QAIssue[]> {
     suite_name: string;
     suite_tags: string[] | null;
     suite_agent_id: string;
+    run_model_config: RunModelConfig;
   }>(
     `SELECT r.*, c.name AS case_name, c.description AS case_description, c.input_message,
-            s.name AS suite_name, s.tags AS suite_tags, s.agent_id AS suite_agent_id
+            s.name AS suite_name, s.tags AS suite_tags, s.agent_id AS suite_agent_id,
+            tr.model_config AS run_model_config
      FROM qa_test_results r
      JOIN qa_test_cases c ON r.case_id = c.id
+     JOIN qa_test_runs tr ON tr.id = r.run_id
      JOIN qa_test_suites s ON s.id = $2
      WHERE r.run_id = $1 AND r.status IN ('failed', 'errored')`,
     [run.id, run.suite_id],
@@ -83,11 +88,32 @@ export async function createIssuesFromRun(run: QATestRun): Promise<QAIssue[]> {
     // Check for regression (was this passing in the previous run?)
     const category = await detectRegression(result.case_id, run.id);
 
+    const runModel = (result.run_model_config && typeof result.run_model_config === "object")
+      ? result.run_model_config
+      : null;
+    const runAgentRaw = runModel?.agentId;
+    const runExecutionModeRaw = runModel?.executionMode;
+    const runRouteReasonRaw = runModel?.routeReason;
+    const runRouteConfidenceRaw = runModel?.routeConfidence;
+    const runAgent = typeof runAgentRaw === "string" && runAgentRaw.trim().length > 0
+      ? runAgentRaw.trim()
+      : result.suite_agent_id;
+    const runExecutionMode = typeof runExecutionModeRaw === "string" ? runExecutionModeRaw.trim() : "";
+    const runRouteReason = typeof runRouteReasonRaw === "string" ? runRouteReasonRaw.trim() : "";
+    const runRouteConfidence = typeof runRouteConfidenceRaw === "number" && Number.isFinite(runRouteConfidenceRaw)
+      ? runRouteConfidenceRaw
+      : null;
+
     const title = `${result.case_name}: ${result.failure_reasons?.[0] || result.status}`;
     const description = [
       `**Suite**: ${result.suite_name}`,
+      runAgent ? `**Agent**: ${runAgent}` : null,
       `**Input**: "${result.input_message}"`,
       `**Status**: ${result.status}`,
+      runExecutionMode ? `**Execution mode**: ${runExecutionMode}` : null,
+      runRouteReason ? `**Route reason**: ${runRouteReason}` : null,
+      runRouteConfidence !== null ? `**Route confidence**: ${(runRouteConfidence * 100).toFixed(1)}%` : null,
+      result.case_description ? `**Capture context**:\n${result.case_description}` : null,
       scores ? `**Scores**: correctness=${scores.correctness.toFixed(2)}, tool_accuracy=${scores.tool_accuracy.toFixed(2)}, quality=${scores.response_quality.toFixed(2)}` : null,
       result.failure_reasons?.length ? `**Failures**:\n${result.failure_reasons.map((r: string) => `- ${r}`).join("\n")}` : null,
       scores?.reasoning ? `**Judge reasoning**: ${scores.reasoning}` : null,
@@ -440,7 +466,7 @@ function buildEvidence(result: QATestResult & { case_name?: string; input_messag
     blocks.push({
       type: "text",
       label: "Agent Response",
-      content: result.actual_content.slice(0, 2000),
+      content: result.actual_content.slice(0, 12000),
     });
   }
 

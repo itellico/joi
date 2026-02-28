@@ -59,7 +59,7 @@ export default function Terminal({ ws }: TerminalProps) {
         brightYellow: "#fbbf24",
         brightBlue: "#818cf8",
         brightMagenta: "#c084fc",
-        brightCyan: "#22d3ee",
+        brightCyan: "#ff8a2f",
         brightWhite: "#f9fafb",
       },
     });

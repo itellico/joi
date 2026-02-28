@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Quality OS v7 — Action Queue</title>
+    <style>
+      :root {
+        --ink: #172230;
+        --muted: #607186;
+        --line: #d6e0ed;
+        --panel: #ffffff;
+        --bg: #f3f7fc;
+        --brand: #0b66f0;
+        --ok: #14844f;
+        --warn: #b96f11;
+        --bad: #be2d2d;
+        --ok-soft: #eaf8ef;
+        --warn-soft: #fff6e8;
+        --bad-soft: #fdeeee;
+        --radius: 14px;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        font-family: "Avenir Next", "SF Pro Text", "Segoe UI", sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(56rem 42rem at -8% -20%, #e7f1ff 0%, transparent 70%),
+          radial-gradient(60rem 44rem at 108% -16%, #eef7ff 0%, transparent 72%),
+          var(--bg);
+      }
+
+      .wrap {
+        width: min(1220px, calc(100% - 28px));
+        margin: 18px auto 34px;
+        display: grid;
+        gap: 14px;
+      }
+
+      .panel {
+        border: 1px solid var(--line);
+        background: var(--panel);
+        border-radius: var(--radius);
+        padding: 14px;
+      }
+
+      .head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 28px;
+        letter-spacing: -0.02em;
+      }
+
+      .sub {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .btn {
+        border: 1px solid var(--brand);
+        border-radius: 10px;
+        padding: 8px 11px;
+        font-size: 12px;
+        font-weight: 700;
+        text-decoration: none;
+      }
+
+      .btn.ghost { color: var(--brand); background: #fff; }
+
+      .legend {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .def {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fbfdff;
+        padding: 10px;
+        font-size: 13px;
+      }
+
+      .def strong { display: block; margin-bottom: 4px; }
+      table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+
+      th, td {
+        border-bottom: 1px solid var(--line);
+        padding: 9px 7px;
+        font-size: 12px;
+        text-align: left;
+        vertical-align: middle;
+      }
+
+      th {
+        text-transform: uppercase;
+        color: var(--muted);
+        font-size: 10px;
+        letter-spacing: 0.06em;
+      }
+
+      .badge {
+        border-radius: 999px;
+        padding: 4px 7px;
+        font-size: 10px;
+        font-weight: 700;
+      }
+
+      .ok { background: var(--ok-soft); color: var(--ok); }
+      .warn { background: var(--warn-soft); color: var(--warn); }
+      .bad { background: var(--bad-soft); color: var(--bad); }
+
+      @media (max-width: 1080px) {
+        .legend { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <section class="panel head">
+        <div>
+          <h1>Action Queue</h1>
+          <div class="sub">Execution view with explicit responsibility model.</div>
+        </div>
+        <a class="btn ghost" href="/quality-os-v7-overview.html">← Back to Overview</a>
+      </section>
+
+      <section class="panel legend">
+        <div class="def">
+          <strong>Execution Lane</strong>
+          AutoDev pipeline that owns workflow state and delivery.
+        </div>
+        <div class="def">
+          <strong>Model Worker</strong>
+          Codex/Claude/Gemini producing candidate patch or test logic.
+        </div>
+        <div class="def">
+          <strong>Human Decision</strong>
+          Required approval/reject step for high-impact changes.
+        </div>
+      </section>
+
+      <section class="panel">
+        <table aria-label="Queue table">
+          <thead>
+            <tr>
+              <th>Priority</th>
+              <th>Agent</th>
+              <th>Problem</th>
+              <th>Impact</th>
+              <th>Execution Lane</th>
+              <th>Model Worker</th>
+              <th>Human Decision</th>
+              <th>Status</th>
+              <th>ETA</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="badge bad">Critical</span></td>
+              <td>bmd-uploader</td>
+              <td>Unsafe prompt still reaches tool path</td>
+              <td>Safety/Compliance risk</td>
+              <td>AutoDev</td>
+              <td>Codex</td>
+              <td>Approve patch P-224</td>
+              <td><span class="badge warn">in progress</span></td>
+              <td>18m</td>
+            </tr>
+            <tr>
+              <td><span class="badge bad">Critical</span></td>
+              <td>personal</td>
+              <td>Fallback chain loses context</td>
+              <td>Wrong response path</td>
+              <td>AutoDev</td>
+              <td>Claude</td>
+              <td>Approve retest scope</td>
+              <td><span class="badge warn">verifying</span></td>
+              <td>42m</td>
+            </tr>
+            <tr>
+              <td><span class="badge warn">High</span></td>
+              <td>knowledge-sync</td>
+              <td>Partial sync marks success too early</td>
+              <td>Stale docs</td>
+              <td>AutoDev</td>
+              <td>Gemini</td>
+              <td>No</td>
+              <td><span class="badge warn">in progress</span></td>
+              <td>55m</td>
+            </tr>
+            <tr>
+              <td><span class="badge warn">High</span></td>
+              <td>reconciliation</td>
+              <td>Coverage gap in approval-gate tests</td>
+              <td>Missed edge cases</td>
+              <td>AutoDev</td>
+              <td>Codex</td>
+              <td>No</td>
+              <td><span class="badge ok">queued</span></td>
+              <td>1h 20m</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </main>
+  </body>
+</html>

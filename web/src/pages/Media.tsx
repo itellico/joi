@@ -51,23 +51,23 @@ interface MediaStats {
 }
 
 const TYPE_OPTIONS = [
-  { value: "all", label: "All" },
-  { value: "photo", label: "Photos" },
-  { value: "video", label: "Videos" },
-  { value: "audio", label: "Audio" },
-  { value: "document", label: "Documents" },
-  { value: "voice", label: "Voice" },
-  { value: "sticker", label: "Stickers" },
+  { value: "all", label: "All types" },
+  { value: "photo", label: "🖼 Photos" },
+  { value: "video", label: "🎥 Videos" },
+  { value: "audio", label: "🎵 Audio" },
+  { value: "document", label: "📄 Documents" },
+  { value: "voice", label: "🎙 Voice" },
+  { value: "sticker", label: "🪪 Stickers" },
 ];
 
 const CHANNEL_OPTIONS = [
-  { value: "all", label: "All" },
-  { value: "whatsapp", label: "WhatsApp" },
-  { value: "telegram", label: "Telegram" },
-  { value: "imessage", label: "iMessage" },
-  { value: "slack", label: "Slack" },
-  { value: "discord", label: "Discord" },
-  { value: "email", label: "Email" },
+  { value: "all", label: "All channels" },
+  { value: "whatsapp", label: "🟢 WhatsApp" },
+  { value: "telegram", label: "✈️ Telegram" },
+  { value: "imessage", label: "💬 iMessage" },
+  { value: "slack", label: "🟣 Slack" },
+  { value: "discord", label: "🟦 Discord" },
+  { value: "email", label: "✉️ Email" },
 ];
 
 const TYPE_ICONS: Record<string, string> = {
@@ -87,6 +87,15 @@ const CHANNEL_COLORS: Record<string, string> = {
   slack: "#4a154b",
   discord: "#5865f2",
   email: "#5ac8fa",
+};
+
+const TYPE_LABELS: Record<string, string> = {
+  photo: "Photos",
+  video: "Videos",
+  audio: "Audio",
+  document: "Documents",
+  voice: "Voice",
+  sticker: "Stickers",
 };
 
 function formatBytes(bytes: number | null): string {
@@ -194,11 +203,13 @@ export default function Media() {
 
   const statChips = useMemo(() => {
     if (!stats) return [];
-    return stats.byType.map((t) => ({
+    return [
+      { value: "all", label: "All files", count: stats.total },
+      ...stats.byType.map((t) => ({
       value: t.media_type,
-      label: `${TYPE_ICONS[t.media_type] || ""} ${t.media_type}`,
+      label: `${TYPE_ICONS[t.media_type] || TYPE_ICONS.unknown} ${TYPE_LABELS[t.media_type] || t.media_type}`,
       count: t.count,
-    }));
+    }))];
   }, [stats]);
 
   const navigate = useNavigate();
@@ -287,12 +298,16 @@ export default function Media() {
       <PageBody>
         {/* Stat chips */}
         {statChips.length > 0 && (
-          <ChipGroup
-            variant="stat"
-            options={statChips}
-            value={typeFilter}
-            onChange={(v) => updateParam("type", v === typeFilter ? "all" : v)}
-          />
+          <div className="media-filter-section">
+            <MetaText size="xs" className="media-filter-label">Library mix</MetaText>
+            <ChipGroup
+              variant="stat"
+              options={statChips}
+              value={typeFilter}
+              className="media-pill-group media-pill-group--stats"
+              onChange={(v) => updateParam("type", v)}
+            />
+          </div>
         )}
 
         {/* Search + View toggle toolbar */}
@@ -313,21 +328,28 @@ export default function Media() {
           </div>
         </div>
 
-        {/* Type filter pills */}
-        <ChipGroup
-          variant="pill"
-          options={TYPE_OPTIONS}
-          value={typeFilter}
-          onChange={(v) => { updateParam("type", v); }}
-        />
-
-        {/* Channel filter pills */}
-        <ChipGroup
-          variant="pill"
-          options={CHANNEL_OPTIONS}
-          value={channelFilter}
-          onChange={(v) => { updateParam("channel", v); }}
-        />
+        <div className="media-filter-panel">
+          <div className="media-filter-row">
+            <MetaText size="xs" className="media-filter-label">Type</MetaText>
+            <ChipGroup
+              variant="pill"
+              options={TYPE_OPTIONS}
+              value={typeFilter}
+              className="media-pill-group"
+              onChange={(v) => { updateParam("type", v); }}
+            />
+          </div>
+          <div className="media-filter-row">
+            <MetaText size="xs" className="media-filter-label">Channel</MetaText>
+            <ChipGroup
+              variant="pill"
+              options={CHANNEL_OPTIONS}
+              value={channelFilter}
+              className="media-pill-group"
+              onChange={(v) => { updateParam("channel", v); }}
+            />
+          </div>
+        </div>
 
         {/* Content */}
         {loading && items.length === 0 ? (

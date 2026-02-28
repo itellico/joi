@@ -42,10 +42,10 @@ struct ConnectionStatusPill: View {
 
     private var label: String {
         switch state {
-        case .connected: "Connected"
-        case .connecting: "Connecting"
-        case .reconnecting: "Reconnecting"
-        case .disconnected: "Disconnected"
+        case .connected: "Voice Live"
+        case .connecting: "Linking Voice"
+        case .reconnecting: "Re-linking"
+        case .disconnected: "Voice Offline"
         }
     }
 }

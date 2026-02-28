@@ -1208,7 +1208,7 @@ const CORE_TOOLS = new Set([
 
 /**
  * Get tool definitions, optionally filtered by agent skill list.
- * - If allowedSkills is null/undefined → ALL tools (personal/JOI agent)
+ * - If allowedSkills is null/undefined → ALL tools
  * - If allowedSkills is a string[] → core tools + only the listed tools
  */
 export function getToolDefinitions(allowedSkills?: string[] | null): Anthropic.Tool[] {
@@ -1767,7 +1767,7 @@ export function getToolDefinitions(allowedSkills?: string[] | null): Anthropic.T
     ...getQuotesToolDefinitions(),
   ];
 
-  // No filter = return everything (personal JOI agent)
+  // No filter = return everything.
   if (!allowedSkills) return allTools;
 
   // Filter: core tools + agent-specific tools

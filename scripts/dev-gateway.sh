@@ -6,6 +6,10 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPTS_DIR")"
 
+# Keep JOIGateway.app signed with a stable identity to avoid recurring
+# Full Disk Access denials for Messages/chat.db reads.
+"$SCRIPTS_DIR/build-joigateway.sh"
+
 # Load .env to get DATABASE_URL
 set -a
 [ -f "$PROJECT_ROOT/.env" ] && source "$PROJECT_ROOT/.env"

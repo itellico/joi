@@ -18,8 +18,8 @@ struct AskJOIIntent: AppIntent {
     }
 
     private func sendAndWait(message: String) async throws -> String {
-        let gatewayURL = UserDefaults.standard.string(forKey: "gatewayURL")
-            ?? "ws://localhost:3100/ws"
+        let gatewayURL = await GatewayURLResolver.resolveStartupGatewayURL()
+        GatewayURLResolver.persistGatewayURL(gatewayURL)
 
         guard let url = URL(string: gatewayURL) else {
             throw IntentError.gatewayUnavailable

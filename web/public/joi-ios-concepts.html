@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>JOI App Concepts</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #140a07;
+        --card: #1b100b;
+        --line: #3a2217;
+        --text: #fff2ea;
+        --muted: #dfb49d;
+        --accent: #ff5a1f;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        font-family: "Avenir Next", "Helvetica Neue", sans-serif;
+        background: radial-gradient(circle at 20% 0%, rgba(255, 90, 31, 0.14), transparent 50%), var(--bg);
+        color: var(--text);
+        min-height: 100vh;
+        padding: 30px 18px;
+      }
+
+      .wrap {
+        width: min(980px, 100%);
+        margin: 0 auto;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(28px, 4vw, 42px);
+      }
+
+      p {
+        color: var(--muted);
+        margin: 10px 0 24px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 14px;
+      }
+
+      .card {
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: linear-gradient(165deg, rgba(33, 18, 12, 0.9), rgba(20, 10, 7, 0.92));
+        padding: 16px;
+      }
+
+      .card h2 {
+        margin: 0;
+        font-size: 18px;
+      }
+
+      .card .label {
+        color: var(--muted);
+        font-size: 12px;
+        margin: 8px 0 12px;
+        line-height: 1.45;
+      }
+
+      a {
+        display: inline-block;
+        text-decoration: none;
+        color: #ffe8db;
+        font-weight: 600;
+        border-radius: 11px;
+        border: 1px solid rgba(255, 188, 142, 0.45);
+        background: rgba(255, 90, 31, 0.2);
+        padding: 10px 12px;
+      }
+
+      a:hover {
+        background: rgba(255, 90, 31, 0.32);
+      }
+
+      .note {
+        margin-top: 18px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <h1>JOI Detailed App Concepts</h1>
+      <p>Both options are full product concepts based on your real JOI routes. Concept B now includes dark/light switching and real pagination demos.</p>
+      <section class="grid">
+        <article class="card">
+          <h2>Concept A / Liquid Ember System</h2>
+          <div class="label">Expressive and bold. Now includes real JOI dark/light token mapping plus in-page design variants: Native, Web, and Glass.</div>
+          <a href="./joi-ios-concept-a.html">Open Concept A</a>
+        </article>
+        <article class="card">
+          <h2>Concept B / Titanium Pulse System</h2>
+          <div class="label">Cleaner and more structured. Expanded module coverage, dark/light mode switch, and paginated tables across Contacts, Quotes, Tasks, Quality, Reports, and Cron.</div>
+          <a href="./joi-ios-concept-b.html">Open Concept B</a>
+        </article>
+        <article class="card">
+          <h2>Concept C / Integrator Chat Studio</h2>
+          <div class="label">Integrator-focused chat control surface with real JOI tokens, dark/light switch, and three direction variants: Flowboard, Command Chat, and Pulse Matrix.</div>
+          <a href="./joi-integrator-chat-concept.html">Open Concept C</a>
+        </article>
+      </section>
+      <div class="note">Start here: <a href="./joi-ios-concepts.html">./joi-ios-concepts.html</a></div>
+    </main>
+  </body>
+</html>

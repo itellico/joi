@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../config/loader.js";
 import { AutoDevManager } from "./manager.js";
-import { frame, parseFrame, type AutoDevStatusData } from "../protocol.js";
+import { frame, parseFrame, type AutoDevStatusData, type AutoDevConfigureData } from "../protocol.js";
 
 const config = loadConfig();
 
@@ -153,6 +153,9 @@ function connect(): void {
         break;
       case "autodev.stop-current":
         manager.stopCurrent();
+        break;
+      case "autodev.configure":
+        manager.configureRuntime((msg.data as AutoDevConfigureData) || {}, "gateway");
         break;
     }
   });

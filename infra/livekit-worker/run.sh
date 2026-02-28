@@ -6,19 +6,57 @@ WORKDIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$WORKDIR"
 
 kill_stale_workers() {
+  pid_in_workdir() {
+    local pid="$1"
+    local cwd=""
+    cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n1 || true)"
+    [ "$cwd" = "$WORKDIR" ]
+  }
+
+  collect_descendants() {
+    local root="$1"
+    local frontier="$root"
+    local out=""
+    local next=""
+    local node=""
+    local kids=""
+
+    while [ -n "${frontier// /}" ]; do
+      next=""
+      for node in $frontier; do
+        kids="$(pgrep -P "$node" 2>/dev/null || true)"
+        [ -n "${kids// /}" ] || continue
+        next="$next $kids"
+      done
+      [ -n "${next// /}" ] || break
+      out="$out $next"
+      frontier="$next"
+    done
+
+    printf "%s" "$out"
+  }
+
   local pid=""
-  local cwd=""
   local stale_pids=""
   local alive_pids=""
+  local descendant_pids=""
 
   while IFS= read -r pid; do
     [ -z "$pid" ] && continue
     [ "$pid" -eq "$$" ] && continue
-    cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n1 || true)"
-    if [ "$cwd" = "$WORKDIR" ]; then
-      stale_pids="$stale_pids $pid"
-    fi
+    pid_in_workdir "$pid" || continue
+    stale_pids="$stale_pids $pid"
+  done < <(pgrep -f "agent.py dev|multiprocessing\\.spawn import spawn_main|multiprocessing\\.resource_tracker import main" || true)
+
+  while IFS= read -r pid; do
+    [ -z "$pid" ] && continue
+    [ "$pid" -eq "$$" ] && continue
+    pid_in_workdir "$pid" || continue
+    descendant_pids="$(collect_descendants "$pid")"
+    [ -z "${descendant_pids// /}" ] || stale_pids="$stale_pids $descendant_pids"
   done < <(pgrep -f "agent.py dev" || true)
+
+  stale_pids="$(echo "$stale_pids" | tr ' ' '\n' | awk 'NF > 0 && !seen[$1]++' | tr '\n' ' ')"
 
   if [ -z "${stale_pids// /}" ]; then
     return

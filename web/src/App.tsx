@@ -4,6 +4,7 @@ import { TooltipProvider } from "./components/ui";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { useTheme } from "./hooks/useTheme";
 import { useDebug } from "./hooks/useDebug";
+import { useIntegrationWatchdog } from "./hooks/useIntegrationWatchdog";
 import DebugPanel from "./components/DebugPanel";
 import Dashboard from "./pages/Dashboard";
 import Chat from "./pages/Chat";
@@ -23,43 +24,24 @@ import OKRs from "./pages/OKRs";
 import Reports from "./pages/Reports";
 import AutoDev from "./pages/AutoDev";
 import Media from "./pages/Media";
-import QualityCenter from "./pages/QualityCenter";
 import AgentSocial from "./pages/AgentSocial";
 import CloudSync from "./pages/CloudSync";
 import Bookmarks from "./pages/Bookmarks";
 import Quotes from "./pages/Quotes";
 import QuoteDetail from "./pages/QuoteDetail";
 import Organizations from "./pages/Organizations";
+import Humanizer from "./pages/Humanizer";
 import AssistantChat from "./components/AssistantChat";
 import JoiOrb from "./components/JoiOrb";
 import RouteErrorBoundary from "./components/RouteErrorBoundary";
-
-// Collapsible sidebar section
-function NavSection({ label, children, defaultOpen = true }: { label: string; children: React.ReactNode; defaultOpen?: boolean }) {
-  const storageKey = `sidebar-section:${label}`;
-  const [open, setOpen] = useState(() => {
-    const stored = localStorage.getItem(storageKey);
-    return stored !== null ? stored === "1" : defaultOpen;
-  });
-  const toggle = () => {
-    const next = !open;
-    setOpen(next);
-    localStorage.setItem(storageKey, next ? "1" : "0");
-  };
-  return (
-    <>
-      <div className="sidebar-section" onClick={toggle}>
-        <span className="sidebar-section-chevron" style={{ transform: open ? "rotate(90deg)" : "rotate(0deg)" }}>›</span>
-        {label}
-      </div>
-      {open && children}
-    </>
-  );
-}
+import { SidebarSection } from "./components/layout/SidebarSection";
+import { SidebarToggle } from "./components/layout/SidebarToggle";
+import { SidebarHealthRow } from "./components/layout/SidebarHealthRow";
 
 type ChatMode = "api" | "claude-code";
 
-type ServiceHealth = Record<string, { status: "green" | "orange" | "red"; detail?: string }>;
+type HealthStatus = "green" | "orange" | "red";
+type ServiceHealth = Record<string, { status: HealthStatus; detail?: string }>;
 type HealthResponse = {
   services?: ServiceHealth;
   uptime?: number;
@@ -78,6 +60,8 @@ function App() {
   const [watchdogAutoRestart, setWatchdogAutoRestart] = useState(true);
   const [restartingService, setRestartingService] = useState<string | null>(null);
   const [healthCopied, setHealthCopied] = useState(false);
+
+  useIntegrationWatchdog(ws);
 
   const refreshHealth = useCallback(async () => {
     try {
@@ -161,6 +145,21 @@ function App() {
     });
   }, [ws]);
 
+  const serviceStatuses: HealthStatus[] = [
+    ws.status === "connected" ? "green" : "red",
+    health.database?.status || "red",
+    health.autodev?.status || "red",
+    health.livekit?.status || "red",
+    health.memory?.status || "orange",
+    health.watchdog?.status || "red",
+  ];
+  const healthyServices = serviceStatuses.filter((status) => status === "green").length;
+  const overallHealth: HealthStatus = serviceStatuses.includes("red")
+    ? "red"
+    : serviceStatuses.includes("orange")
+      ? "orange"
+      : "green";
+
   return (
     <TooltipProvider>
     <div className="app-layout">
@@ -170,16 +169,16 @@ function App() {
             <JoiOrb
               className="sidebar-avatar"
               size={30}
-              active={ws.status === "connected"}
-              intensity={ws.status === "connected" ? 0.18 : 0.08}
-              variant="transparent"
+              active
+              intensity={ws.status === "connected" ? 0.3 : 0.16}
+              variant="firestorm"
               rings={2}
-              animated={false}
+              animated
               ariaLabel="JOI"
             />
             <div>
               <h1>JOI</h1>
-              <p>Personal AI Assistant</p>
+              <p>Voice-First AI Assistant</p>
             </div>
           </div>
         </div>
@@ -188,41 +187,41 @@ function App() {
           <NavLink to="/" end>Dashboard</NavLink>
           <NavLink to="/chat">Chats</NavLink>
 
-          <NavSection label="CRM">
+          <SidebarSection label="CRM">
             <NavLink to="/contacts">Contacts</NavLink>
             <NavLink to="/quotes">Quotes</NavLink>
             <NavLink to="/organizations">Organizations</NavLink>
-          </NavSection>
+          </SidebarSection>
 
-          <NavSection label="AI">
+          <SidebarSection label="AI">
             <NavLink to="/agents">Agents</NavLink>
             <NavLink to="/agent-social">Agent Social</NavLink>
             <NavLink to="/knowledge">Knowledge</NavLink>
             <NavLink to="/store">Store</NavLink>
-          </NavSection>
+          </SidebarSection>
 
-          <NavSection label="Workspace">
+          <SidebarSection label="Workspace">
             <NavLink to="/okrs">OKRs</NavLink>
             <NavLink to="/tasks">Tasks</NavLink>
             <NavLink to="/bookmarks">Bookmarks</NavLink>
             <NavLink to="/media">Media</NavLink>
             <NavLink to="/reports">Reports</NavLink>
-          </NavSection>
+          </SidebarSection>
 
-          <NavSection label="DevOps" defaultOpen={false}>
+          <SidebarSection label="DevOps" defaultOpen={false}>
             <NavLink to="/autodev">AutoDev</NavLink>
-            <NavLink to="/quality">Quality</NavLink>
             <NavLink to="/cron">Cron</NavLink>
             <NavLink to="/reviews">Reviews</NavLink>
             <NavLink to="/terminal">Terminal</NavLink>
             <NavLink to="/logs">Logs</NavLink>
-          </NavSection>
+          </SidebarSection>
 
-          <NavSection label="System" defaultOpen={false}>
+          <SidebarSection label="System" defaultOpen={false}>
             <NavLink to="/integrations">Integrations</NavLink>
             <NavLink to="/cloud-sync">Cloud Sync</NavLink>
+            <NavLink to="/humanizer">Humanizer</NavLink>
             <NavLink to="/settings">Settings</NavLink>
-          </NavSection>
+          </SidebarSection>
         </nav>
 
         <button
@@ -235,135 +234,91 @@ function App() {
           </span>
           <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>
         </button>
-
-        <div
-          className="sidebar-mode-toggle"
-          onClick={() => setChatMode(chatMode === "api" ? "claude-code" : "api")}
-        >
-          <div
-            className="sidebar-toggle-track"
-            style={{ background: chatMode === "claude-code" ? "var(--accent)" : "var(--bg-tertiary)" }}
-          >
-            <div
-              className="sidebar-toggle-thumb"
-              style={{ left: chatMode === "claude-code" ? 16 : 2 }}
-            />
-          </div>
-          <span style={{ fontWeight: chatMode === "claude-code" ? 600 : 400 }}>
-            {chatMode === "claude-code" ? "Claude Code CLI" : "API Mode"}
-          </span>
-        </div>
-        <div
-          className="sidebar-mode-toggle"
-          onClick={debug.toggle}
-        >
-          <div
-            className="sidebar-toggle-track"
-            style={{ background: debug.enabled ? "var(--accent)" : "var(--bg-tertiary)" }}
-          >
-            <div
-              className="sidebar-toggle-thumb"
-              style={{ left: debug.enabled ? 16 : 2 }}
-            />
-          </div>
-          <span style={{ fontWeight: debug.enabled ? 600 : 400 }}>
-            Debug
-          </span>
-        </div>
-        <div
-          className="sidebar-mode-toggle"
-          onClick={() => {
-            const next = !watchdogAutoRestart;
-            setWatchdogAutoRestart(next);
-            fetch("/api/services/watchdog/mode", {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ autoRestartEnabled: next }),
-            }).catch(() => setWatchdogAutoRestart(!next));
-          }}
-        >
-          <div
-            className="sidebar-toggle-track"
-            style={{ background: watchdogAutoRestart ? "var(--accent)" : "var(--bg-tertiary)" }}
-          >
-            <div
-              className="sidebar-toggle-thumb"
-              style={{ left: watchdogAutoRestart ? 16 : 2 }}
-            />
-          </div>
-          <span style={{ fontWeight: watchdogAutoRestart ? 600 : 400 }}>
-            Watchdog
-          </span>
-        </div>
-        <div className="sidebar-health">
-          <div className="sidebar-health-header">
-            <span className="sidebar-health-title">System Health</span>
-            <button
-              className={`sidebar-health-copy${healthCopied ? " copied" : ""}`}
-              title="Copy full health debug snapshot"
-              onClick={copyHealthDebug}
-            >
-              {healthCopied ? "copied" : "copy"}
-            </button>
-          </div>
-          <div className="sidebar-health-row">
-            <span className={`sidebar-health-dot ${ws.status === "connected" ? "green" : "red"}`} />
-            <span>Gateway</span>
-            <button
-              className={`sidebar-health-restart ${restartingService === "gateway" ? "spinning" : ""}`}
-              title="Restart Gateway (watchdog will auto-start)"
-              onClick={() => restartService("gateway")}
-            >↻</button>
-          </div>
-          <div className="sidebar-health-row">
-            <span className={`sidebar-health-dot ${health.database?.status || "red"}`} />
-            <span>Database</span>
-            {health.database?.status !== "green" && health.database?.detail && (
-              <span className="sidebar-health-detail" title={health.database.detail}>{health.database.detail}</span>
-            )}
-          </div>
-          <div className="sidebar-health-row sidebar-health-clickable" onClick={() => navigate("/autodev")}>
-            <span className={`sidebar-health-dot ${health.autodev?.status || "red"}`} />
-            <span>AutoDev</span>
-            <span className="sidebar-health-detail" title={autodevState}>{autodevState}</span>
-            <button
-              className={`sidebar-health-restart ${restartingService === "autodev" ? "spinning" : ""}`}
-              title="Restart AutoDev"
-              onClick={(e) => { e.stopPropagation(); restartService("autodev"); }}
-            >↻</button>
-          </div>
-          <div className="sidebar-health-row">
-            <span className={`sidebar-health-dot ${health.livekit?.status || "red"}`} />
-            <span>LiveKit</span>
-            <button
-              className={`sidebar-health-restart ${restartingService === "livekit" ? "spinning" : ""}`}
-              title="Restart LiveKit"
-              onClick={() => restartService("livekit")}
-            >↻</button>
-          </div>
-          <div className="sidebar-health-row">
-            <span className={`sidebar-health-dot ${health.memory?.status || "orange"}`} />
-            <span>Memory</span>
-            {health.memory?.status !== "green" && health.memory?.detail && (
-              <span className="sidebar-health-detail" title={health.memory.detail}>{health.memory.detail}</span>
-            )}
-          </div>
-          <div className="sidebar-health-row">
-            <span className={`sidebar-health-dot ${health.watchdog?.status || "red"}`} />
-            <span>Watchdog</span>
-            {health.watchdog?.detail && (
-              <span className="sidebar-health-detail" title={health.watchdog.detail}>{health.watchdog.detail}</span>
-            )}
-            <button
-              className={`sidebar-health-restart ${restartingService === "watchdog" ? "spinning" : ""}`}
-              title="Restart Watchdog"
-              onClick={() => restartService("watchdog")}
-            >↻</button>
-          </div>
-        </div>
       </aside>
 
-      <main className="main-content">
+      <div className="main-content">
+        <details className="main-system-bar">
+          <summary className="main-system-summary">
+            <span className={`sidebar-health-dot ${overallHealth}`} />
+            <span className="main-system-summary-title">System</span>
+            <span className="main-system-summary-meta">{healthyServices}/{serviceStatuses.length} healthy</span>
+            <span className="main-system-summary-chevron" aria-hidden="true" />
+          </summary>
+          <div className="main-system-panel">
+            <div className="main-system-controls">
+              <SidebarToggle
+                label={`Mode: ${chatMode === "claude-code" ? "CLI" : "API"}`}
+                active={chatMode === "claude-code"}
+                onToggle={() => setChatMode(chatMode === "api" ? "claude-code" : "api")}
+              />
+              <SidebarToggle
+                label="Debug"
+                active={debug.enabled}
+                onToggle={debug.toggle}
+              />
+              <SidebarToggle
+                label="Watchdog"
+                active={watchdogAutoRestart}
+                onToggle={() => {
+                  const next = !watchdogAutoRestart;
+                  setWatchdogAutoRestart(next);
+                  fetch("/api/services/watchdog/mode", {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ autoRestartEnabled: next }),
+                  }).catch(() => setWatchdogAutoRestart(!next));
+                }}
+              />
+              <button
+                type="button"
+                className={`main-system-copy${healthCopied ? " copied" : ""}`}
+                title="Copy full health debug snapshot"
+                onClick={copyHealthDebug}
+              >
+                {healthCopied ? "copied" : "copy"}
+              </button>
+            </div>
+            <div className="main-system-services">
+              <SidebarHealthRow
+                label="Gateway"
+                status={ws.status === "connected" ? "green" : "red"}
+                onRestart={() => restartService("gateway")}
+                restarting={restartingService === "gateway"}
+              />
+              <SidebarHealthRow
+                label="Database"
+                status={health.database?.status || "red"}
+                detail={health.database?.status !== "green" ? health.database?.detail : undefined}
+              />
+              <SidebarHealthRow
+                label="AutoDev"
+                status={health.autodev?.status || "red"}
+                detail={autodevState}
+                onRestart={() => restartService("autodev")}
+                restarting={restartingService === "autodev"}
+                onClick={() => navigate("/autodev")}
+              />
+              <SidebarHealthRow
+                label="LiveKit"
+                status={health.livekit?.status || "red"}
+                onRestart={() => restartService("livekit")}
+                restarting={restartingService === "livekit"}
+              />
+              <SidebarHealthRow
+                label="Memory"
+                status={health.memory?.status || "orange"}
+                detail={health.memory?.status !== "green" ? health.memory?.detail : undefined}
+              />
+              <SidebarHealthRow
+                label="Watchdog"
+                status={health.watchdog?.status || "red"}
+                detail={health.watchdog?.detail}
+                onRestart={() => restartService("watchdog")}
+                restarting={restartingService === "watchdog"}
+              />
+            </div>
+          </div>
+        </details>
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/chat" element={<Chat ws={ws} chatMode={chatMode} />} />
@@ -395,6 +350,7 @@ function App() {
           />
           <Route path="/bookmarks" element={<Bookmarks />} />
           <Route path="/cloud-sync" element={<CloudSync />} />
+          <Route path="/humanizer" element={<Humanizer />} />
           <Route path="/integrations" element={<Channels ws={ws} />} />
           <Route
             path="/autodev"
@@ -404,18 +360,13 @@ function App() {
               </RouteErrorBoundary>
             )}
           />
-          <Route
-            path="/quality"
-            element={(
-              <RouteErrorBoundary title="Quality Center">
-                <QualityCenter ws={ws} />
-              </RouteErrorBoundary>
-            )}
-          />
+          <Route path="/quality/*" element={<Navigate to="/autodev" replace />} />
           <Route path="/channels" element={<Navigate to="/integrations" replace />} />
         </Routes>
-      </main>
-      <AssistantChat ws={ws} chatMode={chatMode} />
+      </div>
+      <RouteErrorBoundary title="Assistant Chat">
+        <AssistantChat ws={ws} chatMode={chatMode} />
+      </RouteErrorBoundary>
       <DebugPanel />
     </div>
     </TooltipProvider>

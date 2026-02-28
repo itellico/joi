@@ -406,11 +406,24 @@ export function useVoiceSession({
           if (track.kind === Track.Kind.Audio) {
             const el = track.attach();
             el.style.display = "none";
+            el.autoplay = true;
             el.muted = isMutedRef.current;
             document.body.appendChild(el);
             audioElRef.current = el;
             setupAgentAnalyser(el);
             addDebug("Agent audio attached");
+            if (!isMutedRef.current) {
+              void el.play()
+                .then(() => {
+                  setError((prev) => (prev?.startsWith("Audio playback blocked") ? null : prev));
+                })
+                .catch((err: unknown) => {
+                  const message = err instanceof Error ? err.message : String(err);
+                  const hint = "Audio playback blocked by browser. Click the voice button once to enable sound.";
+                  addDebug(`${hint} (${message})`, "warn");
+                  setError(hint);
+                });
+            }
           }
         },
       );
@@ -640,6 +653,16 @@ export function useVoiceSession({
     }
     if (audioElRef.current) {
       audioElRef.current.muted = newMuted;
+      if (!newMuted) {
+        void audioElRef.current.play()
+          .then(() => {
+            setError((prev) => (prev?.startsWith("Audio playback blocked") ? null : prev));
+          })
+          .catch((err: unknown) => {
+            const message = err instanceof Error ? err.message : String(err);
+            addDebug(`Audio resume blocked: ${message}`, "warn");
+          });
+      }
     }
     setIsMuted(newMuted);
     if (newMuted) {

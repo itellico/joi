@@ -32,6 +32,9 @@ final class LiveKitVoicePipeline {
     private(set) var isMuted = false
     private(set) var currentEmotion: String?
     private(set) var capturedTranscript = ""
+    private(set) var networkMode: String?
+    private(set) var networkTargetIp: String?
+    private(set) var networkClientIp: String?
 
     var statusText: String { stateStatusText }
     var micLevel: Double {
@@ -81,6 +84,7 @@ final class LiveKitVoicePipeline {
     private var roomDelegateHandler: RoomDelegateHandler?
     private var preMuteOutputVolume: Float = 1.0
     private var didForceMuteOutput = false
+    private let maxConnectAttempts = 3
 
     func setEvent(_ event: String) {
         lastDebugEvent = event
@@ -219,7 +223,7 @@ final class LiveKitVoicePipeline {
 
     private func connectToRoom() async {
         state = .connecting
-        setEvent("connecting")
+        setEvent("connecting (1/\(maxConnectAttempts))")
 
         // Ensure no local pipeline is still holding the microphone.
         wakeWordService.stop()
@@ -237,49 +241,94 @@ final class LiveKitVoicePipeline {
         configureMacOSAudioInput()
         #endif
 
-        do {
-            let details = try await tokenService.fetchConnectionDetails(
-                conversationId: configuredConversationId,
-                agentId: configuredAgentId
-            )
-
-            // Set up room delegate before connecting
-            if roomDelegateHandler == nil {
-                let handler = RoomDelegateHandler(pipeline: self)
-                roomDelegateHandler = handler
-                room.add(delegate: handler)
+        var lastConnectError: Error?
+        for attempt in 1...maxConnectAttempts {
+            if Task.isCancelled {
+                return
             }
 
-            try await room.connect(
-                url: details.serverUrl,
-                token: details.token,
-                connectOptions: ConnectOptions(autoSubscribe: true)
-            )
-
-            // Enable microphone
-            try await room.localParticipant.setMicrophone(enabled: !isMuted)
-
-            if let resolvedConversationId = details.conversationId {
-                configuredConversationId = resolvedConversationId
-                onConversationReady?(resolvedConversationId)
+            if attempt > 1 {
+                setEvent("connecting (\(attempt)/\(maxConnectAttempts))")
+                await room.disconnect()
             }
 
-            state = .active
-            setEvent("connected to \(details.roomName)")
-            log.info("Connected to LiveKit room: \(details.roomName, privacy: .public)")
+            do {
+                let details = try await tokenService.fetchConnectionDetails(
+                    conversationId: configuredConversationId,
+                    agentId: configuredAgentId
+                )
+                networkMode = details.networkMode
+                networkTargetIp = details.networkTargetIp
+                networkClientIp = details.networkClientIp
 
-            // Start monitoring mic level
-            startAudioLevelMonitor()
+                // Set up room delegate before connecting
+                if roomDelegateHandler == nil {
+                    let handler = RoomDelegateHandler(pipeline: self)
+                    roomDelegateHandler = handler
+                    room.add(delegate: handler)
+                }
 
-            // Register for transcription streams
-            await registerTranscriptionHandler()
+                try await room.connect(
+                    url: details.serverUrl,
+                    token: details.token,
+                    connectOptions: ConnectOptions(autoSubscribe: true)
+                )
 
-        } catch {
-            state = .error
-            errorMessage = error.localizedDescription
-            setEvent("connectError: \(error.localizedDescription)")
-            log.error("LiveKit connect failed: \(error.localizedDescription, privacy: .public)")
+                // Enable microphone
+                try await room.localParticipant.setMicrophone(enabled: !isMuted)
+
+                if let resolvedConversationId = details.conversationId {
+                    configuredConversationId = resolvedConversationId
+                    onConversationReady?(resolvedConversationId)
+                }
+
+                errorMessage = nil
+                state = .active
+                setEvent("connected to \(details.roomName)")
+                log.info("Connected to LiveKit room: \(details.roomName, privacy: .public)")
+                if let mode = details.networkMode {
+                    let target = details.networkTargetIp ?? "n/a"
+                    log.info("LiveKit route mode=\(mode, privacy: .public) target=\(target, privacy: .public)")
+                }
+
+                // Start monitoring mic level
+                startAudioLevelMonitor()
+
+                // Register for transcription streams
+                await registerTranscriptionHandler()
+                return
+            } catch {
+                lastConnectError = error
+                let description = error.localizedDescription
+                setEvent("connectError[\(attempt)/\(maxConnectAttempts)]: \(description)")
+                log.error("LiveKit connect attempt \(attempt)/\(self.maxConnectAttempts) failed: \(description, privacy: .public)")
+
+                let shouldRetry = attempt < maxConnectAttempts && isRetryableConnectError(description)
+                if shouldRetry {
+                    let delayNs = UInt64(Double(attempt) * 800_000_000.0)
+                    let delaySec = Double(delayNs) / 1_000_000_000.0
+                    setEvent("retrying in \(String(format: "%.1f", delaySec))s")
+                    try? await Task.sleep(nanoseconds: delayNs)
+                    continue
+                }
+                break
+            }
         }
+
+        state = .error
+        errorMessage = lastConnectError?.localizedDescription ?? "LiveKit connection failed"
+        if let message = errorMessage {
+            setEvent("connectFailed: \(message)")
+        }
+    }
+
+    private func isRetryableConnectError(_ message: String) -> Bool {
+        let normalized = message.lowercased()
+        if normalized.contains("validation request failed") { return true }
+        if normalized.contains("network error") { return true }
+        if normalized.contains("timed out") || normalized.contains("timeout") { return true }
+        if normalized.contains("unknown") { return true }
+        return false
     }
 
     // MARK: - Permissions

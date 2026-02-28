@@ -160,3 +160,51 @@ export interface QAStats {
   open_issues: number;
   critical_issues: number;
 }
+
+// ─── Live Observer Types ───
+
+export interface QAChatAnalysis {
+  id: string;
+  conversation_id: string | null;
+  message_id: string | null;
+  agent_id: string | null;
+  agent_name: string | null;
+  user_message: string | null;
+  assistant_content: string | null;
+  tool_calls: unknown[];
+  tool_results: unknown[];
+  quality_score: number | null;
+  correctness: number | null;
+  tool_accuracy: number | null;
+  response_quality: number | null;
+  reasoning: string | null;
+  issues_detected: { type: string; severity: string; description: string }[];
+  skills_used: string[];
+  skills_expected: string[];
+  latency_ms: number | null;
+  cost_usd: number | null;
+  analysis_cost_usd: number | null;
+  analysis_latency_ms: number | null;
+  model: string | null;
+  provider: string | null;
+  status: "pending" | "analyzing" | "completed" | "skipped" | "error";
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface QAObserverConfig {
+  enabled: boolean;
+  quality_threshold: number;
+  skip_dry_run: boolean;
+  min_user_message_length: number;
+  updated_at: string;
+}
+
+export interface QAChatAnalysisStats {
+  total_analyzed: number;
+  avg_quality_score: number | null;
+  issues_created_today: number;
+  by_agent: { agent_id: string; count: number; avg_quality: number }[];
+  by_day: { date: string; count: number; avg_quality: number; issues: number }[];
+}

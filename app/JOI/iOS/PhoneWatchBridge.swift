@@ -4,6 +4,11 @@ import WatchConnectivity
 import Observation
 import OSLog
 
+private func logWatchStatusSendMessageFailure(_ error: Error) {
+    let logger = Logger(subsystem: "com.joi.app", category: "PhoneWatchBridge")
+    logger.debug("sendMessage(status) failed: \(error.localizedDescription, privacy: .public)")
+}
+
 private final class StatusSnapshotBox: @unchecked Sendable {
     private let lock = NSLock()
     private var snapshot: WatchBridgeStatusSnapshot?
@@ -50,12 +55,15 @@ final class PhoneWatchBridge: NSObject {
     func publishStatusSnapshot(from voiceEngine: VoiceEngine) {
         let transcript = voiceEngine.capturedTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
         let clippedTranscript: String? = transcript.isEmpty ? nil : String(transcript.prefix(maxTranscriptLength))
+        let networkMode = voiceEngine.livekitNetworkMode ?? GatewayURLResolver.inferredCurrentRouteMode()
 
         let snapshot = WatchBridgeStatusSnapshot(
             voiceState: voiceEngine.state,
             statusText: voiceEngine.statusText,
             isActive: voiceEngine.isActive,
             isMuted: voiceEngine.isMuted,
+            networkMode: networkMode,
+            networkTargetIp: voiceEngine.livekitNetworkTargetIp,
             capturedTranscript: clippedTranscript,
             errorMessage: voiceEngine.errorMessage,
             updatedAt: Date().timeIntervalSince1970
@@ -73,9 +81,7 @@ final class PhoneWatchBridge: NSObject {
         }
 
         guard session.isReachable else { return }
-        session.sendMessage(payload, replyHandler: nil) { [log] error in
-            log.debug("sendMessage(status) failed: \(error.localizedDescription, privacy: .public)")
-        }
+        session.sendMessage(payload, replyHandler: nil, errorHandler: logWatchStatusSendMessageFailure)
     }
 
     private func activateSessionIfNeeded() {
@@ -123,6 +129,8 @@ final class PhoneWatchBridge: NSObject {
             _ = voiceEngine.statusText
             _ = voiceEngine.isActive
             _ = voiceEngine.isMuted
+            _ = voiceEngine.livekitNetworkMode
+            _ = voiceEngine.livekitNetworkTargetIp
             _ = voiceEngine.capturedTranscript
             _ = voiceEngine.errorMessage
         } onChange: { [weak self] in

@@ -1,0 +1,1659 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>JOI App Concept B - Titanium Pulse System</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg-0: #100a08;
+        --bg-grad-a: rgba(255, 152, 93, 0.2);
+        --bg-grad-b: rgba(255, 90, 31, 0.17);
+
+        --shell-bg-a: rgba(38, 23, 16, 0.9);
+        --shell-bg-b: rgba(17, 10, 8, 0.94);
+        --bar-bg-a: rgba(52, 31, 22, 0.74);
+        --bar-bg-b: rgba(34, 20, 15, 0.62);
+
+        --surface-a: rgba(46, 26, 19, 0.62);
+        --surface-b: rgba(30, 17, 12, 0.72);
+        --surface-c: rgba(28, 16, 11, 0.7);
+        --surface-d: rgba(22, 11, 8, 0.66);
+        --surface-e: rgba(37, 20, 14, 0.72);
+        --surface-f: rgba(35, 18, 13, 0.72);
+
+        --phone-shell-a: #1a100c;
+        --phone-shell-b: #110906;
+        --phone-screen-a: #1f130f;
+        --phone-screen-b: #130906;
+
+        --line: rgba(255, 201, 166, 0.24);
+        --line-soft: rgba(255, 201, 166, 0.16);
+
+        --text: #fff4ed;
+        --muted: #d9b29b;
+        --subtle: #9d725d;
+
+        --accent: #ff5a1f;
+        --accent-2: #ff9a5f;
+        --ok: #6fdc8c;
+        --warn: #ffbf4d;
+        --danger: #ff6b6b;
+      }
+
+      html[data-theme="light"] {
+        color-scheme: light;
+        --bg-0: #f6f2ee;
+        --bg-grad-a: rgba(255, 167, 113, 0.25);
+        --bg-grad-b: rgba(255, 90, 31, 0.18);
+
+        --shell-bg-a: rgba(255, 253, 252, 0.96);
+        --shell-bg-b: rgba(252, 247, 243, 0.98);
+        --bar-bg-a: rgba(255, 247, 241, 0.95);
+        --bar-bg-b: rgba(250, 240, 232, 0.9);
+
+        --surface-a: rgba(255, 252, 249, 0.92);
+        --surface-b: rgba(255, 250, 246, 0.92);
+        --surface-c: rgba(255, 251, 247, 0.94);
+        --surface-d: rgba(255, 248, 241, 0.95);
+        --surface-e: rgba(255, 248, 242, 0.94);
+        --surface-f: rgba(255, 248, 242, 0.94);
+
+        --phone-shell-a: #f6ede7;
+        --phone-shell-b: #f1e6dd;
+        --phone-screen-a: #fffaf6;
+        --phone-screen-b: #f7eee6;
+
+        --line: rgba(170, 117, 83, 0.35);
+        --line-soft: rgba(170, 117, 83, 0.26);
+
+        --text: #29180f;
+        --muted: #6f4b3a;
+        --subtle: #946756;
+
+        --accent: #e9541b;
+        --accent-2: #f28b51;
+        --ok: #188c49;
+        --warn: #b7791f;
+        --danger: #cf3f3f;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "SF Pro Text", "Avenir Next", "Helvetica Neue", sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(68vw 45vw at -10% -10%, var(--bg-grad-a), transparent 73%),
+          radial-gradient(70vw 55vw at 100% 0%, var(--bg-grad-b), transparent 73%),
+          linear-gradient(180deg, var(--bg-0) 0%, color-mix(in srgb, var(--bg-0) 84%, black) 100%);
+      }
+
+      .page {
+        padding: 20px;
+      }
+
+      .shell {
+        max-width: 1500px;
+        margin: 0 auto;
+        border-radius: 30px;
+        border: 1px solid var(--line);
+        background: linear-gradient(165deg, var(--shell-bg-a), var(--shell-bg-b));
+        box-shadow:
+          0 34px 90px rgba(0, 0, 0, 0.35),
+          inset 0 1px 0 color-mix(in srgb, var(--text) 14%, transparent);
+        overflow: hidden;
+      }
+
+      .bar {
+        height: 62px;
+        display: grid;
+        grid-template-columns: 140px 1fr auto;
+        align-items: center;
+        gap: 10px;
+        padding: 0 16px;
+        border-bottom: 1px solid var(--line);
+        background: linear-gradient(180deg, var(--bar-bg-a), var(--bar-bg-b));
+      }
+
+      .lights {
+        display: flex;
+        gap: 8px;
+      }
+
+      .lights span {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+      }
+
+      .lights span:nth-child(1) { background: #ff5f57; }
+      .lights span:nth-child(2) { background: #ffbd2e; }
+      .lights span:nth-child(3) { background: #27c93f; }
+
+      .title {
+        justify-self: center;
+        font-size: 13px;
+        letter-spacing: 0.04em;
+        color: color-mix(in srgb, var(--text) 88%, transparent);
+      }
+
+      .bar-meta {
+        display: flex;
+        gap: 7px;
+        align-items: center;
+      }
+
+      .bar-meta span {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: var(--surface-a);
+        color: var(--muted);
+        font-size: 11px;
+        padding: 6px 9px;
+      }
+
+      .theme-toggle {
+        border: 1px solid color-mix(in srgb, var(--accent) 52%, var(--line));
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--accent) 16%, var(--surface-a));
+        color: color-mix(in srgb, var(--text) 90%, transparent);
+        font: inherit;
+        font-size: 11px;
+        padding: 6px 10px;
+        cursor: pointer;
+      }
+
+      .theme-toggle:hover {
+        background: color-mix(in srgb, var(--accent) 26%, var(--surface-a));
+      }
+
+      .content {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 368px;
+        min-height: calc(100vh - 102px);
+        max-height: calc(100vh - 102px);
+      }
+
+      .workspace {
+        display: grid;
+        grid-template-rows: auto auto auto auto 1fr auto;
+        gap: 10px;
+        min-height: 0;
+        padding: 14px;
+        border-right: 1px solid var(--line);
+      }
+
+      .tabs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+      }
+
+      .tabs button {
+        border: 1px solid var(--line);
+        background: var(--surface-a);
+        color: var(--muted);
+        font: inherit;
+        font-size: 12px;
+        border-radius: 999px;
+        padding: 8px 12px;
+        cursor: pointer;
+        transition: all 0.16s ease;
+      }
+
+      .tabs button:hover {
+        transform: translateY(-1px);
+        border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+      }
+
+      .tabs button.active {
+        color: color-mix(in srgb, var(--text) 92%, transparent);
+        border-color: color-mix(in srgb, var(--accent) 58%, var(--line));
+        background: linear-gradient(140deg, color-mix(in srgb, var(--accent) 24%, transparent), color-mix(in srgb, var(--accent-2) 16%, transparent));
+      }
+
+      .head {
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: var(--surface-b);
+        padding: 12px;
+      }
+
+      .head h2 {
+        margin: 0;
+        font-size: 30px;
+      }
+
+      .head p {
+        margin: 6px 0 0;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .route-row {
+        margin-top: 7px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .route-pill {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: var(--surface-a);
+        color: var(--muted);
+        font-size: 11px;
+        padding: 5px 8px;
+      }
+
+      .chips {
+        display: flex;
+        gap: 7px;
+        flex-wrap: wrap;
+      }
+
+      .chip {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: var(--surface-a);
+        color: var(--muted);
+        font-size: 11px;
+        padding: 6px 9px;
+      }
+
+      .chip.on {
+        border-color: color-mix(in srgb, var(--accent) 58%, var(--line));
+        background: color-mix(in srgb, var(--accent) 16%, var(--surface-a));
+        color: color-mix(in srgb, var(--text) 92%, transparent);
+      }
+
+      .kpis {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .kpi {
+        border: 1px solid var(--line);
+        border-radius: 13px;
+        background: var(--surface-b);
+        padding: 9px;
+      }
+
+      .kpi .label {
+        font-size: 11px;
+        color: var(--muted);
+      }
+
+      .kpi .value {
+        margin-top: 3px;
+        font-size: 19px;
+        font-weight: 700;
+      }
+
+      .kpi .meta {
+        margin-top: 3px;
+        font-size: 10px;
+        color: var(--subtle);
+      }
+
+      .main-grid {
+        min-height: 0;
+        overflow: auto;
+        display: grid;
+        grid-template-columns: 1.15fr 1fr;
+        gap: 8px;
+      }
+
+      .card {
+        border: 1px solid var(--line);
+        border-radius: 15px;
+        background: var(--surface-c);
+        padding: 11px;
+      }
+
+      .card h3 {
+        margin: 0;
+        font-size: 13px;
+        color: color-mix(in srgb, var(--text) 82%, var(--accent) 18%);
+      }
+
+      .stack {
+        margin-top: 8px;
+        display: grid;
+        gap: 7px;
+      }
+
+      .item {
+        border: 1px solid var(--line-soft);
+        border-radius: 11px;
+        background: var(--surface-d);
+        padding: 8px;
+        font-size: 12px;
+        color: var(--muted);
+        display: flex;
+        justify-content: space-between;
+        gap: 7px;
+      }
+
+      .item strong {
+        color: color-mix(in srgb, var(--text) 90%, transparent);
+        font-weight: 610;
+      }
+
+      .table {
+        margin-top: 8px;
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 11px;
+      }
+
+      .table th,
+      .table td {
+        border-bottom: 1px solid var(--line-soft);
+        padding: 7px 6px;
+        text-align: left;
+        color: var(--muted);
+      }
+
+      .table th {
+        color: var(--subtle);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        font-size: 10px;
+      }
+
+      .table td strong { color: color-mix(in srgb, var(--text) 90%, transparent); }
+
+      .bars {
+        margin-top: 8px;
+        display: grid;
+        gap: 7px;
+      }
+
+      .bar-row {
+        display: grid;
+        gap: 4px;
+      }
+
+      .bar-row span {
+        font-size: 11px;
+        color: var(--muted);
+      }
+
+      .track {
+        height: 8px;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--accent) 10%, var(--surface-a));
+        overflow: hidden;
+      }
+
+      .fill {
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      }
+
+      .pager {
+        margin-top: 9px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .pager-info {
+        font-size: 11px;
+        color: var(--subtle);
+      }
+
+      .pager-actions {
+        display: flex;
+        gap: 6px;
+      }
+
+      .pager button {
+        border: 1px solid var(--line);
+        background: var(--surface-a);
+        color: var(--muted);
+        font: inherit;
+        font-size: 11px;
+        padding: 5px 8px;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+
+      .pager button:hover:not(:disabled) {
+        border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+        color: color-mix(in srgb, var(--text) 90%, transparent);
+      }
+
+      .pager button:disabled {
+        opacity: 0.46;
+        cursor: not-allowed;
+      }
+
+      .settings-tabs {
+        margin-top: 8px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .settings-tabs button {
+        border: 1px solid var(--line);
+        background: var(--surface-a);
+        color: var(--muted);
+        font: inherit;
+        font-size: 11px;
+        border-radius: 999px;
+        padding: 6px 9px;
+        cursor: pointer;
+      }
+
+      .settings-tabs button.active {
+        color: color-mix(in srgb, var(--text) 92%, transparent);
+        border-color: color-mix(in srgb, var(--accent) 52%, var(--line));
+        background: color-mix(in srgb, var(--accent) 18%, var(--surface-a));
+      }
+
+      .settings-note {
+        margin-top: 7px;
+        border: 1px solid var(--line-soft);
+        border-radius: 10px;
+        background: var(--surface-d);
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.45;
+        padding: 8px;
+      }
+
+      .detail {
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: var(--surface-e);
+        padding: 12px;
+      }
+
+      .detail h3 {
+        margin: 0;
+        font-size: 13px;
+      }
+
+      .detail p {
+        margin: 6px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .side {
+        padding: 14px 12px;
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        gap: 10px;
+        min-height: 0;
+      }
+
+      .side-head {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--surface-f);
+        padding: 10px;
+      }
+
+      .side-head h3 {
+        margin: 0;
+        font-size: 13px;
+      }
+
+      .side-head p {
+        margin: 5px 0 0;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .phone {
+        margin: 0 auto;
+        width: min(100%, 316px);
+        height: 630px;
+        border-radius: 40px;
+        border: 1px solid var(--line);
+        background: linear-gradient(180deg, var(--phone-shell-a) 0%, var(--phone-shell-b) 100%);
+        box-shadow: 0 20px 44px rgba(0, 0, 0, 0.35);
+        padding: 11px;
+      }
+
+      .phone-screen {
+        height: 100%;
+        border-radius: 28px;
+        border: 1px solid var(--line-soft);
+        background:
+          radial-gradient(120% 80% at 50% 0%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 60%),
+          linear-gradient(180deg, var(--phone-screen-a) 0%, var(--phone-screen-b) 100%);
+        padding: 10px;
+        display: grid;
+        grid-template-rows: auto auto 1fr auto;
+        gap: 8px;
+      }
+
+      .status {
+        display: flex;
+        justify-content: space-between;
+        font-size: 10px;
+        color: var(--muted);
+        padding: 0 4px;
+      }
+
+      .island {
+        width: 112px;
+        height: 26px;
+        margin: 0 auto;
+        border-radius: 18px;
+        border: 1px solid var(--line-soft);
+        background: color-mix(in srgb, var(--surface-d) 78%, black 22%);
+      }
+
+      .mobile-card {
+        border: 1px solid var(--line-soft);
+        border-radius: 14px;
+        background: var(--surface-c);
+        padding: 9px;
+        margin-bottom: 8px;
+      }
+
+      .mobile-card h4 {
+        margin: 0;
+        font-size: 12px;
+      }
+
+      .mobile-card p {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .mobile-list {
+        margin-top: 6px;
+        display: grid;
+        gap: 6px;
+      }
+
+      .mobile-row {
+        border: 1px solid var(--line-soft);
+        border-radius: 10px;
+        background: var(--surface-d);
+        color: var(--muted);
+        font-size: 11px;
+        padding: 7px;
+      }
+
+      .tabbar {
+        height: 54px;
+        border: 1px solid var(--line-soft);
+        border-radius: 17px;
+        background: var(--surface-a);
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        align-items: center;
+        text-align: center;
+        color: var(--subtle);
+        font-size: 10px;
+      }
+
+      .tabbar .active { color: color-mix(in srgb, var(--text) 90%, transparent); }
+
+      .blueprint {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--surface-f);
+        padding: 10px;
+      }
+
+      .blueprint h4 {
+        margin: 0;
+        font-size: 12px;
+      }
+
+      .blueprint ul {
+        margin: 8px 0 0;
+        padding-left: 16px;
+      }
+
+      .blueprint li {
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.45;
+        margin-bottom: 4px;
+      }
+
+      @media (max-width: 1320px) {
+        .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      }
+
+      @media (max-width: 1080px) {
+        .content {
+          grid-template-columns: 1fr;
+          max-height: none;
+        }
+
+        .workspace { border-right: 0; border-bottom: 1px solid var(--line); }
+      }
+
+      @media (max-width: 760px) {
+        .page { padding: 10px; }
+        .bar {
+          grid-template-columns: auto 1fr auto;
+          height: 52px;
+          padding: 0 10px;
+        }
+
+        .bar-meta span:not(.theme-toggle-wrap) { display: none; }
+        .main-grid { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <section class="shell">
+        <header class="bar">
+          <div class="lights"><span></span><span></span><span></span></div>
+          <div class="title">JOI App Concept B / Titanium Pulse System</div>
+          <div class="bar-meta">
+            <span>Architecture-first</span>
+            <span>Native parity</span>
+            <span class="theme-toggle-wrap"><button id="themeToggle" class="theme-toggle" type="button">Switch to Light</button></span>
+          </div>
+        </header>
+
+        <div class="content">
+          <section class="workspace">
+            <nav class="tabs" id="tabs"></nav>
+
+            <header class="head">
+              <h2 id="screenTitle"></h2>
+              <p id="screenSubtitle"></p>
+              <div class="route-row" id="routeRow"></div>
+            </header>
+
+            <div class="chips" id="chips"></div>
+            <section class="kpis" id="kpis"></section>
+
+            <section class="main-grid">
+              <article class="card" id="leftCard"></article>
+              <article class="card" id="rightCard"></article>
+            </section>
+
+            <article class="detail" id="detail"></article>
+          </section>
+
+          <aside class="side">
+            <div class="side-head">
+              <h3>Mobile Companion Layer</h3>
+              <p>Desktop and iPhone use one design system, one information model, and one navigation intent.</p>
+            </div>
+
+            <div class="phone">
+              <div class="phone-screen">
+                <div class="status"><span>9:41</span><span>JOI 5G</span></div>
+                <div class="island"></div>
+                <section id="mobileContent"></section>
+                <nav class="tabbar">
+                  <div class="active">Home</div>
+                  <div>Chat</div>
+                  <div>Ops</div>
+                  <div>CRM</div>
+                  <div>Settings</div>
+                </nav>
+              </div>
+            </div>
+
+            <article class="blueprint" id="blueprint"></article>
+          </aside>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const contactsRows = [
+        ["Markus Leitner", "m@itellico.ai", "client", "Today"],
+        ["Lisa Nyberg", "lisa@north.se", "lead", "Yesterday"],
+        ["Stefan Koch", "stefan@studio.at", "partner", "2d ago"],
+        ["Anna Roth", "anna@alpha.de", "active", "4d ago"],
+        ["Julia Novak", "julia@nova.media", "client", "5d ago"],
+        ["Peter Mayr", "peter@craft.io", "lead", "6d ago"],
+        ["Daniel Weiss", "daniel@atlas.dev", "active", "1w ago"],
+        ["Clara Huber", "clara@design.at", "partner", "1w ago"],
+        ["Elias Kern", "elias@kern.ai", "lead", "1w ago"],
+        ["Maria Thal", "maria@peak.de", "client", "8d ago"],
+        ["Paul Zimmer", "paul@north.at", "active", "9d ago"],
+        ["Nina Sturm", "nina@sturm.co", "lead", "10d ago"],
+        ["Oliver Haas", "oliver@blend.io", "client", "11d ago"],
+        ["Greta Wolf", "greta@wolf.studio", "partner", "12d ago"],
+        ["Thomas Berg", "thomas@berg.dev", "active", "13d ago"],
+        ["Sophia Klein", "sophia@klein.io", "lead", "2w ago"],
+        ["Lukas Heim", "lukas@heim.org", "client", "2w ago"],
+        ["Laura Engel", "laura@engel.cc", "active", "2w ago"],
+      ];
+
+      const quotesRows = [
+        ["Q-204", "Website relaunch package", "Markus Leitner", "accepted", "12,400"],
+        ["Q-205", "Automation setup", "Lisa Nyberg", "draft", "6,200"],
+        ["Q-206", "AI support retainer", "Stefan Koch", "sent", "4,800"],
+        ["Q-207", "Campaign design sprint", "Anna Roth", "sent", "3,950"],
+        ["Q-208", "Infrastructure audit", "Julia Novak", "accepted", "8,700"],
+        ["Q-209", "Content operations", "Peter Mayr", "draft", "2,900"],
+        ["Q-210", "Voice integration", "Daniel Weiss", "sent", "5,400"],
+        ["Q-211", "CRM migration", "Clara Huber", "won", "9,100"],
+        ["Q-212", "AI quality workflow", "Elias Kern", "sent", "4,300"],
+      ];
+
+      const taskRows = [
+        ["Finalize Q-205 wording", "CRM", "High", "Today"],
+        ["Review codex patch #42", "AutoDev", "High", "Today"],
+        ["Publish daily voice briefing", "Voice", "Medium", "Today"],
+        ["Fix QA citation mismatch", "Quality", "High", "Tomorrow"],
+        ["Refactor chat composer", "Web", "Medium", "Tomorrow"],
+        ["Sync Notion roadmap", "Integrations", "Low", "2d"],
+        ["Check cron failure alerts", "System", "High", "2d"],
+        ["Validate cloud sync mappings", "Cloud Sync", "Medium", "3d"],
+        ["Prepare weekly finance report", "Reports", "Medium", "3d"],
+        ["Triage inbox backlog", "Chat", "Low", "4d"],
+        ["Audit model route overrides", "Settings", "Medium", "4d"],
+        ["Re-run shadow simulation", "Quality", "High", "5d"],
+      ];
+
+      const qualityCaseRows = [
+        ["chat-shadow-001", "tool selection", "passed", "1.3s"],
+        ["chat-shadow-002", "response quality", "passed", "1.8s"],
+        ["chat-shadow-003", "unexpected tool", "failed", "2.4s"],
+        ["crm-reply-011", "contact lookup", "passed", "0.9s"],
+        ["crm-reply-012", "quote generation", "failed", "2.0s"],
+        ["crm-reply-013", "email dispatch", "passed", "1.5s"],
+        ["autodev-021", "task routing", "passed", "1.2s"],
+        ["autodev-022", "executor fallback", "passed", "1.9s"],
+        ["autodev-023", "rollback strategy", "passed", "2.2s"],
+        ["voice-031", "stt confidence", "warning", "0.8s"],
+        ["voice-032", "tts cache use", "passed", "0.7s"],
+        ["voice-033", "tool-in-voice", "failed", "1.7s"],
+        ["reports-041", "cost totals", "passed", "1.1s"],
+        ["reports-042", "daily pivot", "passed", "1.4s"],
+      ];
+
+      const reportModelRows = [
+        ["claude-sonnet", "812", "8.4M", "$129.20", "1.7s"],
+        ["gpt-4o-mini", "1,204", "5.1M", "$61.30", "1.4s"],
+        ["llama3 local", "402", "2.9M", "Free", "2.8s"],
+        ["gemini-pro", "188", "1.6M", "$14.80", "1.5s"],
+        ["claude-haiku", "276", "900k", "$8.20", "0.9s"],
+        ["deepgram nova-3", "434", "23h audio", "$6.90", "0.4s"],
+        ["cartesia sonic-2", "391", "1.2M chars", "$11.50", "0.5s"],
+      ];
+
+      const cronRows = [
+        ["mem0-sync", "*/10 * * * *", "running", "in 3m"],
+        ["daily-briefing", "0 7 * * *", "enabled", "tomorrow 07:00"],
+        ["quality-sweep", "15 */2 * * *", "enabled", "in 55m"],
+        ["cloud-sync-full", "30 2 * * *", "enabled", "tonight"],
+        ["contact-refresh", "0 */6 * * *", "paused", "manual"],
+        ["voice-cache-prune", "0 3 * * 0", "enabled", "sun 03:00"],
+        ["cost-rollup", "10 0 * * *", "enabled", "tomorrow"],
+        ["task-reminder", "*/30 * * * *", "enabled", "in 12m"],
+      ];
+
+      const terminalRows = [
+        ["gateway", "connected", "2m ago"],
+        ["autodev-worker", "connected", "just now"],
+        ["livekit-worker", "degraded", "5m ago"],
+        ["postgres", "connected", "1m ago"],
+      ];
+
+      const settingsTabs = [
+        {
+          id: "general",
+          label: "General",
+          note: "API keys and core service controls with explicit status badges.",
+          rows: [
+            ["Anthropic API key", "active"],
+            ["OpenRouter API key", "active"],
+            ["OpenAI API key", "active"],
+            ["ElevenLabs API key", "missing"],
+            ["Watchdog", "running"],
+            ["AutoDev", "running"],
+          ],
+        },
+        {
+          id: "voice",
+          label: "Voice",
+          note: "LiveKit, STT/TTS providers, and endpoint tuning for road mode.",
+          rows: [
+            ["STT provider", "deepgram / nova-3"],
+            ["TTS provider", "cartesia / sonic-2"],
+            ["Voice model", "openai/gpt-4o-mini"],
+            ["History limit", "8 turns"],
+            ["Enable tools", "disabled"],
+            ["Include memory", "disabled"],
+          ],
+        },
+        {
+          id: "models",
+          label: "Models",
+          note: "Route matrix per skill so model spend and quality remain controllable.",
+          rows: [
+            ["Primary reasoning", "claude-sonnet"],
+            ["Fast utility", "gpt-4o-mini"],
+            ["Local fallback", "llama3"],
+            ["Coder route", "codex-cli"],
+            ["Parallel execution", "enabled"],
+            ["Route entries", "18"],
+          ],
+        },
+        {
+          id: "memory",
+          label: "Memory",
+          note: "mem0 shadow write and confidence thresholds are surfaced as first-class controls.",
+          rows: [
+            ["mem0 enabled", "true"],
+            ["shadow write local", "true"],
+            ["context limit", "8"],
+            ["active memories", "2,810"],
+            ["avg confidence", "0.74"],
+            ["obsidian sync", "enabled"],
+          ],
+        },
+      ];
+
+      const screens = [
+        {
+          id: "dashboard",
+          label: "Dashboard",
+          route: "/",
+          title: "Dashboard",
+          subtitle: "Owner, vision, system health, usage, and action priorities in one command surface.",
+          chips: ["System Status", "Usage Statistics", "Memory", "Action Queue"],
+          kpis: [
+            ["Gateway", "Online", "uptime 12h 44m"],
+            ["Database", "Connected", "steady latency"],
+            ["Ollama", "Running", "model loaded"],
+            ["Contacts", "142", "58 companies"],
+            ["Memories", "2,810", "6 areas"],
+            ["Documents", "186", "searchable"],
+            ["Cron Jobs", "17", "3 running"],
+            ["Daily Cost", "$7.14", "30d trend"],
+          ],
+          left: {
+            title: "Operational Snapshot",
+            type: "list",
+            rows: [
+              ["Review 4 CRM drafts", "09:20"],
+              ["Approve AutoDev patch", "10:10"],
+              ["Run quality sweep", "13:30"],
+              ["Publish voice briefing", "16:00"],
+            ],
+          },
+          right: {
+            title: "Provider Cost Mix",
+            type: "bars",
+            rows: [
+              ["Anthropic - $6.40", 76],
+              ["OpenRouter - $2.10", 42],
+              ["Voice - $0.64", 22],
+            ],
+          },
+          detailTitle: "Concept Behavior",
+          detailText:
+            "Dashboard keeps JOI's current strengths (status + cost + orchestration) and frames them for rapid decision handoff into Chat, CRM, and AutoDev. The goal is reducing context switching while preserving observability.",
+          mobileTitle: "System Pulse",
+          mobileText: "Fast posture check before starting voice workflows.",
+          mobileRows: ["Gateway online", "Memories 2,810", "Daily cost $7.14"],
+          blueprint: [
+            "Desktop: dense cards + trends + action queue.",
+            "Mobile: concise pulse card and next actions.",
+            "Native mapping: split view on iPad/macOS, stacked cards on iPhone.",
+          ],
+        },
+        {
+          id: "chat",
+          label: "Chat",
+          route: "/chat",
+          title: "Voice Chats",
+          subtitle: "Conversation inbox with tool execution transparency, QA capture, and latency controls.",
+          chips: ["Conversation Filters", "Tool Checklist", "Execution Mode", "QA Capture"],
+          kpis: [
+            ["Conversations", "1,248", "active"],
+            ["Unread Inbox", "24", "cross-channel"],
+            ["Avg Latency", "1.8s", "shadow mode"],
+            ["QA Flags", "3", "today"],
+          ],
+          left: {
+            title: "Conversation Inbox",
+            type: "list",
+            rows: [
+              ["WhatsApp - Lisa - quote update", "2m"],
+              ["Telegram - Team Ops - release note", "6m"],
+              ["Email - finance@ - invoice", "14m"],
+              ["iMessage - Mom - reminder", "25m"],
+              ["Webhook - Stripe event #121", "31m"],
+            ],
+          },
+          right: {
+            title: "Execution Checklist",
+            type: "table",
+            headers: ["Step", "Status", "Latency", "Source"],
+            rows: [
+              ["Load contact profile", "Done", "0.3s", "CRM"],
+              ["Generate quote draft", "Done", "1.8s", "Quote Agent"],
+              ["Render PDF", "Running", "0.6s", "Template"],
+              ["Send email", "Waiting", "-", "Gmail"],
+            ],
+          },
+          detailTitle: "Concept Behavior",
+          detailText:
+            "The chat surface remains the action center. Inbox, thread, and execution evidence are clearly separated so operational users can trust what JOI did and why, while keeping simulation and QA workflows nearby.",
+          mobileTitle: "Active Inbox",
+          mobileText: "Condensed cross-channel thread list with quick response actions.",
+          mobileRows: ["WhatsApp - Lisa", "Telegram Team", "Email Finance", "Webhook CI"],
+          blueprint: [
+            "Desktop: inbox + thread + evidence lanes.",
+            "Mobile: compact thread + expandable tool trace.",
+            "Native mapping: list-detail with accessory action bar.",
+          ],
+        },
+        {
+          id: "contacts",
+          label: "Contacts",
+          route: "/contacts",
+          title: "Contacts",
+          subtitle: "Search, status segmentation, and relationship timelines with true pagination behavior.",
+          chips: ["Search", "Status Chips", "List/Card Toggle", "Apple Import"],
+          kpis: [
+            ["All", "142", "contacts"],
+            ["Clients", "58", "paying"],
+            ["Leads", "31", "open"],
+            ["Partners", "17", "active"],
+          ],
+          left: {
+            title: "Contacts List",
+            type: "paginated-table",
+            headers: ["Name", "Email", "Status", "Last Contact"],
+            rows: contactsRows,
+            pageSize: 6,
+          },
+          right: {
+            title: "Selected Contact Timeline",
+            type: "list",
+            rows: [
+              ["Quote accepted #Q-204", "09:12"],
+              ["Task linked: update payment terms", "Yesterday"],
+              ["Voice note summary attached", "2d"],
+              ["Profile enriched from latest call", "3d"],
+              ["Memory confidence upgraded", "1w"],
+            ],
+          },
+          detailTitle: "Concept Behavior",
+          detailText:
+            "This mirrors JOI's current contacts page with status filters and high-density lists, but adds mobile-first pagination patterns so long datasets remain usable on iPhone and desktop without losing context.",
+          mobileTitle: "Contacts by Status",
+          mobileText: "Segment counts and recent interactions.",
+          mobileRows: ["Clients 58", "Leads 31", "Partners 17", "All 142"],
+          blueprint: [
+            "Desktop: table + timeline pane with pagination.",
+            "Mobile: segmented list + contact action sheet.",
+            "Native mapping: searchable list, infinite or page-based loading.",
+          ],
+        },
+        {
+          id: "quotes",
+          label: "Quotes",
+          route: "/quotes",
+          title: "Quotes",
+          subtitle: "Quote pipeline with list pagination, status chips, and contact linkage.",
+          chips: ["Quote Table", "Status Filter", "Contact Linking", "Detail Drilldown"],
+          kpis: [
+            ["All Quotes", "84", "total"],
+            ["Accepted", "24", "active revenue"],
+            ["Draft", "18", "in progress"],
+            ["Avg Value", "$6.2k", "30d"],
+          ],
+          left: {
+            title: "Quote List",
+            type: "paginated-table",
+            headers: ["ID", "Title", "Contact", "Status", "Value"],
+            rows: quotesRows,
+            pageSize: 5,
+          },
+          right: {
+            title: "Quote Workflow",
+            type: "list",
+            rows: [
+              ["Create quote from contact", "Step 1"],
+              ["Attach line items + tax", "Step 2"],
+              ["Render DOCX/HTML", "Step 3"],
+              ["Send via Gmail/Chat", "Step 4"],
+            ],
+          },
+          detailTitle: "Concept Behavior",
+          detailText:
+            "Quotes are treated as first-class CRM objects with clear status and progression. This concept keeps JOI's data shape while improving readability and mobile operability for sales-heavy workflows.",
+          mobileTitle: "Quote Pipeline",
+          mobileText: "Quick status and handoff actions.",
+          mobileRows: ["Q-204 accepted", "Q-205 draft", "Q-206 sent"],
+          blueprint: [
+            "Desktop: data table + guided workflow card.",
+            "Mobile: compact pipeline with quick send.",
+            "Native mapping: list + detail editor + share sheet.",
+          ],
+        },
+        {
+          id: "tasks",
+          label: "Tasks",
+          route: "/tasks",
+          title: "Tasks",
+          subtitle: "Operational task flow with prioritization and paginated backlog browsing.",
+          chips: ["Priority", "Due Date", "Agent Source", "Task Links"],
+          kpis: [
+            ["Open", "46", "all owners"],
+            ["Due Today", "12", "focus now"],
+            ["Blocked", "3", "needs input"],
+            ["Completed", "189", "30d"],
+          ],
+          left: {
+            title: "Task Backlog",
+            type: "paginated-table",
+            headers: ["Task", "Area", "Priority", "Due"],
+            rows: taskRows,
+            pageSize: 6,
+          },
+          right: {
+            title: "Task Context",
+            type: "list",
+            rows: [
+              ["Linked contact: Markus Leitner", "CRM"],
+              ["Linked conversation: WhatsApp #123", "Chat"],
+              ["Linked quote: Q-205", "Quotes"],
+              ["Generated by: coder agent", "AutoDev"],
+            ],
+          },
+          detailTitle: "Concept Behavior",
+          detailText:
+            "Tasks keep their relationship to chat, contacts, and automation. Pagination validates that heavy operational backlogs remain manageable while preserving cross-link navigation.",
+          mobileTitle: "Today Focus",
+          mobileText: "Top-priority tasks with one-swipe complete/defer actions.",
+          mobileRows: ["Finalize Q-205", "Review codex patch", "Run quality sweep"],
+          blueprint: [
+            "Desktop: paginated backlog + context rails.",
+            "Mobile: focused today list with quick actions.",
+            "Native mapping: grouped list + context cards.",
+          ],
+        },
+        {
+          id: "autodev",
+          label: "AutoDev",
+          route: "/autodev",
+          title: "Auto Developer",
+          subtitle: "Multi-executor orchestration with realtime logs and safe controls.",
+          chips: ["State Badge", "Executor Logs", "Queue", "Pause/Resume/Skip"],
+          kpis: [
+            ["State", "Working", "codex-cli"],
+            ["Completed", "23", "this cycle"],
+            ["Queue", "4", "pending"],
+            ["Runtime", "3h 18m", "continuous"],
+          ],
+          left: {
+            title: "Executor Status",
+            type: "table",
+            headers: ["Executor", "State", "Current Step", "Health"],
+            rows: [
+              ["claude-code", "idle", "awaiting route", "ok"],
+              ["codex-cli", "running", "editing concept page", "ok"],
+              ["gemini-cli", "idle", "standby reviewer", "ok"],
+            ],
+          },
+          right: {
+            title: "Current Checklist",
+            type: "list",
+            rows: [
+              ["Map existing routes and modules", "Done"],
+              ["Implement detailed concept A/B", "Done"],
+              ["Run build validation", "Running"],
+              ["Prepare commit payload", "Queued"],
+            ],
+          },
+          detailTitle: "Concept Behavior",
+          detailText:
+            "AutoDev is presented as an operations control room, not just logs. Visibility by executor plus explicit controls reduces risk during autonomous runs while preserving speed.",
+          mobileTitle: "AutoDev Live",
+          mobileText: "Realtime state with emergency controls.",
+          mobileRows: ["State: Working", "Queue: 4", "Pause / Skip"],
+          blueprint: [
+            "Desktop: tabular executor observability.",
+            "Mobile: control-focused compact cards.",
+            "Native mapping: tabs + action sheet controls.",
+          ],
+        },
+        {
+          id: "quality",
+          label: "Quality",
+          route: "/quality",
+          title: "Quality Center",
+          subtitle: "Suites, runs, case pagination, and issue lifecycle governance.",
+          chips: ["Suites", "Cases", "Pass Rate", "Issue Queue"],
+          kpis: [
+            ["Suites", "18", "enabled"],
+            ["Cases", "242", "active"],
+            ["Pass Rate", "91%", "last 30 runs"],
+            ["Open Issues", "5", "2 critical"],
+          ],
+          left: {
+            title: "Case Results",
+            type: "paginated-table",
+            headers: ["Case ID", "Category", "Status", "Latency"],
+            rows: qualityCaseRows,
+            pageSize: 6,
+          },
+          right: {
+            title: "Issue Queue",
+            type: "list",
+            rows: [
+              ["Critical: wrong tool in crm-reply", "open"],
+              ["High: latency regression in shadow", "investigating"],
+              ["Medium: citation mismatch", "autodev_assigned"],
+              ["Low: badge style inconsistency", "testing"],
+            ],
+          },
+          detailTitle: "Concept Behavior",
+          detailText:
+            "Quality is modeled as a continuous loop: run evidence, paginated case inspection, and issue triage linked back to Chat simulation and AutoDev execution.",
+          mobileTitle: "Quality Alerts",
+          mobileText: "Critical run and issue visibility with one-tap replay links.",
+          mobileRows: ["Pass rate 91%", "Critical issues 2", "Replay case now"],
+          blueprint: [
+            "Desktop: analytics + case pages + issue queue.",
+            "Mobile: alert-first triage.",
+            "Native mapping: segmented control + detail modal.",
+          ],
+        },
+        {
+          id: "integrations",
+          label: "Integrations",
+          route: "/integrations",
+          title: "Integrations",
+          subtitle: "Channel connectivity, account scope, setup guide progress, and live events.",
+          chips: ["Channels", "Google Accounts", "Webhook Security", "Live Activity"],
+          kpis: [
+            ["Connected Channels", "7", "all systems"],
+            ["Pending Setup", "1", "iMessage"],
+            ["Google Accounts", "2", "workspace + personal"],
+            ["Events Today", "318", "ingested"],
+          ],
+          left: {
+            title: "Channel Health",
+            type: "table",
+            headers: ["Channel", "Type", "Status", "Last Event"],
+            rows: [
+              ["WhatsApp Personal", "communication", "connected", "1m ago"],
+              ["Telegram Main", "communication", "connected", "2m ago"],
+              ["iMessage Mac", "communication", "pending", "-"],
+              ["Webhook CI", "automation", "connected", "8m ago"],
+              ["Notion Workspace", "knowledge", "connected", "14m ago"],
+            ],
+          },
+          right: {
+            title: "Live Activity Feed",
+            type: "list",
+            rows: [
+              ["Inbound WhatsApp photo", "1m"],
+              ["Gmail thread triaged", "3m"],
+              ["Discord message replied", "4m"],
+              ["Payment webhook event", "8m"],
+              ["Notion page synced", "10m"],
+            ],
+          },
+          detailTitle: "Concept Behavior",
+          detailText:
+            "Integrations are framed as trust infrastructure: setup confidence, current health, and event outcomes in one view. This mirrors JOI's existing channel strategy while improving operational readability.",
+          mobileTitle: "Channel Health",
+          mobileText: "Connectivity and event monitoring with quick jump to related conversations.",
+          mobileRows: ["WhatsApp connected", "Telegram connected", "iMessage pending"],
+          blueprint: [
+            "Desktop: channel table + activity stream.",
+            "Mobile: health summary and shortcuts.",
+            "Native mapping: grouped list + wizard sheets.",
+          ],
+        },
+        {
+          id: "reports",
+          label: "Reports",
+          route: "/reports",
+          title: "Reports",
+          subtitle: "Costs, conversations, and model-level analytics with paginated breakdown tables.",
+          chips: ["7/30/90d", "Costs", "Conversations", "System Totals"],
+          kpis: [
+            ["Total Cost", "$214.30", "30d"],
+            ["Daily Avg", "$7.14", "normalized"],
+            ["Conversations", "1,248", "active"],
+            ["Voice Cost", "$18.40", "30d"],
+          ],
+          left: {
+            title: "Cost Distribution",
+            type: "bars",
+            rows: [
+              ["Anthropic", 76],
+              ["OpenRouter", 44],
+              ["Voice STT/TTS", 28],
+            ],
+          },
+          right: {
+            title: "Model Breakdown",
+            type: "paginated-table",
+            headers: ["Model", "Calls", "Tokens", "Cost", "Latency"],
+            rows: reportModelRows,
+            pageSize: 4,
+          },
+          detailTitle: "Concept Behavior",
+          detailText:
+            "Reporting is action-oriented. Pagination lets users inspect deeper model/provider data without overwhelming the primary dashboard. This helps validate if native report browsing will stay usable.",
+          mobileTitle: "30 Day Snapshot",
+          mobileText: "High-signal metrics and anomaly cards.",
+          mobileRows: ["Total cost $214.30", "Conversations 1,248", "Voice cost $18.40"],
+          blueprint: [
+            "Desktop: charts + paginated data grid.",
+            "Mobile: KPI stack and anomaly alerts.",
+            "Native mapping: chart cards + drill-in list.",
+          ],
+        },
+        {
+          id: "cron",
+          label: "Cron",
+          route: "/cron",
+          title: "Cron Jobs",
+          subtitle: "Scheduler visibility, run state, and execution history paging.",
+          chips: ["Active Count", "Running", "Errors", "Execution History"],
+          kpis: [
+            ["Total Jobs", "17", "configured"],
+            ["Running", "3", "live"],
+            ["Errors", "1", "needs attention"],
+            ["Avg Duration", "41s", "last 24h"],
+          ],
+          left: {
+            title: "Job List",
+            type: "paginated-table",
+            headers: ["Job", "Schedule", "Status", "Next Run"],
+            rows: cronRows,
+            pageSize: 4,
+          },
+          right: {
+            title: "Recent Executions",
+            type: "list",
+            rows: [
+              ["mem0-sync completed", "23s"],
+              ["quality-sweep completed", "1m 14s"],
+              ["task-reminder completed", "8s"],
+              ["contact-refresh failed", "timeout"],
+            ],
+          },
+          detailTitle: "Concept Behavior",
+          detailText:
+            "Cron surface is promoted from utility to reliability control. Job paging and execution summaries provide enough depth to evaluate native scheduling workflows before implementation.",
+          mobileTitle: "Scheduler Pulse",
+          mobileText: "Critical jobs and failures surfaced immediately.",
+          mobileRows: ["Running 3", "Errors 1", "Next run in 3m"],
+          blueprint: [
+            "Desktop: paginated jobs + run stream.",
+            "Mobile: alert and quick run controls.",
+            "Native mapping: list rows with expandable history.",
+          ],
+        },
+        {
+          id: "terminal",
+          label: "Terminal",
+          route: "/terminal",
+          title: "Terminal",
+          subtitle: "Multi-service terminal sessions with connection posture and command presets.",
+          chips: ["Session Tabs", "Connection Status", "Quick Commands", "Logs"],
+          kpis: [
+            ["Sessions", "4", "active"],
+            ["Connected", "3", "healthy"],
+            ["Warnings", "1", "livekit"],
+            ["Commands/min", "11", "current"],
+          ],
+          left: {
+            title: "Service Sessions",
+            type: "table",
+            headers: ["Session", "Status", "Last Output"],
+            rows: terminalRows,
+          },
+          right: {
+            title: "Quick Commands",
+            type: "list",
+            rows: [
+              ["pnpm run build", "project check"],
+              ["pnpm run typecheck", "safety"],
+              ["curl /api/health", "service check"],
+              ["tail -f autodev.log", "debug"],
+            ],
+          },
+          detailTitle: "Concept Behavior",
+          detailText:
+            "Terminal is embedded as an operational cockpit component, maintaining current JOI devops workflows while improving session visibility and quick-command ergonomics for native clients.",
+          mobileTitle: "Ops Console",
+          mobileText: "Connection posture and critical command shortcuts.",
+          mobileRows: ["gateway connected", "autodev connected", "livekit degraded"],
+          blueprint: [
+            "Desktop: table of sessions + command shortcuts.",
+            "Mobile: status cards and limited controls.",
+            "Native mapping: segmented sessions + preflight actions.",
+          ],
+        },
+        {
+          id: "settings",
+          label: "Settings",
+          route: "/settings",
+          title: "Settings",
+          subtitle: "General, voice, model routes, and memory controls with richer tabbed preview.",
+          chips: ["General", "Voice", "Models", "Memory", "Integrations", "CRM"],
+          kpis: [
+            ["Keys Active", "5/6", "critical providers"],
+            ["Services Healthy", "3/4", "livekit degraded"],
+            ["Model Routes", "18", "defined"],
+            ["Voice Profile", "Default", "gpt-4o-mini"],
+          ],
+          left: {
+            title: "Settings Tabs",
+            type: "settings-tabs",
+            tabs: settingsTabs,
+          },
+          right: {
+            title: "Service Health",
+            type: "list",
+            rows: [
+              ["Watchdog", "running"],
+              ["Database", "connected"],
+              ["AutoDev", "connected"],
+              ["LiveKit Worker", "degraded"],
+            ],
+          },
+          detailTitle: "Concept Behavior",
+          detailText:
+            "Settings is expanded to test confidence: multi-tab configuration, stateful health checks, and explicit risk messaging. This is intended to validate if complex controls remain understandable in a native port.",
+          mobileTitle: "Settings Health",
+          mobileText: "Status-first controls with guarded save/rollback flows.",
+          mobileRows: ["Keys active 5/6", "Services healthy 3/4", "Voice profile default"],
+          blueprint: [
+            "Desktop: tabbed settings with inline notes.",
+            "Mobile: state-first grouped forms.",
+            "Native mapping: Form sections + confirmation sheets.",
+          ],
+        },
+      ];
+
+      const state = {
+        active: screens[0].id,
+        pagination: {},
+        settingsTab: { settings: "general" },
+      };
+
+      const elTabs = document.getElementById("tabs");
+      const elTitle = document.getElementById("screenTitle");
+      const elSubtitle = document.getElementById("screenSubtitle");
+      const elRouteRow = document.getElementById("routeRow");
+      const elChips = document.getElementById("chips");
+      const elKpis = document.getElementById("kpis");
+      const elLeftCard = document.getElementById("leftCard");
+      const elRightCard = document.getElementById("rightCard");
+      const elDetail = document.getElementById("detail");
+      const elMobile = document.getElementById("mobileContent");
+      const elBlueprint = document.getElementById("blueprint");
+      const themeToggle = document.getElementById("themeToggle");
+
+      function currentScreen() {
+        return screens.find((s) => s.id === state.active) || screens[0];
+      }
+
+      function pagerKey(screenId, side) {
+        return `${screenId}:${side}`;
+      }
+
+      function getPage(screenId, side, totalPages) {
+        const key = pagerKey(screenId, side);
+        const page = state.pagination[key] || 1;
+        return Math.min(Math.max(page, 1), totalPages);
+      }
+
+      function setPage(screenId, side, next, totalPages) {
+        const key = pagerKey(screenId, side);
+        state.pagination[key] = Math.min(Math.max(next, 1), totalPages);
+      }
+
+      function renderRows(rows) {
+        return rows
+          .map(([left, right]) => `<div class="item"><strong>${left}</strong><span>${right}</span></div>`)
+          .join("");
+      }
+
+      function renderBars(rows) {
+        return `
+          <div class="bars">
+            ${rows
+              .map(
+                ([label, pct]) => `
+                  <div class="bar-row">
+                    <span>${label}</span>
+                    <div class="track"><div class="fill" style="width:${pct}%"></div></div>
+                  </div>
+                `,
+              )
+              .join("")}
+          </div>
+        `;
+      }
+
+      function renderTable(headers, rows) {
+        return `
+          <table class="table">
+            <thead><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr></thead>
+            <tbody>
+              ${rows
+                .map(
+                  (row) => `<tr>${row.map((cell, i) => `<td>${i === 0 ? `<strong>${cell}</strong>` : cell}</td>`).join("")}</tr>`,
+                )
+                .join("")}
+            </tbody>
+          </table>
+        `;
+      }
+
+      function renderPaginatedTable(screenId, side, headers, rows, pageSize) {
+        const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+        const page = getPage(screenId, side, totalPages);
+        const start = (page - 1) * pageSize;
+        const visible = rows.slice(start, start + pageSize);
+
+        return `
+          ${renderTable(headers, visible)}
+          <div class="pager">
+            <div class="pager-info">Page ${page} / ${totalPages} · ${rows.length} rows</div>
+            <div class="pager-actions">
+              <button type="button" data-pager-action="prev" data-side="${side}" ${page <= 1 ? "disabled" : ""}>Prev</button>
+              <button type="button" data-pager-action="next" data-side="${side}" ${page >= totalPages ? "disabled" : ""}>Next</button>
+            </div>
+          </div>
+        `;
+      }
+
+      function renderSettingsTabs(screenId, config) {
+        const tabs = config.tabs || [];
+        const selected = state.settingsTab[screenId] || tabs[0]?.id;
+        const selectedTab = tabs.find((t) => t.id === selected) || tabs[0];
+
+        if (!selectedTab) return "";
+
+        return `
+          <div class="settings-tabs">
+            ${tabs
+              .map(
+                (tab) => `<button type="button" data-settings-tab="${tab.id}" class="${tab.id === selected ? "active" : ""}">${tab.label}</button>`,
+              )
+              .join("")}
+          </div>
+          ${renderTable(["Setting", "Value"], selectedTab.rows || [])}
+          <div class="settings-note">${selectedTab.note}</div>
+        `;
+      }
+
+      function renderCard(target, screen, side, card) {
+        if (!card) {
+          target.innerHTML = "";
+          return;
+        }
+
+        let body = "";
+
+        if (card.type === "list") {
+          body = `<div class="stack">${renderRows(card.rows || [])}</div>`;
+        } else if (card.type === "bars") {
+          body = renderBars(card.rows || []);
+        } else if (card.type === "table") {
+          body = renderTable(card.headers || [], card.rows || []);
+        } else if (card.type === "paginated-table") {
+          body = renderPaginatedTable(screen.id, side, card.headers || [], card.rows || [], card.pageSize || 6);
+        } else if (card.type === "settings-tabs") {
+          body = renderSettingsTabs(screen.id, card);
+        }
+
+        target.innerHTML = `<h3>${card.title}</h3>${body}`;
+      }
+
+      function renderThemeButton() {
+        const theme = document.documentElement.getAttribute("data-theme") || "dark";
+        themeToggle.textContent = theme === "dark" ? "Switch to Light" : "Switch to Dark";
+      }
+
+      function render() {
+        const s = currentScreen();
+
+        elTabs.innerHTML = screens
+          .map((screen) => `<button data-screen-id="${screen.id}" class="${screen.id === s.id ? "active" : ""}">${screen.label}</button>`)
+          .join("");
+
+        elTitle.textContent = s.title;
+        elSubtitle.textContent = s.subtitle;
+
+        elRouteRow.innerHTML = `
+          <span class="route-pill">Route: ${s.route}</span>
+          <span class="route-pill">Module: ${s.label}</span>
+          <span class="route-pill">Theme-aware + pagination demo</span>
+        `;
+
+        elChips.innerHTML = (s.chips || [])
+          .map((chip, idx) => `<span class="chip ${idx < 2 ? "on" : ""}">${chip}</span>`)
+          .join("");
+
+        elKpis.innerHTML = (s.kpis || [])
+          .map(
+            ([label, value, meta]) => `
+              <div class="kpi">
+                <div class="label">${label}</div>
+                <div class="value">${value}</div>
+                <div class="meta">${meta}</div>
+              </div>
+            `,
+          )
+          .join("");
+
+        renderCard(elLeftCard, s, "left", s.left);
+        renderCard(elRightCard, s, "right", s.right);
+
+        elDetail.innerHTML = `<h3>${s.detailTitle}</h3><p>${s.detailText}</p>`;
+
+        elMobile.innerHTML = `
+          <article class="mobile-card">
+            <h4>${s.mobileTitle}</h4>
+            <p>${s.mobileText}</p>
+            <div class="mobile-list">
+              ${(s.mobileRows || []).map((row) => `<div class="mobile-row">${row}</div>`).join("")}
+            </div>
+          </article>
+          <article class="mobile-card">
+            <h4>Cross-Screen Sync</h4>
+            <p>Mobile and desktop share module semantics, pagination expectations, and settings vocabulary.</p>
+          </article>
+        `;
+
+        elBlueprint.innerHTML = `
+          <h4>Blueprint Notes</h4>
+          <ul>${(s.blueprint || []).map((line) => `<li>${line}</li>`).join("")}</ul>
+        `;
+
+        renderThemeButton();
+      }
+
+      document.addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+
+        const tabButton = target.closest("[data-screen-id]");
+        if (tabButton) {
+          state.active = tabButton.getAttribute("data-screen-id");
+          render();
+          return;
+        }
+
+        const pagerButton = target.closest("[data-pager-action]");
+        if (pagerButton) {
+          const screen = currentScreen();
+          const side = pagerButton.getAttribute("data-side");
+          const action = pagerButton.getAttribute("data-pager-action");
+          const card = side === "left" ? screen.left : screen.right;
+
+          if (!card || card.type !== "paginated-table") return;
+
+          const pageSize = card.pageSize || 6;
+          const totalPages = Math.max(1, Math.ceil((card.rows || []).length / pageSize));
+          const current = getPage(screen.id, side, totalPages);
+          const next = action === "next" ? current + 1 : current - 1;
+          setPage(screen.id, side, next, totalPages);
+          render();
+          return;
+        }
+
+        const settingsTab = target.closest("[data-settings-tab]");
+        if (settingsTab) {
+          const screen = currentScreen();
+          state.settingsTab[screen.id] = settingsTab.getAttribute("data-settings-tab");
+          render();
+          return;
+        }
+
+        if (target.id === "themeToggle") {
+          const current = document.documentElement.getAttribute("data-theme") || "dark";
+          const next = current === "dark" ? "light" : "dark";
+          document.documentElement.setAttribute("data-theme", next);
+          try {
+            localStorage.setItem("joi-concept-theme", next);
+          } catch {
+            // ignore local storage issues
+          }
+          renderThemeButton();
+        }
+      });
+
+      (function initTheme() {
+        let theme = "dark";
+        try {
+          const saved = localStorage.getItem("joi-concept-theme");
+          if (saved === "dark" || saved === "light") theme = saved;
+        } catch {
+          // ignore local storage issues
+        }
+        document.documentElement.setAttribute("data-theme", theme);
+      })();
+
+      render();
+    </script>
+  </body>
+</html>

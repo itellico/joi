@@ -22,6 +22,38 @@ load_project_env() {
 
 load_project_env
 
+normalize_bool_env() {
+  local raw="${1:-}"
+  raw="$(printf "%s" "$raw" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  case "$raw" in
+    1|true|yes|on|enabled) echo "true" ;;
+    0|false|no|off|disabled) echo "false" ;;
+    *) echo "auto" ;;
+  esac
+}
+
+should_run_local_livekit_worker() {
+  local mode flag host host_short alias mini_name mini_short
+
+  mode="$(printf "%s" "${JOI_LIVEKIT_WORKER_MODE:-auto}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  case "$mode" in
+    local|host|enabled) return 0 ;;
+    external|remote|container|disabled) return 1 ;;
+  esac
+
+  flag="$(normalize_bool_env "${JOI_LIVEKIT_LOCAL_WORKER:-}")"
+  [ "$flag" = "true" ] && return 0
+  [ "$flag" = "false" ] && return 1
+
+  host="$(hostname 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  host_short="${host%%.*}"
+  alias="$(printf "%s" "${JOI_MINI_HOST_ALIAS:-mini}" | tr '[:upper:]' '[:lower:]')"
+  mini_name="$(printf "%s" "${JOI_MINI_HOSTNAME:-marcuss-mini}" | tr '[:upper:]' '[:lower:]')"
+  mini_short="${mini_name%%.*}"
+
+  [ "$host" = "$alias" ] || [ "$host" = "$mini_name" ] || [ "$host_short" = "$alias" ] || [ "$host_short" = "$mini_short" ]
+}
+
 # ── Config ──────────────────────────────────────────────────
 CHECK_INTERVAL=30
 STATUS_STALE_AFTER=90
@@ -83,6 +115,10 @@ watchdog_started_at="$(date +%s)"
 gw_last_recovered=0
 last_initial_grace_state=""
 last_dependent_grace_state=""
+livekit_local_worker_enabled=0
+if should_run_local_livekit_worker; then
+  livekit_local_worker_enabled=1
+fi
 
 # ── Single-instance lock (atomic mkdir, bash 3.2 compat) ────
 INSTANCE_TAG=""
@@ -229,6 +265,8 @@ check_autodev() {
 }
 
 check_livekit() {
+  [ "$livekit_local_worker_enabled" -eq 1 ] || return 0
+
   # Process must exist AND its HTTP health server must respond "OK".
   # The LiveKit agents SDK exposes an HTTP health endpoint on a random port.
   # The health port may be on a child process, so check the whole process tree.
@@ -390,6 +428,10 @@ restart_gateway() {
     log "Cannot restart gateway: pnpm not found (set WATCHDOG_PNPM_BIN or install pnpm)"
     return
   fi
+  if ! "$SCRIPTS_DIR/build-joigateway.sh" >> "$LOG_FILE" 2>&1; then
+    log "Cannot restart gateway: JOIGateway build/sign step failed"
+    return
+  fi
   load_project_env
   local pids
   pids="$(gateway_pids)"
@@ -446,6 +488,11 @@ restart_autodev() {
 }
 
 restart_livekit() {
+  if [ "$livekit_local_worker_enabled" -ne 1 ]; then
+    log "Skipping local livekit restart on this host (managed externally)"
+    return
+  fi
+
   log "Restarting livekit..."
   # Kill all existing agent processes (parent + children may be stuck)
   local pids
@@ -489,6 +536,11 @@ if [ -n "$PNPM_BIN" ]; then
   log "Using pnpm binary: $PNPM_BIN"
 else
   log "pnpm binary not found; restart actions for gateway/web/autodev will be skipped"
+fi
+if [ "$livekit_local_worker_enabled" -eq 1 ]; then
+  log "LiveKit worker mode: local"
+else
+  log "LiveKit worker mode: external"
 fi
 
 while true; do

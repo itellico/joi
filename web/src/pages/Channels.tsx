@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import { useLocation } from "react-router-dom";
 import {
   Badge,
   Button,
@@ -14,6 +15,11 @@ import {
   Stack,
   StatusDot,
 } from "../components/ui";
+import {
+  consumeIntegrationWatchdogAlert,
+  consumeIntegrationWatchdogQr,
+  type IntegrationWatchdogAlert,
+} from "../lib/integrationWatchdog";
 
 // ─── Types ───
 
@@ -295,18 +301,27 @@ function channelBadgeStatus(channel: Channel): "success" | "error" | "warning" {
   return "warning";
 }
 
+function channelNeedsAttention(status: string): boolean {
+  return status === "disconnected" || status === "error" || status === "awaiting_code" || status === "awaiting_2fa";
+}
+
 // ─── Main Component ───
 
 export default function Channels({ ws }: { ws: WsHandle }) {
+  const location = useLocation();
   const [channels, setChannels] = useState<Channel[]>([]);
   const [googleAccounts, setGoogleAccounts] = useState<GoogleAccount[]>([]);
   const [webhookBaseUrl, setWebhookBaseUrl] = useState("");
+  const [webhookBaseSource, setWebhookBaseSource] = useState("");
+  const [webhookNetworkMode, setWebhookNetworkMode] = useState("");
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [showAddGoogle, setShowAddGoogle] = useState(false);
   const [qrModal, setQrModal] = useState<{ channelId: string; dataUrl: string } | null>(null);
   const [telegramAuth, setTelegramAuth] = useState<{ channelId: string; mode: "code" | "password" } | null>(null);
   const [messages, setMessages] = useState<ChannelMessageEvent[]>([]);
+  const [watchdogAlert, setWatchdogAlert] = useState<IntegrationWatchdogAlert | null>(null);
+  const [dismissedWatchdogKey, setDismissedWatchdogKey] = useState<string | null>(null);
 
   const fetchChannels = useCallback(async () => {
     try {
@@ -333,18 +348,36 @@ export default function Channels({ ws }: { ws: WsHandle }) {
       const res = await fetch("/api/gateway/webhook-base");
       const data = await res.json() as {
         webhookBaseUrl?: string | null;
+        source?: string | null;
+        networkMode?: string | null;
       };
       const resolved = (data.webhookBaseUrl || "").trim().replace(/\/+$/, "");
       setWebhookBaseUrl(resolved);
+      setWebhookBaseSource((data.source || "").trim());
+      setWebhookNetworkMode((data.networkMode || "").trim().toLowerCase());
     } catch (err) {
       console.error("Failed to resolve webhook base URL:", err);
       setWebhookBaseUrl("");
+      setWebhookBaseSource("");
+      setWebhookNetworkMode("");
     }
   }, []);
 
   useEffect(() => {
     Promise.all([fetchChannels(), fetchGoogleAccounts(), fetchWebhookBase()]).finally(() => setLoading(false));
   }, [fetchChannels, fetchGoogleAccounts, fetchWebhookBase]);
+
+  // Consume watchdog payloads that were queued while user was on another page.
+  useEffect(() => {
+    const alert = consumeIntegrationWatchdogAlert();
+    if (alert) {
+      setWatchdogAlert(alert);
+      setDismissedWatchdogKey(null);
+    }
+
+    const qr = consumeIntegrationWatchdogQr();
+    if (qr) setQrModal({ channelId: qr.channelId, dataUrl: qr.qrDataUrl });
+  }, [location.key]);
 
   // Live status updates via WS
   useEffect(() => {
@@ -398,6 +431,40 @@ export default function Channels({ ws }: { ws: WsHandle }) {
       unsub4();
     };
   }, [ws]);
+
+  useEffect(() => {
+    const pendingTelegram = channels.find((channel) => channel.status === "awaiting_code" || channel.status === "awaiting_2fa");
+    if (pendingTelegram) {
+      setTelegramAuth((prev) => (
+        prev?.channelId === pendingTelegram.id
+          ? prev
+          : { channelId: pendingTelegram.id, mode: pendingTelegram.status === "awaiting_2fa" ? "password" : "code" }
+      ));
+    }
+
+    if (!watchdogAlert) {
+      const unhealthy = channels.find((channel) => channel.enabled && !!channel.last_connected_at && channelNeedsAttention(channel.status));
+      if (unhealthy) {
+        const unhealthyKey = `${unhealthy.id}:${unhealthy.status}`;
+        if (dismissedWatchdogKey === unhealthyKey) return;
+        setWatchdogAlert({
+          channelId: unhealthy.id,
+          channelType: unhealthy.channel_type,
+          status: unhealthy.status,
+          source: "heartbeat",
+          message: `${CHANNEL_LABELS[unhealthy.channel_type] || unhealthy.channel_type} requires reconnect.`,
+          detectedAt: new Date().toISOString(),
+        });
+      }
+      return;
+    }
+
+    const tracked = channels.find((channel) => channel.id === watchdogAlert.channelId);
+    if (tracked?.status === "connected") {
+      setWatchdogAlert(null);
+      setDismissedWatchdogKey(null);
+    }
+  }, [channels, dismissedWatchdogKey, watchdogAlert]);
 
   const handleConnect = async (id: string) => {
     try {
@@ -489,6 +556,47 @@ export default function Channels({ ws }: { ws: WsHandle }) {
       />
 
       <PageBody gap={20}>
+        {watchdogAlert && (
+          <Card className="channels-watchdog-alert">
+            <Row justify="between" align="start" gap={3} wrap>
+              <div>
+                <Row gap={2} className="mb-2">
+                  <Badge status="warning">Connection Alert</Badge>
+                  <Badge status="warning">
+                    {CHANNEL_LABELS[watchdogAlert.channelType] || watchdogAlert.channelType}
+                  </Badge>
+                </Row>
+                <p className="channels-watchdog-title">
+                  {watchdogAlert.message}
+                </p>
+                <MetaText size="xs">
+                  Channel: {watchdogAlert.channelId} · Status: {watchdogAlert.status}
+                </MetaText>
+              </div>
+              <Row gap={2}>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={() => {
+                    void handleConnect(watchdogAlert.channelId);
+                  }}
+                >
+                  Reconnect Now
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    setDismissedWatchdogKey(`${watchdogAlert.channelId}:${watchdogAlert.status}`);
+                    setWatchdogAlert(null);
+                  }}
+                >
+                  Dismiss
+                </Button>
+              </Row>
+            </Row>
+          </Card>
+        )}
+
         {loading ? (
           <Card><MetaText size="sm">Loading...</MetaText></Card>
         ) : isEmpty ? (
@@ -513,6 +621,8 @@ export default function Channels({ ws }: { ws: WsHandle }) {
                               key={ch.id}
                               channel={ch}
                               webhookBaseUrl={webhookBaseUrl}
+                              webhookBaseSource={webhookBaseSource}
+                              webhookNetworkMode={webhookNetworkMode}
                               onConnect={handleConnect}
                               onDisconnect={handleDisconnect}
                               onDelete={handleDeleteChannel}
@@ -648,6 +758,8 @@ function IntegrationPreview({ type, desc, color }: { type: string; desc: string;
 function ChannelCard({
   channel,
   webhookBaseUrl,
+  webhookBaseSource,
+  webhookNetworkMode,
   onConnect,
   onDisconnect,
   onDelete,
@@ -655,6 +767,8 @@ function ChannelCard({
 }: {
   channel: Channel;
   webhookBaseUrl: string;
+  webhookBaseSource: string;
+  webhookNetworkMode: string;
   onConnect: (id: string) => void;
   onDisconnect: (id: string) => void;
   onDelete: (id: string) => void;
@@ -761,6 +875,11 @@ function ChannelCard({
               {!webhookBase && (
                 <MetaText size="xs" className="block mt-1 text-secondary">
                   Could not auto-resolve gateway host yet. Reload this page after gateway is reachable.
+                </MetaText>
+              )}
+              {webhookBase && (webhookBaseSource || webhookNetworkMode) && (
+                <MetaText size="xs" className="block mt-1 text-secondary">
+                  Resolved via {webhookBaseSource || "auto"}{webhookNetworkMode ? ` (${webhookNetworkMode} mode)` : ""}.
                 </MetaText>
               )}
               <MetaText size="xs" className="block mt-1 text-secondary">

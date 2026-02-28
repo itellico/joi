@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Quality OS v3 - Autopilot</title>
+    <style>
+      :root {
+        --bg: #f2f5fb;
+        --panel: #ffffff;
+        --ink: #0f172a;
+        --muted: #64748b;
+        --line: #d8e1f0;
+        --brand: #0a84ff;
+        --ok: #16a34a;
+        --warn: #ea580c;
+        --bad: #dc2626;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        font-family: "SF Pro Display", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: var(--ink);
+        background: radial-gradient(circle at 12% -18%, #e4efff 0%, #f2f5fb 42%), var(--bg);
+      }
+
+      .wrap {
+        max-width: 1160px;
+        margin: 0 auto;
+        padding: 18px 14px 26px;
+        display: grid;
+        gap: 12px;
+      }
+
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 14px;
+      }
+
+      .hero {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .hero h1 {
+        margin: 0;
+        font-size: 26px;
+        font-weight: 650;
+      }
+
+      .hero p {
+        margin: 5px 0 0;
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      .badge {
+        border-radius: 999px;
+        border: 1px solid #b7d8ff;
+        background: #edf6ff;
+        color: #0b61bf;
+        padding: 8px 12px;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
+      .kpis {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .kpi {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 10px;
+      }
+
+      .kpi .label {
+        font-size: 11px;
+        color: var(--muted);
+      }
+
+      .kpi b {
+        display: block;
+        margin-top: 3px;
+        font-size: 22px;
+      }
+
+      .summary {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 10px;
+        align-items: center;
+        margin-top: 10px;
+        border: 1px solid #dbe4f3;
+        border-radius: 12px;
+        padding: 10px;
+        background: #f8fbff;
+      }
+
+      .summary p {
+        margin: 0;
+        font-size: 13px;
+        color: #334155;
+      }
+
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        display: inline-block;
+        margin-right: 6px;
+      }
+
+      .ok { background: var(--ok); }
+      .warn { background: var(--warn); }
+      .bad { background: var(--bad); }
+
+      .grid {
+        display: grid;
+        grid-template-columns: 1.15fr 1fr;
+        gap: 12px;
+      }
+
+      h2 {
+        margin: 0;
+        font-size: 18px;
+        font-weight: 640;
+      }
+
+      .sub {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 10px;
+        font-size: 13px;
+      }
+
+      th,
+      td {
+        border-bottom: 1px solid #e4eaf5;
+        text-align: left;
+        padding: 9px 6px;
+        vertical-align: top;
+      }
+
+      th {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #667085;
+      }
+
+      .pill {
+        border-radius: 999px;
+        padding: 3px 8px;
+        font-size: 11px;
+        border: 1px solid #d6e2f6;
+        background: #f8fbff;
+        color: #37527a;
+      }
+
+      .pill.ok { color: #0f7a3d; border-color: #bde7cf; background: #ecfdf3; }
+      .pill.warn { color: #9a3412; border-color: #fed7aa; background: #fff7ed; }
+      .pill.bad { color: #991b1b; border-color: #fecaca; background: #fef2f2; }
+
+      .list {
+        margin-top: 10px;
+        display: grid;
+        gap: 8px;
+      }
+
+      .item {
+        border: 1px solid #dfe7f4;
+        border-radius: 12px;
+        padding: 10px;
+        background: #fbfdff;
+      }
+
+      .item b {
+        font-size: 13px;
+      }
+
+      .item p {
+        margin: 3px 0 0;
+        font-size: 12px;
+        color: #52617a;
+      }
+
+      .line {
+        margin-top: 10px;
+        border: 1px solid #dbe2ef;
+        border-radius: 12px;
+        background: #0e1627;
+        color: #e7effc;
+        padding: 10px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+      }
+
+      .line p { margin: 0 0 4px; }
+      .line p:last-child { margin-bottom: 0; }
+
+      @media (max-width: 1020px) {
+        .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .grid { grid-template-columns: 1fr; }
+      }
+
+      @media (max-width: 680px) {
+        .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .hero { flex-direction: column; align-items: flex-start; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <section class="card">
+        <div class="hero">
+          <div>
+            <h1>Agent Reliability</h1>
+            <p>No setup. System auto-tests all agents and skills continuously.</p>
+          </div>
+          <span class="badge">Autopilot testing active · every 15m</span>
+        </div>
+
+        <div class="kpis" style="margin-top: 10px;">
+          <div class="kpi"><span class="label">Agents</span><b>12</b></div>
+          <div class="kpi"><span class="label">Skills</span><b>67</b></div>
+          <div class="kpi"><span class="label">Test cases</span><b>412</b></div>
+          <div class="kpi"><span class="label">Runs (24h)</span><b>1,184</b></div>
+          <div class="kpi"><span class="label">Passed</span><b>1,039</b></div>
+          <div class="kpi"><span class="label">Need repair</span><b>23</b></div>
+        </div>
+
+        <div class="summary">
+          <p><span class="dot warn"></span><b>What needs attention now:</b> 4 skills are failing on `personal`; 7 skills have not been tested in last 24h.</p>
+          <span class="pill warn">coverage 89%</span>
+        </div>
+      </section>
+
+      <section class="grid">
+        <section class="card">
+          <h2>All agents</h2>
+          <p class="sub">For each agent: skills working, failing, and missing coverage.</p>
+
+          <table>
+            <thead>
+              <tr>
+                <th>Agent</th>
+                <th>Skills OK</th>
+                <th>Failing</th>
+                <th>Untested (24h)</th>
+                <th>Last run</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>personal</td>
+                <td>18 / 22</td>
+                <td><span class="pill bad">4</span></td>
+                <td><span class="pill warn">2</span></td>
+                <td>2m ago</td>
+              </tr>
+              <tr>
+                <td>knowledge-sync</td>
+                <td>12 / 13</td>
+                <td><span class="pill bad">1</span></td>
+                <td><span class="pill warn">0</span></td>
+                <td>1m ago</td>
+              </tr>
+              <tr>
+                <td>skill-scout</td>
+                <td>8 / 11</td>
+                <td><span class="pill bad">3</span></td>
+                <td><span class="pill warn">1</span></td>
+                <td>6m ago</td>
+              </tr>
+              <tr>
+                <td>store-auditor</td>
+                <td>9 / 9</td>
+                <td><span class="pill ok">0</span></td>
+                <td><span class="pill warn">0</span></td>
+                <td>4m ago</td>
+              </tr>
+              <tr>
+                <td>bmd-uploader</td>
+                <td>7 / 8</td>
+                <td><span class="pill bad">1</span></td>
+                <td><span class="pill warn">1</span></td>
+                <td>11m ago</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="card">
+          <h2>All skills</h2>
+          <p class="sub">Which skills are stable vs. failing across all agents.</p>
+
+          <table>
+            <thead>
+              <tr>
+                <th>Skill</th>
+                <th>Agents covered</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>memory_recall</td><td>5 / 5</td><td><span class="pill bad">failing</span></td></tr>
+              <tr><td>tool_selection</td><td>8 / 8</td><td><span class="pill bad">failing</span></td></tr>
+              <tr><td>task_execution</td><td>6 / 6</td><td><span class="pill ok">stable</span></td></tr>
+              <tr><td>social_posting</td><td>4 / 6</td><td><span class="pill warn">untested on 2 agents</span></td></tr>
+              <tr><td>latency_control</td><td>9 / 9</td><td><span class="pill warn">degrading</span></td></tr>
+              <tr><td>conflict_resolution</td><td>3 / 3</td><td><span class="pill ok">stable</span></td></tr>
+            </tbody>
+          </table>
+        </section>
+      </section>
+
+      <section class="grid">
+        <section class="card">
+          <h2>Auto-repair queue</h2>
+          <p class="sub">Created automatically from failing tests. No manual triage mode required.</p>
+
+          <div class="list">
+            <div class="item">
+              <b><span class="dot bad"></span>P1 personal · tool_selection</b>
+              <p>Status: Needs Repair · linked runs: 7 · opened 5m ago</p>
+            </div>
+            <div class="item">
+              <b><span class="dot warn"></span>P2 knowledge-sync · latency_control</b>
+              <p>Status: Running in AutoDev · linked runs: 12 · opened 19m ago</p>
+            </div>
+            <div class="item">
+              <b><span class="dot ok"></span>P1 personal · memory_recall</b>
+              <p>Status: Ready to Verify · patch generated · waiting auto re-test</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Evidence (latest)</h2>
+          <p class="sub">Log context is tied to the failing skill/agent automatically.</p>
+          <div class="line">
+            <p>[12:58:11] run c7f2 start autopilot batch</p>
+            <p>[12:58:13] personal.memory_recall fail: missing child relation</p>
+            <p>[12:58:14] issue opened: P1 personal.memory_recall</p>
+            <p>[12:58:15] autodev task queued: repair-memory-recall</p>
+            <p>[12:58:37] knowledge-sync.latency_control degraded +320ms</p>
+          </div>
+        </section>
+      </section>
+    </main>
+  </body>
+</html>

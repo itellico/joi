@@ -31,18 +31,28 @@ final class WebSocketClient {
     var isConnected: Bool { state == .connected }
 
     func connect(to urlString: String) {
-        if state == .connected {
-            logger.info("Connect ignored: already connected")
+        let resolvedURLString = GatewayURLResolver.normalizedManualGatewayURL(urlString) ?? urlString
+        guard let url = URL(string: resolvedURLString) else {
+            lastError = "Invalid URL: \(resolvedURLString)"
+            logger.error("Invalid URL: \(resolvedURLString)")
             return
         }
-        // Tear down any in-progress connection/reconnection
+
+        if let currentURL = self.url,
+           currentURL == url,
+           state == .connected || state == .connecting || state == .reconnecting {
+            logger.info("Connect ignored: already targeting \(url.absoluteString, privacy: .public) in state \(String(describing: self.state), privacy: .public)")
+            return
+        }
+
+        // Tear down any in-progress connection/reconnection to a different route.
         if state != .disconnected {
             tearDown()
         }
-        guard let url = URL(string: urlString) else {
-            lastError = "Invalid URL: \(urlString)"
-            logger.error("Invalid URL: \(urlString)")
-            return
+
+        if resolvedURLString != urlString {
+            logger.info("Normalized gateway URL \(urlString, privacy: .public) -> \(resolvedURLString, privacy: .public)")
+            GatewayURLResolver.persistGatewayURL(resolvedURLString)
         }
         self.url = url
         intentionalDisconnect = false
@@ -211,7 +221,17 @@ final class WebSocketClient {
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard !Task.isCancelled else { return }
-            self?.doConnect()
+            guard let self else { return }
+#if os(iOS) && !targetEnvironment(simulator)
+            let refreshedGatewayURL = await GatewayURLResolver.resolveStartupGatewayURL(forceRefresh: true)
+            if let refreshedURL = URL(string: refreshedGatewayURL),
+               refreshedURL != self.url {
+                self.logger.info("Switching reconnect route to \(refreshedGatewayURL, privacy: .public)")
+                self.url = refreshedURL
+                GatewayURLResolver.persistGatewayURL(refreshedGatewayURL)
+            }
+#endif
+            self.doConnect()
         }
     }
 

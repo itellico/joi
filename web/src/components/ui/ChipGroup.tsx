@@ -1,5 +1,3 @@
-import { Row } from "./Row";
-
 interface ChipOption {
   value: string;
   label: string;
@@ -18,31 +16,35 @@ interface ChipGroupProps {
 export function ChipGroup({ options, value, onChange, variant = "pill", className }: ChipGroupProps) {
   if (variant === "stat") {
     return (
-      <Row gap={2} wrap className={className}>
+      <div className={`pill-group pill-group--stats ${className ?? ""}`}>
         {options.map((opt) => (
-          <div
+          <button
             key={opt.value}
-            className={`stat-chip ${value === opt.value ? "stat-chip-active" : ""} cursor-pointer`}
+            type="button"
+            className={`pill pill--stat stat-chip ${value === opt.value ? "is-active stat-chip-active" : ""} cursor-pointer`}
             onClick={() => onChange(opt.value)}
+            aria-pressed={value === opt.value}
           >
-            <span className="stat-chip-label">{opt.label}</span>
-            <span className="stat-chip-value">{opt.count ?? opt.metric ?? 0}</span>
-          </div>
+            <span className="pill-label stat-chip-label">{opt.label}</span>
+            <span className="pill-value stat-chip-value">{opt.count ?? opt.metric ?? 0}</span>
+          </button>
         ))}
-      </Row>
+      </div>
     );
   }
 
   return (
-    <div className={`crm-status-chips ${className ?? ""}`}>
+    <div className={`pill-group pill-group--chips crm-status-chips ${className ?? ""}`}>
       {options.map((opt) => (
         <button
+          type="button"
           key={opt.value}
-          className={`crm-chip ${value === opt.value ? "crm-chip-active" : ""}`}
+          className={`pill pill--filter crm-chip ${value === opt.value ? "is-active crm-chip-active" : ""}`}
           onClick={() => onChange(opt.value)}
+          aria-pressed={value === opt.value}
         >
           {opt.label}
-          {opt.count != null && <span className="crm-chip-count">{opt.count}</span>}
+          {opt.count != null && <span className="pill-count crm-chip-count">{opt.count}</span>}
         </button>
       ))}
     </div>

@@ -4,7 +4,7 @@ export const PROVIDER_COLORS: Record<string, string> = {
   anthropic: "#d97706",
   openrouter: "#6366f1",
   ollama: "#22c55e",
-  deepgram: "#22d3ee",
+  deepgram: "#ff8a2f",
   cartesia: "#f472b6",
 };
 
@@ -12,7 +12,7 @@ export const TASK_COLORS: Record<string, string> = {
   chat: "#60a5fa",
   tool: "#f59e0b",
   utility: "#22c55e",
-  triage: "#a78bfa",
+  triage: "#ff5a1f",
   embedding: "#f472b6",
 };
 
@@ -22,8 +22,8 @@ export const STATUS_COLORS = {
 };
 
 export const CHART_PALETTE = [
-  "#60a5fa", "#f59e0b", "#22c55e", "#a78bfa", "#f472b6",
-  "#d97706", "#6366f1", "#22d3ee", "#fb923c", "#34d399",
+  "#60a5fa", "#f59e0b", "#22c55e", "#ff5a1f", "#f472b6",
+  "#d97706", "#6366f1", "#ff8a2f", "#fb923c", "#34d399",
 ];
 
 export const tooltipStyle = {

@@ -1,8 +1,23 @@
-import { useRef, useEffect, useState, useCallback } from "react";
+import { useRef, useEffect, useState, useCallback, type CSSProperties } from "react";
 import { useChat, type ChatMessage, type ToolCall } from "../hooks/useChat";
 import type { ConnectionStatus, Frame } from "../hooks/useWebSocket";
 import { useVoiceSession, type VoiceTranscript } from "../hooks/useVoiceSession";
 import { getAgentMeta, formatAgentName } from "../lib/agentMeta";
+import {
+  ASSISTANT_VOICE_CONTROL_EVENT,
+  emitAssistantVoiceStatus,
+  type AssistantVoiceControlDetail,
+} from "../lib/assistantVoiceEvents";
+import { useWakeWord } from "../hooks/useWakeWord";
+import { formatDuration, formatToolName } from "../chat/formatters";
+import {
+  buildSimulationMetadata,
+  type ChatExecutionMode,
+  type ChatLatencyPreset,
+} from "../chat/simulation";
+import { CHAT_SURFACE_PROFILES } from "../chat/surfaces";
+import { createThingsTicketFromChat, parseTicketCommand } from "../chat/ticketCapture";
+import { getToolSourceIndicator } from "../chat/sourceIndicators";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import JoiOrb from "./JoiOrb";
@@ -30,11 +45,11 @@ interface AssistantChatProps {
 
 const TOOL_FILLER_CACHE = new Map<string, string>();
 const GENERIC_FILLERS = [
-  "One moment, I am on it...",
-  "Working on that now...",
-  "Let me check that for you...",
-  "I am pulling that up now...",
-  "On it...",
+  "Voice acknowledged. Running that now...",
+  "Routing that through your sources now...",
+  "Give me a second, I am on it...",
+  "I am pulling that up for you now...",
+  "Working it now...",
 ];
 const TOOL_FILLER_RULES: Array<{ pattern: RegExp; filler: string }> = [
   { pattern: /(calendar|event|schedule)/i, filler: "Checking your calendar now..." },
@@ -47,44 +62,37 @@ const TOOL_FILLER_RULES: Array<{ pattern: RegExp; filler: string }> = [
   { pattern: /(code|autodev|terminal|shell|command|git)/i, filler: "Running that task now..." },
 ];
 
-function getToolAwareFiller(message: ChatMessage): string {
+function getToolAwareFiller(message: ChatMessage, override?: string | null): string {
+  if (override && override.trim()) return override.trim();
   const pendingTool = message.toolCalls?.find((tc) => tc.result === undefined && !tc.error);
   if (pendingTool?.name) {
     const key = pendingTool.name.toLowerCase();
     const cached = TOOL_FILLER_CACHE.get(key);
     if (cached) return cached;
     const rule = TOOL_FILLER_RULES.find((r) => r.pattern.test(key));
-    const filler = rule?.filler ?? "Working on that now...";
+    const filler = rule?.filler ?? "Routing that through your sources now...";
     TOOL_FILLER_CACHE.set(key, filler);
     return filler;
   }
   return GENERIC_FILLERS[Math.abs(message.id.charCodeAt(0)) % GENERIC_FILLERS.length];
 }
 
-function formatDuration(ms: number): string {
-  return ms < 1000
-    ? `${Math.round(ms)}ms`
-    : `${(ms / 1000).toFixed(1)}s`;
-}
-
-function formatToolName(name: string): string {
-  const normalized = name.trim().toLowerCase();
-  if (normalized === "contacts_search") return "Contact search";
-  return normalized
-    .replace(/[_-]+/g, " ")
-    .replace(/\b\w/g, (ch) => ch.toUpperCase());
-}
-
 export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatProps) {
+  const surface = CHAT_SURFACE_PROFILES.assistant;
   const { messages, isStreaming, conversationId, sendMessage, loadConversation, newConversation } = useChat({
     send: ws.send,
     on: ws.on,
   });
   const [mode, setMode] = useState<AssistantMode>("closed");
+  const [wakeWordEnabled, setWakeWordEnabled] = useState(true);
   const [input, setInput] = useState("");
+  const [chatExecutionMode, setChatExecutionMode] = useState<ChatExecutionMode>(surface.defaultExecutionMode);
+  const [chatLatencyPreset, setChatLatencyPreset] = useState<ChatLatencyPreset>(surface.defaultLatencyPreset);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [debugCopied, setDebugCopied] = useState(false);
+  const [ticketNote, setTicketNote] = useState<string | null>(null);
+  const [streamingFillers, setStreamingFillers] = useState<Record<string, string>>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const voiceSyncTimerRef = useRef<number | null>(null);
@@ -101,8 +109,17 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
     }, 350);
   }, [loadConversation]);
 
+  // Client-side stop phrase pattern (mirrors gateway VOICE_STOP_PHRASES)
+  const voiceDisconnectRef = useRef<() => void>(() => {});
+
   const handleFinalTranscript = useCallback(
-    (_transcript: VoiceTranscript) => {
+    (transcript: VoiceTranscript) => {
+      // Client-side stop command detection (fast fallback before gateway responds)
+      if (transcript.speaker === "user" && /\bjoi\s+(off|aus|ruhe|stop)\b/i.test(transcript.text)) {
+        console.log("[voice] Stop phrase detected in transcript:", transcript.text);
+        voiceDisconnectRef.current();
+        return;
+      }
       if (!conversationId) return;
       scheduleVoiceSync(conversationId);
     },
@@ -122,6 +139,7 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
     onFinalTranscript: handleFinalTranscript,
     onConversationReady: handleVoiceConversationReady,
   });
+  voiceDisconnectRef.current = voice.disconnect;
 
   useEffect(() => {
     return () => {
@@ -129,6 +147,16 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
         window.clearTimeout(voiceSyncTimerRef.current);
       }
     };
+  }, []);
+
+  // Fetch wake word setting from backend
+  useEffect(() => {
+    fetch("/api/settings")
+      .then((r) => r.json())
+      .then((s) => {
+        if (s?.livekit?.wakeWordEnabled === false) setWakeWordEnabled(false);
+      })
+      .catch(() => {});
   }, []);
 
   const fetchConversations = useCallback(() => {
@@ -152,6 +180,56 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
     }
   }, [isStreaming, messages.length, mode, historyOpen, fetchConversations]);
 
+  // Pull dynamic chat fillers from backend humanizer module for streaming assistant bubbles.
+  useEffect(() => {
+    const pendingMessages = messages
+      .filter((msg) => msg.role === "assistant" && msg.isStreaming && !msg.content.trim())
+      .filter((msg) => !streamingFillers[msg.id]);
+
+    if (pendingMessages.length === 0) return;
+
+    for (const msg of pendingMessages) {
+      const pendingTool = msg.toolCalls?.find((tc) => tc.result === undefined && !tc.error);
+      void fetch("/api/humanizer/filler", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          channel: "chat",
+          stage: "chat_streaming",
+          language: navigator.language || "en",
+          conversationId,
+          agentId: msg.agentId || "personal",
+          toolName: pendingTool?.name || null,
+          toolInput: pendingTool?.input || null,
+          allowEmoji: true,
+          emitEvent: false,
+        }),
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          const filler = typeof data?.filler === "string" ? data.filler.trim() : "";
+          if (!filler) return;
+          setStreamingFillers((prev) => (prev[msg.id] ? prev : { ...prev, [msg.id]: filler }));
+        })
+        .catch(() => {});
+    }
+  }, [messages, conversationId, streamingFillers]);
+
+  useEffect(() => {
+    const activeIds = new Set(
+      messages
+        .filter((msg) => msg.role === "assistant" && msg.isStreaming && !msg.content.trim())
+        .map((msg) => msg.id),
+    );
+    setStreamingFillers((prev) => {
+      const next: Record<string, string> = {};
+      for (const [id, filler] of Object.entries(prev)) {
+        if (activeIds.has(id)) next[id] = filler;
+      }
+      return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+    });
+  }, [messages]);
+
   // Auto-start voice globally (including closed bubble mode).
   // Skip auto-connect if LiveKit URL is not configured or server is unreachable.
   const [voiceAutoConnectAttempted, setVoiceAutoConnectAttempted] = useState(false);
@@ -163,6 +241,86 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
     setVoiceAutoConnectAttempted(true);
     void voice.connect();
   }, [ws.status, voice.state, voice.error, voice.connect, voiceAutoConnectAttempted]);
+
+  useEffect(() => {
+    emitAssistantVoiceStatus({
+      state: voice.state,
+      isMuted: voice.isMuted,
+      error: voice.error,
+      isListening: voice.state !== "idle" && !voice.isMuted && !voice.error,
+    });
+  }, [voice.state, voice.isMuted, voice.error]);
+
+  useEffect(() => {
+    const onVoiceControl = (event: Event) => {
+      const custom = event as CustomEvent<AssistantVoiceControlDetail>;
+      const action = custom.detail?.action;
+      if (!action) return;
+
+      if (action === "status") {
+        emitAssistantVoiceStatus({
+          state: voice.state,
+          isMuted: voice.isMuted,
+          error: voice.error,
+          isListening: voice.state !== "idle" && !voice.isMuted && !voice.error,
+        });
+        return;
+      }
+
+      if (action === "stop") {
+        voice.disconnect();
+        return;
+      }
+
+      if (action === "connect") {
+        if (ws.status === "connected" && voice.state === "idle") {
+          void voice.connect();
+        }
+        return;
+      }
+
+      if (voice.state === "idle") return;
+
+      if (action === "toggleMute") {
+        void voice.toggleMute();
+        return;
+      }
+      if (action === "mute" && !voice.isMuted) {
+        void voice.toggleMute();
+        return;
+      }
+      if (action === "unmute" && voice.isMuted) {
+        void voice.toggleMute();
+      }
+    };
+
+    window.addEventListener(ASSISTANT_VOICE_CONTROL_EVENT, onVoiceControl as EventListener);
+    return () => {
+      window.removeEventListener(ASSISTANT_VOICE_CONTROL_EVENT, onVoiceControl as EventListener);
+    };
+  }, [voice.connect, voice.disconnect, voice.isMuted, voice.state, voice.toggleMute, ws.status]);
+
+  // ── Wake word detection (activates after voice disconnects) ──
+  const wakeWord = useWakeWord();
+
+  useEffect(() => {
+    if (wakeWordEnabled && voice.state === "idle" && voiceAutoConnectAttempted) {
+      // Voice was disconnected (stop command or error) — listen for wake word
+      void wakeWord.start();
+    } else {
+      // Voice is active or wake word disabled — stop listening
+      wakeWord.stop();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voice.state, voiceAutoConnectAttempted, wakeWordEnabled]);
+
+  // ── Listen for gateway stop_command events ──
+  useEffect(() => {
+    return ws.on("voice.stop_command", () => {
+      console.log("[voice] Gateway stop command received, disconnecting");
+      voice.disconnect();
+    });
+  }, [ws, voice.disconnect]);
 
   // Auto-scroll
   useEffect(() => {
@@ -178,8 +336,32 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || isStreaming) return;
-    sendMessage(input.trim(), chatMode, "personal");
+    const trimmedInput = input.trim();
+    if (!trimmedInput || isStreaming) return;
+    const ticketCommand = parseTicketCommand(trimmedInput);
+    if (ticketCommand) {
+      void createThingsTicketFromChat({
+        conversationId,
+        messages,
+        note: ticketCommand.note,
+        kind: ticketCommand.kind,
+        pendingUserMessage: trimmedInput,
+        commandText: trimmedInput,
+        source: "assistant-chat",
+      })
+        .then((result) => {
+          setTicketNote(`Ticket created: ${result.title}`);
+        })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : "Failed to create ticket";
+          setTicketNote(message);
+        });
+      setInput("");
+      return;
+    }
+    const simulationMetadata = buildSimulationMetadata(selectedMode, chatExecutionMode, chatLatencyPreset);
+    sendMessage(trimmedInput, selectedMode, surface.agentId, simulationMetadata);
+    setTicketNote(null);
     setInput("");
   };
 
@@ -215,11 +397,17 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
     }
   };
 
+  const selectedMode = surface.modeLock || chatMode;
+
   const copyDebug = useCallback(() => {
     const debug = {
       conversationId,
-      chatMode,
-      agent: "personal",
+      chatMode: selectedMode,
+      agent: surface.agentId,
+      simulation: {
+        executionMode: chatExecutionMode,
+        latencyPreset: chatLatencyPreset,
+      },
       messages: messages.map((m) => ({
         id: m.id,
         role: m.role,
@@ -246,7 +434,14 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
       setDebugCopied(true);
       setTimeout(() => setDebugCopied(false), 2000);
     });
-  }, [conversationId, chatMode, messages]);
+  }, [
+    chatExecutionMode,
+    chatLatencyPreset,
+    conversationId,
+    messages,
+    selectedMode,
+    surface.agentId,
+  ]);
 
   const handleVoiceMuteToggle = useCallback(() => {
     if (voice.state === "idle") {
@@ -261,13 +456,14 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
     const bubbleActive = voice.state !== "idle" && !voice.isMuted && !voice.error;
     const bubbleIntensity = Math.max(voice.audioLevel, voice.agentAudioLevel, bubbleActive ? 0.30 : 0.08);
     return (
-      <button className="assistant-bubble" onClick={() => setMode("modal")} title="Chat with JOI">
+      <button className="assistant-bubble" onClick={() => setMode("modal")} title="Open JOI Voice">
         <JoiOrb
           size={32}
-          active={bubbleActive}
-          intensity={bubbleIntensity}
+          active
+          intensity={Math.max(bubbleIntensity, 0.2)}
           variant={bubbleActive ? "firestorm" : "transparent"}
           rings={3}
+          animated
           ariaLabel="JOI"
         />
       </button>
@@ -281,18 +477,25 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
           <JoiOrb
             className="assistant-welcome-avatar"
             size={48}
-            active={voice.state !== "idle" && !voice.isMuted}
-            intensity={Math.max(voice.audioLevel, voice.agentAudioLevel, 0.10)}
-            variant={(voice.state !== "idle" && !voice.error && !voice.isMuted) ? "firestorm" : "transparent"}
+            active
+            intensity={Math.max(voice.audioLevel, voice.agentAudioLevel, 0.22)}
+            variant="firestorm"
             rings={3}
+            animated
             ariaLabel="JOI"
           />
-          <p className="assistant-welcome-text">How can I help you?</p>
+          <p className="assistant-welcome-text">Speak or type to start the voice flow.</p>
         </div>
       )}
-      {messages.map((msg) => (
-        <AssistantMessageBubble key={msg.id} message={msg} />
-      ))}
+      {messages.map((msg) => {
+        return (
+          <AssistantMessageBubble
+            key={msg.id}
+            message={msg}
+            streamingFiller={streamingFillers[msg.id]}
+          />
+        );
+      })}
       {voice.state !== "idle"
         && voice.interimTranscript?.speaker === "user"
         && voice.interimTranscript?.text?.trim() && (
@@ -303,26 +506,25 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
   );
 
   const voiceStatus = voice.state === "idle"
-    ? "Voice off"
+    ? "Voice link off"
     : voice.error
-      ? "Voice error"
+      ? "Voice link error"
       : voice.state === "connecting"
-        ? "Connecting..."
+        ? "Linking voice..."
         : voice.isMuted
-          ? "Muted"
+          ? "Voice muted"
           : voice.activity === "agentSpeaking"
-            ? "Speaking..."
+            ? "JOI speaking..."
             : voice.activity === "processing"
-              ? "Thinking..."
+              ? "Routing sources..."
               : voice.activity === "waitingForAgent"
-                ? "Waiting..."
-                : "Listening...";
+                ? "Waiting on source..."
+                : "Listening live...";
 
   const voiceSubtitle = voice.state !== "idle"
-    ? (voice.error ? "Voice error" : voiceStatus)
-    : "Personal Assistant";
+    ? (voice.error ? "Voice link error" : voiceStatus)
+    : "Voice-first assistant";
 
-  const voiceOrbActive = voice.state !== "idle" && !voice.error && !voice.isMuted;
   const voiceOrbIntensity = (() => {
     const level = Math.max(voice.audioLevel, voice.agentAudioLevel);
     if (voice.state === "idle") return 0.10;
@@ -339,21 +541,49 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
   })();
 
   const composeArea = (
-    <form className="assistant-compose" onSubmit={handleSubmit}>
-      <textarea
-        value={input}
-        onChange={(e) => setInput(e.target.value)}
-        onKeyDown={handleKeyDown}
-        placeholder="Message JOI..."
-        disabled={ws.status !== "connected"}
-        rows={1}
-      />
-      <button type="submit" disabled={!input.trim() || isStreaming || ws.status !== "connected"}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" />
-        </svg>
-      </button>
-    </form>
+    <>
+      {surface.showSimulationControls && (
+        <div className="assistant-qa-toolbar">
+          <label className="assistant-qa-check">
+            mode
+            <select value={chatExecutionMode} onChange={(e) => setChatExecutionMode(e.target.value as ChatExecutionMode)}>
+              <option value="live">live</option>
+              <option value="shadow">shadow</option>
+              <option value="dry_run">dry_run</option>
+            </select>
+          </label>
+          <label className="assistant-qa-check">
+            latency
+            <select value={chatLatencyPreset} onChange={(e) => setChatLatencyPreset(e.target.value as ChatLatencyPreset)}>
+              <option value="none">none</option>
+              <option value="light">light</option>
+              <option value="realistic">realistic</option>
+              <option value="stress">stress</option>
+            </select>
+          </label>
+        </div>
+      )}
+      {ticketNote && (
+        <div className="assistant-qa-toolbar">
+          <span className="assistant-qa-note">{ticketNote}</span>
+        </div>
+      )}
+      <form className="assistant-compose" onSubmit={handleSubmit}>
+        <textarea
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder="Message JOI..."
+          disabled={ws.status !== "connected"}
+          rows={1}
+        />
+        <button type="submit" disabled={!input.trim() || isStreaming || ws.status !== "connected"}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" />
+          </svg>
+        </button>
+      </form>
+    </>
   );
 
   // ── Modal (floating overlay) ──
@@ -365,10 +595,11 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
             <JoiOrb
               className="assistant-header-avatar"
               size={24}
-              active={voiceOrbActive}
-              intensity={voiceOrbIntensity}
-              variant={voiceOrbActive ? "firestorm" : "transparent"}
+              active
+              intensity={Math.max(voiceOrbIntensity, 0.24)}
+              variant="firestorm"
               rings={2}
+              animated
               ariaLabel="JOI"
             />
             <div className="assistant-header-title-wrap">
@@ -428,10 +659,11 @@ export default function AssistantChat({ ws, chatMode = "api" }: AssistantChatPro
             <JoiOrb
               className="assistant-docked-avatar"
               size={32}
-              active={voiceOrbActive}
-              intensity={voiceOrbIntensity}
-              variant={voiceOrbActive ? "firestorm" : "transparent"}
+              active
+              intensity={Math.max(voiceOrbIntensity, 0.22)}
+              variant="firestorm"
               rings={2}
+              animated
               ariaLabel="JOI"
             />
             <div>
@@ -546,7 +778,13 @@ function ElapsedTimer({ startedAt }: { startedAt: number }) {
   );
 }
 
-function AssistantMessageBubble({ message }: { message: ChatMessage }) {
+function AssistantMessageBubble({
+  message,
+  streamingFiller,
+}: {
+  message: ChatMessage;
+  streamingFiller?: string;
+}) {
   if (message.role === "system") {
     return (
       <div className="assistant-msg system">
@@ -563,7 +801,7 @@ function AssistantMessageBubble({ message }: { message: ChatMessage }) {
     );
   }
 
-  const filler = getToolAwareFiller(message);
+  const filler = getToolAwareFiller(message, streamingFiller);
   const hasTextContent = message.content.trim().length > 0;
   const hasToolCalls = Boolean(message.toolCalls?.length);
   const hasPlannedSteps = Boolean(message.plannedSteps?.length);
@@ -577,11 +815,11 @@ function AssistantMessageBubble({ message }: { message: ChatMessage }) {
         <JoiOrb
           className="assistant-msg-avatar"
           size={18}
-          active={Boolean(message.isStreaming)}
-          intensity={message.isStreaming ? 0.44 : 0.14}
+          active
+          intensity={message.isStreaming ? 0.5 : 0.2}
           variant={message.isStreaming ? "firestorm" : "transparent"}
           rings={2}
-          animated={Boolean(message.isStreaming)}
+          animated
           ariaLabel="JOI"
         />
         {showAgentBadge && (
@@ -761,6 +999,7 @@ function AssistantMsgMeta({ message }: { message: ChatMessage }) {
 function AssistantToolBadge({ tc }: { tc: ToolCall }) {
   const isPending = tc.result === undefined;
   const isError = tc.error;
+  const source = getToolSourceIndicator(tc.name);
   const [elapsedMs, setElapsedMs] = useState<number>(() => {
     if (tc.startedAt) return Math.max(0, Date.now() - tc.startedAt);
     return 0;
@@ -783,9 +1022,17 @@ function AssistantToolBadge({ tc }: { tc: ToolCall }) {
 
   return (
     <span
-      className={`assistant-tool-badge${isError ? " error" : isPending ? "" : " done"}`}
+      className={`assistant-tool-badge${isError ? " error" : isPending ? " pending" : " done"}`}
       title={tc.name}
     >
+      <span
+        className="tool-source-sigil"
+        title={source.label}
+        style={{ "--sig-c1": source.c1, "--sig-c2": source.c2 } as CSSProperties}
+      >
+        <span className="tool-source-pip" />
+        <span className="tool-source-eq"><i /><i /><i /></span>
+      </span>
       <span className="assistant-tool-name">{toolLabel}</span>
       {durationLabel && <span className="assistant-tool-duration">{durationLabel}</span>}
       {isPending && !isError && <span className="assistant-tool-spinner" />}

@@ -175,7 +175,7 @@ export default function CostsReport({ days }: { days: number }) {
               <Area type="monotone" dataKey="anthropic" stackId="1" fill="#d97706" stroke="#d97706" fillOpacity={0.4} name="Anthropic" />
               <Area type="monotone" dataKey="openrouter" stackId="1" fill="#6366f1" stroke="#6366f1" fillOpacity={0.4} name="OpenRouter" />
               <Area type="monotone" dataKey="ollama" stackId="1" fill="#22c55e" stroke="#22c55e" fillOpacity={0.4} name="Ollama" />
-              <Area type="monotone" dataKey="deepgram" stackId="1" fill="#22d3ee" stroke="#22d3ee" fillOpacity={0.4} name="Deepgram" />
+              <Area type="monotone" dataKey="deepgram" stackId="1" fill="#ff8a2f" stroke="#ff8a2f" fillOpacity={0.4} name="Deepgram" />
               <Area type="monotone" dataKey="cartesia" stackId="1" fill="#f472b6" stroke="#f472b6" fillOpacity={0.4} name="Cartesia" />
             </AreaChart>
           </ResponsiveContainer>
@@ -189,7 +189,7 @@ export default function CostsReport({ days }: { days: number }) {
               <XAxis dataKey="day" tick={{ fontSize: 10 }} stroke="var(--text-muted)" tickFormatter={formatDate} />
               <YAxis tick={{ fontSize: 10 }} stroke="var(--text-muted)" tickFormatter={(v) => formatCost(v)} />
               <Tooltip {...tooltipStyle} labelFormatter={(v: any) => formatDate(String(v))} formatter={(v: any) => [formatCost(Number(v ?? 0)), ""]} />
-              <Line type="monotone" dataKey="cumulative_cost" stroke="#a78bfa" strokeWidth={2} dot={false} name="Cumulative" />
+              <Line type="monotone" dataKey="cumulative_cost" stroke="#ff5a1f" strokeWidth={2} dot={false} name="Cumulative" />
               <Line type="monotone" dataKey="daily_cost" stroke="var(--text-muted)" strokeWidth={1} dot={false} name="Daily" />
             </LineChart>
           </ResponsiveContainer>

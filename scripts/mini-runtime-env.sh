@@ -148,6 +148,20 @@ print(rewritten)
 PY
 }
 
+rewrite_with_target() {
+  local value="${1:-}"
+  local target="${2:-}"
+  if [[ -z "$value" ]]; then
+    printf "%s" "$value"
+    return
+  fi
+  if is_ipv4 "$target"; then
+    rewrite_url_host "$value" "$target"
+  else
+    printf "%s" "$value"
+  fi
+}
+
 emit_var() {
   local key="$1"
   local value="$2"
@@ -180,13 +194,52 @@ fi
 emit_var "JOI_RUNTIME_ENV" "$runtime_env"
 emit_var "APNS_PRODUCTION" "$apns_production"
 
+emit_var "JOI_MINI_ACTIVE_MODE" "$resolved_mode"
+
+# Webhook URL overrides:
+# - Home/Road entries are normalized against their respective target IPs.
+# - Generic entry follows active mode unless explicitly set.
+gateway_port="${GATEWAY_PORT:-3100}"
+webhook_home="${JOI_WEBHOOK_BASE_URL_HOME:-}"
+webhook_road="${JOI_WEBHOOK_BASE_URL_ROAD:-}"
+webhook_active="${JOI_WEBHOOK_BASE_URL:-}"
+
+if [[ -z "$webhook_home" ]] && is_ipv4 "$HOME_IP"; then
+  webhook_home="http://${HOME_IP}:${gateway_port}"
+fi
+if [[ -z "$webhook_road" ]] && is_ipv4 "$ROAD_IP"; then
+  webhook_road="http://${ROAD_IP}:${gateway_port}"
+fi
+
+webhook_home="$(rewrite_with_target "$webhook_home" "$HOME_IP")"
+webhook_road="$(rewrite_with_target "$webhook_road" "$ROAD_IP")"
+
+if [[ -z "$webhook_active" ]]; then
+  if [[ "$resolved_mode" == "road" ]] && [[ -n "$webhook_road" ]]; then
+    webhook_active="$webhook_road"
+  elif [[ -n "$webhook_home" ]]; then
+    webhook_active="$webhook_home"
+  elif is_ipv4 "$resolved_ip"; then
+    webhook_active="http://${resolved_ip}:${gateway_port}"
+  fi
+fi
+webhook_active="$(rewrite_with_target "$webhook_active" "$resolved_ip")"
+
+if [[ -n "$webhook_home" ]]; then
+  emit_var "JOI_WEBHOOK_BASE_URL_HOME" "$webhook_home"
+fi
+if [[ -n "$webhook_road" ]]; then
+  emit_var "JOI_WEBHOOK_BASE_URL_ROAD" "$webhook_road"
+fi
+if [[ -n "$webhook_active" ]]; then
+  emit_var "JOI_WEBHOOK_BASE_URL" "$webhook_active"
+fi
+
 if ! is_ipv4 "$resolved_ip"; then
-  # No safe target to rewrite against.
-  emit_var "JOI_MINI_ACTIVE_MODE" "$resolved_mode"
+  # No safe active target to rewrite mode-sensitive URLs against.
   exit 0
 fi
 
-emit_var "JOI_MINI_ACTIVE_MODE" "$resolved_mode"
 emit_var "JOI_MINI_ACTIVE_IP" "$resolved_ip"
 
 for key in DATABASE_URL OLLAMA_URL LIVEKIT_URL JOI_TTS_CACHE_REDIS_URL MEM0_PGVECTOR_DSN; do

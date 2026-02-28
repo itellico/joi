@@ -183,6 +183,7 @@ export default function Tasks({ ws, chatMode }: TasksProps) {
   const [allTasks, setAllTasks] = useState<Task[]>([]);
   const [logbook, setLogbook] = useState<CompletedTask[]>([]);
   const [logbookLimit, setLogbookLimit] = useState(100);
+  const [projectLogbookPageSize, setProjectLogbookPageSize] = useState(25);
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [projects, setProjects] = useState<Project[]>([]);
   const [areas, setAreas] = useState<Area[]>([]);
@@ -224,13 +225,14 @@ export default function Tasks({ ws, chatMode }: TasksProps) {
 
   const fetchAll = useCallback(async () => {
     try {
-      const [tRes, pRes, aRes, tagRes, hRes, lpRes] = await Promise.all([
+      const [tRes, pRes, aRes, tagRes, hRes, lpRes, settingsRes] = await Promise.all([
         fetch("/api/tasks"),
         fetch("/api/tasks/projects"),
         fetch("/api/tasks/areas"),
         fetch("/api/tasks/tags"),
         fetch("/api/tasks/headings"),
         fetch("/api/tasks/locked-projects"),
+        fetch("/api/settings"),
       ]);
       const tData = await tRes.json();
       const pData = await pRes.json();
@@ -238,6 +240,7 @@ export default function Tasks({ ws, chatMode }: TasksProps) {
       const tagData = await tagRes.json();
       const hData = await hRes.json();
       const lpData = await lpRes.json();
+      const settingsData = await settingsRes.json();
 
       const flat: Task[] = [];
       for (const list of Object.values(tData.tasks) as Task[][]) flat.push(...list);
@@ -248,6 +251,12 @@ export default function Tasks({ ws, chatMode }: TasksProps) {
       setAllTags(tagData.tags || []);
       setProjectHeadings(hData.headings || {});
       setLockedProjects(lpData.lockedProjects || []);
+      const configuredLogbookPageSize = Number(settingsData?.tasks?.projectLogbookPageSize);
+      setProjectLogbookPageSize(
+        Number.isFinite(configuredLogbookPageSize)
+          ? Math.min(200, Math.max(10, Math.floor(configuredLogbookPageSize)))
+          : 25,
+      );
       fetchConversationMap();
     } catch (err) {
       console.error("Failed to load tasks:", err);
@@ -457,8 +466,17 @@ export default function Tasks({ ws, chatMode }: TasksProps) {
   };
 
   const handleDeleteTask = async (uuid: string) => {
+    const task = allTasks.find((t) => t.uuid === uuid);
+    if (!task) return;
     setAllTasks((prev) => prev.filter((t) => t.uuid !== uuid));
-    await fetch(`/api/tasks/${uuid}`, { method: "DELETE" });
+    try {
+      const res = await fetch(`/api/tasks/${uuid}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(await res.text());
+    } catch (err) {
+      console.error("Failed to delete task:", err);
+      setAllTasks((prev) => prev.some((t) => t.uuid === uuid) ? prev : [task, ...prev]);
+      return;
+    }
     setTimeout(fetchAll, 2000);
   };
 
@@ -531,8 +549,43 @@ export default function Tasks({ ws, chatMode }: TasksProps) {
     setTimeout(fetchAll, 2000);
   };
 
+  const handleMoveTaskToSection = async (uuid: string, projectUuid: string, headingId: string | null, headingTitle: string) => {
+    const task = allTasks.find((t) => t.uuid === uuid);
+    if (!task) return;
+    const project = projects.find((p) => p.uuid === projectUuid);
+    const nextHeadingTitle = headingId ? headingTitle : null;
+    if (task.projectUuid === projectUuid && task.headingTitle === nextHeadingTitle) return;
+    const previous = task;
+    setAllTasks((prev) => prev.map((t) => {
+      if (t.uuid !== uuid) return t;
+      return {
+        ...t,
+        projectUuid,
+        projectTitle: project ? project.title : t.projectTitle,
+        areaUuid: project ? project.areaUuid : t.areaUuid,
+        areaTitle: project ? project.areaTitle : t.areaTitle,
+        headingTitle: nextHeadingTitle,
+      };
+    }));
+    const body: Record<string, string> = { listId: projectUuid };
+    if (headingId) body.headingId = headingId;
+    try {
+      const res = await fetch(`/api/tasks/${uuid}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(await res.text());
+    } catch (err) {
+      console.error("Failed to move task between sections:", err);
+      setAllTasks((prev) => prev.map((t) => t.uuid === uuid ? previous : t));
+      return;
+    }
+    setTimeout(fetchAll, 2000);
+  };
+
   // Content based on selection
-  type Section = { label: string; tasks: Task[]; isProject?: boolean; projectUuid?: string; taskCount?: number; isArea?: boolean; areaIcon?: boolean };
+  type Section = { label: string; tasks: Task[]; isProject?: boolean; projectUuid?: string; taskCount?: number; isArea?: boolean; areaIcon?: boolean; headingId?: string | null };
 
   const getContent = (): { title: string; subtitle?: string; notes?: string | null; icon?: string; sections: Section[] } => {
     if (selected.kind === "list") {
@@ -596,20 +649,20 @@ export default function Tasks({ ws, chatMode }: TasksProps) {
 
       const sections: Section[] = [];
       // Tasks with no heading first
-      const noHeading = byHeading.get("");
-      if (noHeading) sections.push({ label: "", tasks: noHeading });
+      const noHeading = byHeading.get("") || [];
+      if (projTasks.length > 0 || headings.length > 0) sections.push({ label: "", tasks: noHeading, headingId: null });
 
       // Then each heading (from DB order), even if it has no tasks
       for (const h of headings) {
         const tasks = byHeading.get(h.title) || [];
-        sections.push({ label: h.title, tasks });
+        sections.push({ label: h.title, tasks, headingId: h.uuid });
       }
 
       // Any heading titles from tasks that weren't in the headings list
       for (const [heading, tasks] of byHeading) {
         if (heading === "") continue;
         if (headings.some((h) => h.title === heading)) continue;
-        sections.push({ label: heading, tasks });
+        sections.push({ label: heading, tasks, headingId: undefined });
       }
 
       return { title: selected.title, subtitle: selected.areaTitle || undefined, notes: proj?.notes || null, icon: "project", sections };
@@ -771,6 +824,7 @@ export default function Tasks({ ws, chatMode }: TasksProps) {
             onContextMenu={setContextMenu} onAppendChecklist={handleAppendChecklist}
             onToggleChecklistItem={handleToggleChecklistItem}
             onDeleteChecklistItem={handleDeleteChecklistItem}
+            onDeleteTask={handleDeleteTask}
           />
         ) : selected.kind === "logbook" ? (
           <LogbookView
@@ -789,6 +843,7 @@ export default function Tasks({ ws, chatMode }: TasksProps) {
             onContextMenu={setContextMenu} onAppendChecklist={handleAppendChecklist}
             onToggleChecklistItem={handleToggleChecklistItem}
             onDeleteChecklistItem={handleDeleteChecklistItem}
+            onDeleteTask={handleDeleteTask}
             isLockedProject={isSelectedLocked}
             taskConversationMap={taskConversationMap}
             onStartCoding={handleStartCoding}
@@ -796,6 +851,8 @@ export default function Tasks({ ws, chatMode }: TasksProps) {
             onUpdateProject={handleUpdateProject}
             onDeleteProject={handleDeleteProject}
             onRefresh={fetchAll}
+            onMoveTaskToSection={handleMoveTaskToSection}
+            projectLogbookPageSize={projectLogbookPageSize}
           />
         ) : null}
 
@@ -888,7 +945,7 @@ export default function Tasks({ ws, chatMode }: TasksProps) {
 
 /* ── Sub-views ── */
 
-function SearchView({ results, logbookResults, query, searchByList, completing, uncompleting, editingUuid, allTags, onComplete, onUncomplete, onUpdate, onStartEdit, onCancelEdit, onContextMenu, onAppendChecklist, onToggleChecklistItem, onDeleteChecklistItem }: {
+function SearchView({ results, logbookResults, query, searchByList, completing, uncompleting, editingUuid, allTags, onComplete, onUncomplete, onUpdate, onStartEdit, onCancelEdit, onContextMenu, onAppendChecklist, onToggleChecklistItem, onDeleteChecklistItem, onDeleteTask }: {
   results: Task[]; logbookResults: CompletedTask[]; query: string;
   searchByList: Map<string, Task[]>; completing: Set<string>; uncompleting: Set<string>;
   editingUuid: string | null; allTags: string[]; projects: Project[]; areas: Area[];
@@ -899,6 +956,7 @@ function SearchView({ results, logbookResults, query, searchByList, completing, 
   onAppendChecklist: (u: string, item: string) => void;
   onToggleChecklistItem: (taskUuid: string, itemUuid: string, completed: boolean) => void;
   onDeleteChecklistItem: (taskUuid: string, itemUuid: string) => void;
+  onDeleteTask: (u: string) => void;
 }) {
   return (
     <>
@@ -917,7 +975,8 @@ function SearchView({ results, logbookResults, query, searchByList, completing, 
                 isCompleting={completing.has(task.uuid)} isEditing={editingUuid === task.uuid}
                 onStartEdit={() => onStartEdit(task.uuid)} onCancelEdit={onCancelEdit}
                 allTags={allTags} onContextMenu={onContextMenu} onAppendChecklist={onAppendChecklist}
-                onToggleChecklistItem={onToggleChecklistItem} onDeleteChecklistItem={onDeleteChecklistItem} />
+                onToggleChecklistItem={onToggleChecklistItem} onDeleteChecklistItem={onDeleteChecklistItem}
+                onDeleteTask={onDeleteTask} />
             ))}
           </div>
         ))}
@@ -1027,8 +1086,8 @@ function LogbookView({ logbookByDate, logbook, uncompleting, onUncomplete, onRef
   );
 }
 
-function ContentView({ content, selected, completing, editingUuid, collapsedProjects, allTags, onComplete, onUpdate, onStartEdit, onCancelEdit, onSelect, onToggleCollapse, onContextMenu, onAppendChecklist, onToggleChecklistItem, onDeleteChecklistItem, isLockedProject, taskConversationMap, onStartCoding, onOpenConversation, onUpdateProject, onDeleteProject, onRefresh }: {
-  content: { title: string; subtitle?: string; notes?: string | null; icon?: string; sections: { label: string; tasks: Task[]; isProject?: boolean; projectUuid?: string; taskCount?: number; isArea?: boolean; areaIcon?: boolean }[] };
+function ContentView({ content, selected, completing, editingUuid, collapsedProjects, allTags, onComplete, onUpdate, onStartEdit, onCancelEdit, onSelect, onToggleCollapse, onContextMenu, onAppendChecklist, onToggleChecklistItem, onDeleteChecklistItem, onDeleteTask, isLockedProject, taskConversationMap, onStartCoding, onOpenConversation, onUpdateProject, onDeleteProject, onRefresh, onMoveTaskToSection, projectLogbookPageSize }: {
+  content: { title: string; subtitle?: string; notes?: string | null; icon?: string; sections: { label: string; tasks: Task[]; isProject?: boolean; projectUuid?: string; taskCount?: number; isArea?: boolean; areaIcon?: boolean; headingId?: string | null }[] };
   selected: SidebarItem; completing: Set<string>; editingUuid: string | null;
   collapsedProjects: Set<string>; allTags: string[]; projects: Project[]; areas: Area[];
   onComplete: (u: string) => void; onUpdate: (u: string, opts: UpdateOpts) => void;
@@ -1038,6 +1097,7 @@ function ContentView({ content, selected, completing, editingUuid, collapsedProj
   onAppendChecklist: (u: string, item: string) => void;
   onToggleChecklistItem: (taskUuid: string, itemUuid: string, completed: boolean) => void;
   onDeleteChecklistItem: (taskUuid: string, itemUuid: string) => void;
+  onDeleteTask: (u: string) => void;
   isLockedProject?: boolean;
   taskConversationMap?: Record<string, { conversationId: string; title: string }>;
   onStartCoding?: (task: Task) => void;
@@ -1045,6 +1105,8 @@ function ContentView({ content, selected, completing, editingUuid, collapsedProj
   onUpdateProject?: (uuid: string, notes: string) => void;
   onDeleteProject?: (uuid: string) => void;
   onRefresh?: () => void;
+  onMoveTaskToSection?: (uuid: string, projectUuid: string, headingId: string | null, headingTitle: string) => void;
+  projectLogbookPageSize: number;
 }) {
   const PREVIEW_COUNT = 3;
   const [editingNotes, setEditingNotes] = useState(false);
@@ -1053,6 +1115,8 @@ function ContentView({ content, selected, completing, editingUuid, collapsedProj
   const [showProjectMenu, setShowProjectMenu] = useState(false);
   const [projectLogbook, setProjectLogbook] = useState<CompletedTask[]>([]);
   const [showLoggedItems, setShowLoggedItems] = useState(false);
+  const [projectLogbookLimit, setProjectLogbookLimit] = useState(projectLogbookPageSize);
+  const [sectionDropTarget, setSectionDropTarget] = useState<string | null>(null);
   const notesRef = useRef<HTMLTextAreaElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -1066,17 +1130,25 @@ function ContentView({ content, selected, completing, editingUuid, collapsedProj
     setShowProjectMenu(false);
     setProjectNotes(content.notes || "");
     setShowLoggedItems(false);
+    setProjectLogbookLimit(projectLogbookPageSize);
     setProjectLogbook([]);
-  }, [projectUuid, content.notes]);
+    setSectionDropTarget(null);
+  }, [projectUuid, content.notes, projectLogbookPageSize]);
+
+  useEffect(() => {
+    if (!showLoggedItems) {
+      setProjectLogbookLimit(projectLogbookPageSize);
+    }
+  }, [projectLogbookPageSize, showLoggedItems]);
 
   // Fetch project logbook when showing logged items
   useEffect(() => {
     if (!isProject || !showLoggedItems || !projectUuid) return;
-    fetch(`/api/tasks/logbook/project/${projectUuid}`)
+    fetch(`/api/tasks/logbook/project/${projectUuid}?limit=${projectLogbookLimit}`)
       .then((r) => r.json())
       .then((d) => setProjectLogbook(d.tasks || []))
       .catch(() => setProjectLogbook([]));
-  }, [isProject, showLoggedItems, projectUuid]);
+  }, [isProject, showLoggedItems, projectUuid, projectLogbookLimit]);
 
   // Close menu on outside click
   useEffect(() => {
@@ -1190,6 +1262,7 @@ function ContentView({ content, selected, completing, editingUuid, collapsedProj
                     allTags={allTags} onContextMenu={onContextMenu} onAppendChecklist={onAppendChecklist}
                     onToggleChecklistItem={onToggleChecklistItem}
                     onDeleteChecklistItem={onDeleteChecklistItem}
+                    onDeleteTask={onDeleteTask}
                     showCodeBtn={isLockedProject} hasConversation={!!taskConversationMap?.[task.uuid]}
                     onStartCoding={() => onStartCoding?.(task)} onOpenConversation={() => onOpenConversation?.(task)} />
                 ))}
@@ -1207,11 +1280,29 @@ function ContentView({ content, selected, completing, editingUuid, collapsedProj
             );
           }
 
-          /* ── Heading section (inside project view) ── */
-          if (section.isArea || (section.label && !section.isProject)) {
+          /* ── Heading sections inside project view (drop targets) ── */
+          if (isProject && !section.isProject && !section.isArea) {
+            const sectionDropKey = `${section.headingId ?? "__none__"}:${section.label || i}`;
+            const canDrop = section.headingId !== undefined && !!projectUuid;
             return (
-              <div key={section.label || `s-${i}`}>
-                {isProject && section.label ? (
+              <div
+                key={section.label || `s-${i}`}
+                className={`t3-project-heading-drop${canDrop && sectionDropTarget === sectionDropKey ? " is-drop-target" : ""}`}
+                onDragOver={canDrop ? (e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "move";
+                  setSectionDropTarget(sectionDropKey);
+                } : undefined}
+                onDragLeave={canDrop ? () => setSectionDropTarget((prev) => prev === sectionDropKey ? null : prev) : undefined}
+                onDrop={canDrop ? (e) => {
+                  e.preventDefault();
+                  setSectionDropTarget(null);
+                  const taskUuid = e.dataTransfer.getData("text/plain");
+                  if (!taskUuid || !projectUuid) return;
+                  onMoveTaskToSection?.(taskUuid, projectUuid, section.headingId ?? null, section.label);
+                } : undefined}
+              >
+                {section.label ? (
                   <div className="t3-heading-section">
                     <span className="t3-heading-label">{section.label}</span>
                     <div className="t3-heading-line" />
@@ -1219,12 +1310,7 @@ function ContentView({ content, selected, completing, editingUuid, collapsedProj
                       <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="13" cy="8" r="1.5"/></svg>
                     </button>
                   </div>
-                ) : (
-                  <SectionLabel className="section-label-flex">
-                    {section.areaIcon && <ListIcon type="area" size={16} />}
-                    {section.label}
-                  </SectionLabel>
-                )}
+                ) : null}
                 {section.tasks.map((task) => (
                   <TaskRow key={task.uuid} task={task} onComplete={onComplete} onUpdate={onUpdate}
                     isCompleting={completing.has(task.uuid)} isEditing={editingUuid === task.uuid}
@@ -1232,6 +1318,34 @@ function ContentView({ content, selected, completing, editingUuid, collapsedProj
                     allTags={allTags} onContextMenu={onContextMenu} onAppendChecklist={onAppendChecklist}
                     onToggleChecklistItem={onToggleChecklistItem}
                     onDeleteChecklistItem={onDeleteChecklistItem}
+                    onDeleteTask={onDeleteTask}
+                    showCodeBtn={isLockedProject} hasConversation={!!taskConversationMap?.[task.uuid]}
+                    onStartCoding={() => onStartCoding?.(task)} onOpenConversation={() => onOpenConversation?.(task)} />
+                ))}
+                {section.tasks.length === 0 && canDrop && (
+                  <div className="t3-section-drop-hint">
+                    {section.label ? "Drop a task here" : "Drop a task here to remove its heading"}
+                  </div>
+                )}
+              </div>
+            );
+          }
+
+          if (section.isArea || (section.label && !section.isProject)) {
+            return (
+              <div key={section.label || `s-${i}`}>
+                <SectionLabel className="section-label-flex">
+                  {section.areaIcon && <ListIcon type="area" size={16} />}
+                  {section.label}
+                </SectionLabel>
+                {section.tasks.map((task) => (
+                  <TaskRow key={task.uuid} task={task} onComplete={onComplete} onUpdate={onUpdate}
+                    isCompleting={completing.has(task.uuid)} isEditing={editingUuid === task.uuid}
+                    onStartEdit={() => onStartEdit(task.uuid)} onCancelEdit={onCancelEdit}
+                    allTags={allTags} onContextMenu={onContextMenu} onAppendChecklist={onAppendChecklist}
+                    onToggleChecklistItem={onToggleChecklistItem}
+                    onDeleteChecklistItem={onDeleteChecklistItem}
+                    onDeleteTask={onDeleteTask}
                     showCodeBtn={isLockedProject} hasConversation={!!taskConversationMap?.[task.uuid]}
                     onStartCoding={() => onStartCoding?.(task)} onOpenConversation={() => onOpenConversation?.(task)} />
                 ))}
@@ -1248,6 +1362,7 @@ function ContentView({ content, selected, completing, editingUuid, collapsedProj
                   allTags={allTags} onContextMenu={onContextMenu} onAppendChecklist={onAppendChecklist}
                   onToggleChecklistItem={onToggleChecklistItem}
                   onDeleteChecklistItem={onDeleteChecklistItem}
+                  onDeleteTask={onDeleteTask}
                   showCodeBtn={isLockedProject} hasConversation={!!taskConversationMap?.[task.uuid]}
                   onStartCoding={() => onStartCoding?.(task)} onOpenConversation={() => onOpenConversation?.(task)} />
               ))}
@@ -1261,7 +1376,13 @@ function ContentView({ content, selected, completing, editingUuid, collapsedProj
           <div className="t3-project-logbook">
             <button
               className="t3-project-logbook-toggle"
-              onClick={() => setShowLoggedItems(!showLoggedItems)}
+              onClick={() => {
+                setShowLoggedItems((prev) => {
+                  const next = !prev;
+                  if (next) setProjectLogbookLimit(projectLogbookPageSize);
+                  return next;
+                });
+              }}
             >
               {showLoggedItems ? "Hide" : "Show"} logged items
             </button>
@@ -1275,6 +1396,14 @@ function ContentView({ content, selected, completing, editingUuid, collapsedProj
                   </div>
                 ))}
               </div>
+            )}
+            {showLoggedItems && projectLogbook.length >= projectLogbookLimit && (
+              <button
+                className="t3-project-logbook-load-more"
+                onClick={() => setProjectLogbookLimit((prev) => prev + projectLogbookPageSize)}
+              >
+                Load more logged items
+              </button>
             )}
             {showLoggedItems && projectLogbook.length === 0 && (
               <div className="t3-project-logbook-empty">No completed tasks</div>
@@ -1316,7 +1445,7 @@ function CompletedRow({ task, isUncompleting, onUncomplete, showProject = true }
 
 /* ── Task row ── */
 
-function TaskRow({ task, onComplete, onUpdate, isCompleting, isEditing, onStartEdit, onCancelEdit, allTags, onContextMenu, onAppendChecklist, onToggleChecklistItem, onDeleteChecklistItem, showCodeBtn, hasConversation, onStartCoding, onOpenConversation }: {
+function TaskRow({ task, onComplete, onUpdate, isCompleting, isEditing, onStartEdit, onCancelEdit, allTags, onContextMenu, onAppendChecklist, onToggleChecklistItem, onDeleteChecklistItem, onDeleteTask, showCodeBtn, hasConversation, onStartCoding, onOpenConversation }: {
   task: Task;
   onComplete: (u: string) => void;
   onUpdate: (u: string, opts: UpdateOpts) => void;
@@ -1329,6 +1458,7 @@ function TaskRow({ task, onComplete, onUpdate, isCompleting, isEditing, onStartE
   onAppendChecklist: (u: string, item: string) => void;
   onToggleChecklistItem: (taskUuid: string, itemUuid: string, completed: boolean) => void;
   onDeleteChecklistItem: (taskUuid: string, itemUuid: string) => void;
+  onDeleteTask?: (u: string) => void;
   showCodeBtn?: boolean;
   hasConversation?: boolean;
   onStartCoding?: () => void;
@@ -1556,6 +1686,11 @@ function TaskRow({ task, onComplete, onUpdate, isCompleting, isEditing, onStartE
             )}
             <div className="t3-row-detail-actions">
               <button className="t3-detail-edit-btn" onClick={() => onStartEdit()}>Edit</button>
+              {onDeleteTask && (
+                <button className="t3-detail-edit-btn t3-detail-delete-btn" onClick={() => onDeleteTask(task.uuid)}>
+                  Delete
+                </button>
+              )}
               {showCodeBtn && (
                 <button className="t3-detail-edit-btn" onClick={() => onStartCoding?.()}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

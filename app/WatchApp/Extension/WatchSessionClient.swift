@@ -31,6 +31,18 @@ final class WatchSessionClient: NSObject {
         lastStatus?.capturedTranscript ?? ""
     }
 
+    var networkMode: String {
+        guard let mode = lastStatus?.networkMode?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !mode.isEmpty else {
+            return "auto"
+        }
+        return mode
+    }
+
+    var networkTargetIp: String {
+        lastStatus?.networkTargetIp ?? ""
+    }
+
     override init() {
         super.init()
         activateIfNeeded()

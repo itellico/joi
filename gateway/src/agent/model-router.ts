@@ -17,6 +17,7 @@ import { recordUsage } from "./usage-tracker.js";
 // Task types that determine which model to use
 export type ModelTask =
   | "chat"           // Main conversation (user-facing, high quality)
+  | "lightweight"    // Casual/no-tool chat turns (cheap + fast)
   | "voice"          // Realtime voice responses (fast + natural)
   | "tool"           // Tool-calling agentic loop (can be cheaper)
   | "utility"        // Fact extraction, classification, consolidation (cheap + fast)
@@ -267,6 +268,12 @@ export async function resolveModel(config: JoiConfig, task: ModelTask, override?
     if (config.auth.openrouterApiKey) return { model: "openai/gpt-4o-mini", provider: "openrouter" };
     if (config.auth.anthropicApiKey) return { model: "claude-haiku-3-20240307", provider: "anthropic" };
     return { model: "qwen3", provider: "ollama" };
+  }
+
+  if (task === "lightweight") {
+    // Lightweight chat defaults to the utility route family.
+    // If lightweight has its own DB route, that authoritative route is used above.
+    return resolveModel(config, "utility", override);
   }
 
   if (task === "tool") {

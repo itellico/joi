@@ -1,5 +1,3 @@
-import { Row } from "./Row";
-
 interface FilterGroupProps {
   options: readonly string[] | readonly number[];
   value: string | number | null;
@@ -10,19 +8,22 @@ interface FilterGroupProps {
 
 export function FilterGroup({ options, value, onChange, labelFn, className }: FilterGroupProps) {
   return (
-    <Row gap={1} className={className}>
+    <div className={`pill-group pill-group--filter ${className ?? ""}`}>
       {options.map((opt) => {
         const key = String(opt);
+        const active = String(value) === key;
         return (
           <button
             key={key}
+            type="button"
             onClick={() => onChange(key)}
-            className={`filter-btn ${String(value) === key ? "filter-btn-active" : ""}`}
+            className={`pill pill--filter filter-btn ${active ? "is-active filter-btn-active" : ""}`}
+            aria-pressed={active}
           >
             {labelFn ? labelFn(key) : key}
           </button>
         );
       })}
-    </Row>
+    </div>
   );
 }

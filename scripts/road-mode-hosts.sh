@@ -24,14 +24,18 @@ HOME_IP="${JOI_MINI_HOME_IP:-192.168.178.58}"
 
 detect_tailscale_ip() {
   local target="${1:-marcuss-mini}"
+  local output=""
   if command -v tailscale >/dev/null 2>&1; then
-    tailscale ip -4 "$target" 2>/dev/null || true
-    return
+    output="$(tailscale ip -4 "$target" 2>/dev/null || true)"
+  elif [[ -x "/Applications/Tailscale.app/Contents/MacOS/Tailscale" ]]; then
+    output="$(/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4 "$target" 2>/dev/null || true)"
   fi
-  if [[ -x "/Applications/Tailscale.app/Contents/MacOS/Tailscale" ]]; then
-    /Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4 "$target" 2>/dev/null || true
-    return
-  fi
+
+  printf "%s\n" "$output" | awk '
+    match($0, /([0-9]{1,3}\.){3}[0-9]{1,3}/) {
+      print substr($0, RSTART, RLENGTH);
+      exit
+    }'
 }
 
 ROAD_IP_DEFAULT="$(detect_tailscale_ip "marcuss-mini")"

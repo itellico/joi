@@ -1,10 +1,37 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 
 struct MessageBubble: View {
     let message: ChatUIMessage
+    var replyPreview: String? = nil
+    var onReply: ((ChatUIMessage) -> Void)? = nil
+    var onForward: ((ChatUIMessage) -> Void)? = nil
+    var onToggleReaction: ((ChatUIMessage, String) -> Void)? = nil
+    var onPin: ((ChatUIMessage) -> Void)? = nil
+    var onReport: ((ChatUIMessage) -> Void)? = nil
+    var onDelete: ((ChatUIMessage) -> Void)? = nil
+    var onSelect: ((ChatUIMessage) -> Void)? = nil
+    var onSelectOnly: ((ChatUIMessage) -> Void)? = nil
+    var isSelected: Bool = false
+    var selectionMode: Bool = false
 
     private var isUser: Bool { message.role == "user" }
     private var isError: Bool { message.isError }
+    private var hasComposerActions: Bool {
+        !message.isStreaming
+            && (message.role == "user" || message.role == "assistant")
+            && (onReply != nil || onForward != nil || hasReactionActions
+                || onPin != nil || onReport != nil || onDelete != nil || onSelectOnly != nil)
+    }
+    private var hasReactionActions: Bool {
+        !message.isStreaming
+            && message.role == "assistant"
+            && onToggleReaction != nil
+    }
 
     private var backgroundColor: Color {
         if isError { return JOIColors.error.opacity(0.12) }
@@ -58,7 +85,44 @@ struct MessageBubble: View {
             }
 
             VStack(alignment: isUser ? .trailing : .leading, spacing: 8) {
+                if selectionMode {
+                    Button {
+                        onSelect?(message)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 12, weight: .semibold))
+                            Text("Select")
+                                .font(JOITypography.labelSmall)
+                        }
+                        .foregroundStyle(JOIColors.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                relationContext
                 messageContent
+                if let firstLink = firstLinkURL {
+                    MessageLinkPreview(url: firstLink)
+                }
+
+                if !message.isStreaming {
+                    Text(timestampLabel)
+                        .font(JOITypography.labelSmall)
+                        .foregroundStyle(JOIColors.textSecondary.opacity(0.78))
+                }
+
+                if !message.attachments.isEmpty {
+                    attachmentChips
+                }
+
+                if !message.mentions.isEmpty {
+                    mentionChips
+                }
+
+                if !reactionEntries.isEmpty {
+                    reactionChips
+                }
 
                 if !message.toolCalls.isEmpty {
                     toolBadges
@@ -78,14 +142,69 @@ struct MessageBubble: View {
                         .padding(.vertical, 1)
                     }
                     .scrollIndicators(.hidden)
+                    .joiHideScrollChrome()
+                }
+
+                if hasComposerActions {
+                    composerActionRow
                 }
             }
-            .padding(.horizontal, 13)
-            .padding(.vertical, 10)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
             .background(backgroundColor)
             .clipShape(bubbleShape)
-            .overlay(bubbleShape.stroke(borderColor, lineWidth: 1))
+            .overlay(
+                bubbleShape
+                    .stroke(isSelected ? JOIColors.secondary.opacity(0.75) : borderColor, lineWidth: isSelected ? 1.6 : 1)
+            )
             .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 3)
+            .contextMenu {
+                if hasReactionActions {
+                    Section("React") {
+                        ForEach(ChatViewModel.quickReactionEmojis, id: \.self) { emoji in
+                            Button(emoji) {
+                                onToggleReaction?(message, emoji)
+                            }
+                        }
+                    }
+                }
+
+                if let onReply {
+                    Button("Reply", systemImage: "arrowshape.turn.up.left") {
+                        onReply(message)
+                    }
+                }
+                if let onForward {
+                    Button("Forward", systemImage: "arrowshape.turn.up.right") {
+                        onForward(message)
+                    }
+                }
+                if let onPin {
+                    Button(message.pinned ? "Unpin" : "Pin", systemImage: message.pinned ? "pin.slash" : "pin") {
+                        onPin(message)
+                    }
+                }
+                if let onReport {
+                    Button("Report", systemImage: "exclamationmark.bubble") {
+                        onReport(message)
+                    }
+                }
+                if let onDelete {
+                    Button("Delete", systemImage: "trash", role: .destructive) {
+                        onDelete(message)
+                    }
+                }
+                if let onSelectOnly {
+                    Button("Select", systemImage: "checkmark.circle") {
+                        onSelectOnly(message)
+                    }
+                }
+                if !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Button("Copy Text", systemImage: "doc.on.doc") {
+                        copyMessageTextToClipboard()
+                    }
+                }
+            }
         }
     }
 
@@ -101,14 +220,258 @@ struct MessageBubble: View {
                 StreamingDots()
             }
         } else {
-            Text(message.content)
-                .font(JOITypography.bodyMedium)
+            Text(parsedMarkdownContent)
+                .font(messageBodyFont)
                 .foregroundStyle(JOIColors.textPrimary)
+                .tint(JOIColors.secondary)
                 .lineSpacing(5)
                 .multilineTextAlignment(.leading)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    @ViewBuilder
+    private var relationContext: some View {
+        if message.pinned {
+            MessageContextChip(
+                icon: "pin.fill",
+                text: "Pinned",
+                accent: JOIColors.secondary.opacity(0.88))
+        }
+
+        if message.reported {
+            MessageContextChip(
+                icon: "exclamationmark.triangle.fill",
+                text: message.reportNote.flatMap { note in
+                    let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return trimmed.isEmpty ? nil : "Reported: \(trimmed)"
+                } ?? "Reported",
+                accent: JOIColors.warning.opacity(0.9))
+        }
+
+        if let replyToId = message.replyToMessageId {
+            MessageContextChip(
+                icon: "arrowshape.turn.up.left",
+                text: "Replying to \(replyPreviewText(replyToId: replyToId))")
+        }
+
+        if let forwardOf = message.forwardOfMessageId {
+            let sourceLabel = forwardedSourceRole ?? "message"
+            MessageContextChip(
+                icon: "arrowshape.turn.up.right",
+                text: "Forwarded from \(sourceLabel)",
+                accent: JOIColors.warning.opacity(0.82))
+                .accessibilityLabel("Forwarded from \(sourceLabel), id \(forwardOf)")
+        }
+    }
+
+    private var attachmentChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(Array(message.attachments.enumerated()), id: \.offset) { entry in
+                    let attachment = entry.element
+                    MessageContextChip(
+                        icon: attachmentIcon(for: attachment),
+                        text: attachment.name ?? attachment.type,
+                        accent: JOIColors.textSecondary.opacity(0.72))
+                }
+            }
+            .padding(.vertical, 1)
+        }
+        .scrollIndicators(.hidden)
+        .joiHideScrollChrome()
+    }
+
+    private var mentionChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(message.mentions.indices, id: \.self) { index in
+                    let mention = message.mentions[index]
+                    MessageContextChip(
+                        icon: "at",
+                        text: "@\(mention.value)",
+                        accent: JOIColors.secondary.opacity(0.88))
+                }
+            }
+            .padding(.vertical, 1)
+        }
+        .scrollIndicators(.hidden)
+        .joiHideScrollChrome()
+    }
+
+    private var reactionEntries: [(emoji: String, count: Int, reacted: Bool)] {
+        message.reactions
+            .compactMap { (emoji: String, actors: [String]) -> (emoji: String, count: Int, reacted: Bool)? in
+                let normalizedEmoji = emoji.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !normalizedEmoji.isEmpty else { return nil }
+                let uniqueActors = Array(Set(actors))
+                guard !uniqueActors.isEmpty else { return nil }
+                return (
+                    emoji: normalizedEmoji,
+                    count: uniqueActors.count,
+                    reacted: uniqueActors.contains(ChatViewModel.reactionActorId)
+                )
+            }
+            .sorted { lhs, rhs in
+                if lhs.count == rhs.count {
+                    return lhs.emoji < rhs.emoji
+                }
+                return lhs.count > rhs.count
+            }
+    }
+
+    private var reactionChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(reactionEntries, id: \.emoji) { entry in
+                    Button {
+                        onToggleReaction?(message, entry.emoji)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(entry.emoji)
+                                .font(.system(size: 13))
+                            if entry.count > 1 {
+                                Text("\(entry.count)")
+                                    .font(JOITypography.labelSmall)
+                                    .foregroundStyle(JOIColors.textSecondary)
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(entry.reacted ? JOIColors.secondary.opacity(0.18) : JOIColors.surfaceVariant.opacity(0.62))
+                        .clipShape(Capsule())
+                        .overlay(
+                            Capsule()
+                                .stroke(entry.reacted ? JOIColors.secondary.opacity(0.6) : JOIColors.border.opacity(0.5), lineWidth: 0.9)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.vertical, 1)
+        }
+        .scrollIndicators(.hidden)
+        .joiHideScrollChrome()
+    }
+
+    private var composerActionRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                if hasReactionActions {
+                    HStack(spacing: 5) {
+                        ForEach(ChatViewModel.quickReactionEmojis, id: \.self) { emoji in
+                            Button {
+                                onToggleReaction?(message, emoji)
+                            } label: {
+                                Text(emoji)
+                                    .font(.system(size: 13))
+                                    .frame(width: 24, height: 24)
+                                    .background(JOIColors.surface.opacity(0.68))
+                                    .clipShape(Circle())
+                                    .overlay(
+                                        Circle()
+                                            .stroke(JOIColors.border.opacity(0.5), lineWidth: 0.9)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                if let onReply {
+                    actionButton(label: "Reply", icon: "arrowshape.turn.up.left") {
+                        onReply(message)
+                    }
+                }
+
+                if let onForward {
+                    actionButton(label: "Forward", icon: "arrowshape.turn.up.right") {
+                        onForward(message)
+                    }
+                }
+
+                if let onPin {
+                    actionButton(label: message.pinned ? "Unpin" : "Pin", icon: message.pinned ? "pin.slash" : "pin") {
+                        onPin(message)
+                    }
+                }
+
+                if let onReport {
+                    actionButton(label: "Report", icon: "exclamationmark.bubble") {
+                        onReport(message)
+                    }
+                }
+
+                if let onDelete {
+                    actionButton(label: "Delete", icon: "trash") {
+                        onDelete(message)
+                    }
+                }
+
+                if let onSelectOnly {
+                    actionButton(label: "Select", icon: "checkmark.circle") {
+                        onSelectOnly(message)
+                    }
+                }
+            }
+            .padding(.vertical, 1)
+        }
+        .scrollIndicators(.hidden)
+        .joiHideScrollChrome()
+    }
+
+    private func actionButton(label: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.system(size: 11, weight: .semibold))
+                Text(label)
+                    .font(JOITypography.labelSmall)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            .foregroundStyle(JOIColors.textPrimary.opacity(0.95))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(JOIColors.surface.opacity(0.68))
+            .clipShape(Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(JOIColors.border.opacity(0.5), lineWidth: 0.9)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func replyPreviewText(replyToId: String) -> String {
+        if let replyPreview {
+            let trimmed = replyPreview.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return trimmed.count > 90 ? "\(trimmed.prefix(87))..." : trimmed
+            }
+        }
+        return "message \(replyToId.prefix(8))"
+    }
+
+    private var forwardedSourceRole: String? {
+        guard let forwardingMetadata = message.forwardingMetadata?.value as? [String: Any] else {
+            return nil
+        }
+        if let role = forwardingMetadata["sourceRole"] as? String,
+           !role.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return role
+        }
+        return nil
+    }
+
+    private func attachmentIcon(for attachment: ChatAttachment) -> String {
+        let lowerType = attachment.type.lowercased()
+        if lowerType.contains("photo") || lowerType.contains("image") { return "photo" }
+        if lowerType.contains("video") { return "video" }
+        if lowerType.contains("audio") || lowerType.contains("voice") { return "waveform" }
+        if lowerType.contains("doc") { return "doc.text" }
+        return "paperclip"
     }
 
     private var toolBadges: some View {
@@ -121,6 +484,7 @@ struct MessageBubble: View {
             .padding(.vertical, 1)
         }
         .scrollIndicators(.hidden)
+        .joiHideScrollChrome()
     }
 
     private var metadataChips: [MetaChipModel]? {
@@ -206,6 +570,41 @@ struct MessageBubble: View {
         return "Working on that now..."
     }
 
+    private var parsedMarkdownContent: AttributedString {
+        guard !message.content.isEmpty else {
+            return AttributedString("")
+        }
+        let options = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .full,
+            failurePolicy: .returnPartiallyParsedIfPossible
+        )
+        if let parsed = try? AttributedString(markdown: message.content, options: options) {
+            return parsed
+        }
+        return AttributedString(message.content)
+    }
+
+    private var messageBodyFont: Font {
+        #if os(iOS)
+        return JOITypography.bodyLarge
+        #else
+        return JOITypography.bodyMedium
+        #endif
+    }
+
+    private var firstLinkURL: URL? {
+        guard !message.content.isEmpty else { return nil }
+        let source = message.content as NSString
+        let range = NSRange(location: 0, length: source.length)
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else {
+            return nil
+        }
+        let match = detector.firstMatch(in: message.content, options: [], range: range)
+        guard let url = match?.url else { return nil }
+        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return nil }
+        return url
+    }
+
     private func shortModelName(_ model: String) -> String {
         model
             .replacingOccurrences(of: "anthropic/", with: "")
@@ -220,6 +619,131 @@ struct MessageBubble: View {
             return "\(milliseconds)ms"
         }
         return String(format: "%.1fs", Double(milliseconds) / 1000.0)
+    }
+
+    private var timestampLabel: String {
+        Self.timestampFormatter.string(from: message.createdAt)
+    }
+
+    private func copyMessageTextToClipboard() {
+        #if os(iOS)
+        UIPasteboard.general.string = message.content
+        #elseif os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(message.content, forType: .string)
+        #endif
+    }
+
+    private static let timestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+}
+
+private struct MessageLinkPreview: View {
+    let url: URL
+    @State private var preview: LinkPreviewModel?
+    @State private var attempted = false
+
+    var body: some View {
+        Group {
+            if let preview {
+                Button {
+                    openLink(url)
+                } label: {
+                    HStack(spacing: 10) {
+                        if let imageURL = preview.imageURL {
+                            AsyncImage(url: imageURL) { image in
+                                image
+                                    .resizable()
+                                    .scaledToFill()
+                            } placeholder: {
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(JOIColors.surfaceVariant.opacity(0.5))
+                            }
+                            .frame(width: 72, height: 72)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        }
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            if let site = preview.siteName, !site.isEmpty {
+                                Text(site)
+                                    .font(JOITypography.labelSmall)
+                                    .foregroundStyle(JOIColors.textSecondary)
+                                    .lineLimit(1)
+                            }
+                            Text(preview.title)
+                                .font(JOITypography.bodySmall)
+                                .foregroundStyle(JOIColors.textPrimary)
+                                .lineLimit(1)
+                            if let description = preview.description, !description.isEmpty {
+                                Text(description)
+                                    .font(JOITypography.labelSmall)
+                                    .foregroundStyle(JOIColors.textSecondary)
+                                    .lineLimit(2)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(8)
+                    .background(JOIColors.surfaceVariant.opacity(0.52))
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(JOIColors.border.opacity(0.6), lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .task(id: url.absoluteString) {
+            await fetchPreviewIfNeeded()
+        }
+    }
+
+    private func fetchPreviewIfNeeded() async {
+        if attempted { return }
+        attempted = true
+
+        let gatewayWSURL = GatewayURLResolver.configuredGatewayURL()
+        let baseURL = gatewayWSURL
+            .replacingOccurrences(of: "ws://", with: "http://")
+            .replacingOccurrences(of: "wss://", with: "https://")
+            .replacingOccurrences(of: "/ws", with: "")
+        guard let endpoint = URL(string: "\(baseURL)/api/chat/link-preview?url=\(url.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")") else {
+            return
+        }
+
+        do {
+            let (data, response) = try await URLSession.shared.data(from: endpoint)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { return }
+            let decoded = try JSONDecoder().decode(LinkPreviewModel.self, from: data)
+            preview = decoded
+        } catch {
+            // keep preview fetch best-effort
+        }
+    }
+
+    private func openLink(_ url: URL) {
+        #if os(iOS)
+        UIApplication.shared.open(url)
+        #elseif os(macOS)
+        NSWorkspace.shared.open(url)
+        #endif
+    }
+}
+
+private struct LinkPreviewModel: Decodable {
+    let url: String
+    let title: String
+    let description: String?
+    let imageUrl: String?
+    let siteName: String?
+
+    var imageURL: URL? {
+        guard let imageUrl else { return nil }
+        return URL(string: imageUrl)
     }
 }
 
@@ -249,6 +773,32 @@ private struct MetaChip: View {
     }
 }
 
+private struct MessageContextChip: View {
+    let icon: String
+    let text: String
+    var accent: Color = JOIColors.textSecondary.opacity(0.85)
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: icon)
+                .font(.system(size: 9, weight: .semibold))
+            Text(text)
+                .font(JOITypography.labelSmall)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .foregroundStyle(accent)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4)
+        .background(JOIColors.surfaceVariant.opacity(0.55))
+        .clipShape(Capsule())
+        .overlay(
+            Capsule()
+                .stroke(accent.opacity(0.18), lineWidth: 0.8)
+        )
+    }
+}
+
 private struct ElapsedChip: View {
     let startedAt: Date
 
@@ -270,15 +820,16 @@ private struct ToolBadge: View {
     let toolCall: ChatUIToolCall
 
     private var isPending: Bool { toolCall.result == nil && !toolCall.isError }
+    private var sourceDescriptor: SourceChipDescriptor {
+        SourceChipCatalog.descriptor(forToolName: toolCall.name, isActive: isPending)
+    }
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.2)) { timeline in
             let durationMs = toolCall.durationMs ?? liveDurationMs(now: timeline.date)
 
             HStack(spacing: 6) {
-                Image(systemName: statusIcon)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(statusColor)
+                SourceFaviconDot(descriptor: sourceDescriptor, size: 14)
 
                 Text(formatToolName(toolCall.name))
                     .font(JOITypography.labelSmall)
@@ -295,8 +846,13 @@ private struct ToolBadge: View {
 
                 if isPending {
                     ProgressView()
+                        .progressViewStyle(.circular)
                         .controlSize(.mini)
                         .tint(JOIColors.primary.opacity(0.85))
+                } else {
+                    Image(systemName: statusIcon)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(statusColor)
                 }
             }
             .padding(.horizontal, 8)

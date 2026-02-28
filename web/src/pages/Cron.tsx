@@ -120,8 +120,8 @@ function formatDuration(ms: number): string {
 function jobMeta(job: CronJob): { icon: string; color: string } {
   const n = job.name;
   if (n.includes("birthday")) return { icon: "🎂", color: "#f472b6" };
-  if (n.includes("scan_channel")) return { icon: "📡", color: "#22d3ee" };
-  if (n.includes("relationship") || n.includes("radar")) return { icon: "🤝", color: "#a78bfa" };
+  if (n.includes("scan_channel")) return { icon: "📡", color: "#ff8a2f" };
+  if (n.includes("relationship") || n.includes("radar")) return { icon: "🤝", color: "#ff5a1f" };
   if (n.includes("security") || n.includes("audit")) return { icon: "🛡️", color: "#f87171" };
   if (n.includes("accounting") || n.includes("invoice") || n.includes("collect")) return { icon: "💰", color: "#fbbf24" };
   if (n.includes("consolidat") || n.includes("memor")) return { icon: "🧠", color: "#c084fc" };
@@ -132,7 +132,7 @@ function jobMeta(job: CronJob): { icon: string; color: string } {
   if (n.includes("knowledge")) return { icon: "📚", color: "#38bdf8" };
   if (n.includes("skill")) return { icon: "🎯", color: "#f59e0b" };
   if (job.payload_kind === "system_event") return { icon: "⚙️", color: "#8888a4" };
-  return { icon: "🤖", color: "#a78bfa" };
+  return { icon: "🤖", color: "#ff5a1f" };
 }
 
 export default function Cron() {

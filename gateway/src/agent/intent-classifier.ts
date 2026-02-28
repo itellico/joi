@@ -17,6 +17,18 @@ export interface IntentClassification {
   confidence: number;
 }
 
+const DOMAIN_TO_SPECIALIST_AGENT: Record<string, string> = {
+  media: "media-integrations",
+  email: "email",
+  task: "blitz",
+  calendar: "blitz",
+  contact: "radar",
+  message: "bridge",
+  accounting: "accounting-orchestrator",
+  code: "coder",
+  lookup: "scout",
+};
+
 const CLASSIFIER_SYSTEM_PROMPT = `You classify messages for a personal AI assistant named JOI.
 Return ONLY a JSON object, no markdown fences.
 
@@ -37,7 +49,16 @@ domain — pick the best match:
 - "lookup" — memory, knowledge, search, documents, notes
 - "general" — anything else
 
-routeToAgent: "media-integrations" if domain is media. "email" if domain is email. null otherwise.
+routeToAgent:
+- "media-integrations" for media
+- "email" for email
+- "blitz" for task or calendar
+- "radar" for contact
+- "bridge" for message
+- "accounting-orchestrator" for accounting
+- "coder" for code
+- "scout" for lookup
+- null for weather or general
 
 confidence: 0.0-1.0 how confident you are.`;
 
@@ -60,6 +81,41 @@ const cache = new Map<string, { result: IntentClassification; ts: number }>();
 const CACHE_TTL_MS = 120_000;
 const CLASSIFIER_TIMEOUT_MS = 1500; // Hard timeout — fallback to tools-enabled if slower
 
+const SMALL_TALK_PATTERNS: RegExp[] = [
+  /^(hi|hey|hello|yo|hallo|servus|moin)$/i,
+  /^(ok|okay|alles klar|cool|super|top|danke|thanks|thx|merci)$/i,
+  /^(wie gehts|wie geht es)( dir)?$/i,
+  /^how are you$/i,
+  /^hows it going$/i,
+  /^what'?s up$/i,
+  /^was geht$/i,
+];
+
+function normalizeSmallTalkInput(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s']/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isSmallTalkNoTools(value: string): boolean {
+  const normalized = normalizeSmallTalkInput(value);
+  if (!normalized) return false;
+  const tokenCount = normalized.split(" ").filter(Boolean).length;
+  if (tokenCount > 6) return false;
+  return SMALL_TALK_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function normalizeRouteToAgent(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const cleaned = value.trim().toLowerCase();
+  if (!cleaned || cleaned === "null" || cleaned === "none") return null;
+  return cleaned;
+}
+
 function cleanCache(): void {
   const now = Date.now();
   for (const [key, entry] of cache) {
@@ -78,6 +134,9 @@ export async function classifyIntent(
 ): Promise<IntentClassification> {
   const trimmed = message.trim();
   if (!trimmed) return NO_TOOLS_CLASSIFICATION;
+  if (isSmallTalkNoTools(trimmed)) {
+    return NO_TOOLS_CLASSIFICATION;
+  }
 
   // Check cache
   const cached = cache.get(trimmed);
@@ -109,6 +168,12 @@ export async function classifyIntent(
   } catch (err) {
     const latencyMs = Date.now() - startMs;
     const isTimeout = err instanceof Error && err.message === "classifier_timeout";
+    if (isSmallTalkNoTools(trimmed)) {
+      console.warn(
+        `[intent-classifier] ${isTimeout ? "Timeout" : "Failed"} after ${latencyMs}ms, defaulting to no-tools (small talk)`,
+      );
+      return NO_TOOLS_CLASSIFICATION;
+    }
     console.warn(
       `[intent-classifier] ${isTimeout ? "Timeout" : "Failed"} after ${latencyMs}ms, defaulting to tools-enabled:`,
       isTimeout ? `>${CLASSIFIER_TIMEOUT_MS}ms` : (err instanceof Error ? err.message : err),
@@ -161,10 +226,16 @@ async function classifyWithLLM(message: string, config: JoiConfig): Promise<Inte
   }
 
   const parsed = JSON.parse(jsonMatch[0]);
+  const domain = typeof parsed.domain === "string" && parsed.domain.trim().length > 0
+    ? parsed.domain.trim().toLowerCase()
+    : "general";
+  const parsedRoute = normalizeRouteToAgent(parsed.routeToAgent);
+  const routeToAgent = parsedRoute ?? DOMAIN_TO_SPECIALIST_AGENT[domain] ?? null;
+
   return {
     needsTools: typeof parsed.needsTools === "boolean" ? parsed.needsTools : true,
-    domain: typeof parsed.domain === "string" ? parsed.domain : "general",
-    routeToAgent: typeof parsed.routeToAgent === "string" ? parsed.routeToAgent : null,
+    domain,
+    routeToAgent,
     confidence: typeof parsed.confidence === "number" ? parsed.confidence : 0.5,
   };
 }

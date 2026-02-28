@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Quality OS v5 - Agent Matrix</title>
+    <style>
+      :root {
+        --ink: #101828;
+        --muted: #5f6c85;
+        --line: #d7dfec;
+        --panel: rgba(255, 255, 255, 0.84);
+        --panel-solid: #ffffff;
+        --bg-a: #e9f4ff;
+        --bg-b: #eef1ff;
+        --bg-c: #f8faff;
+        --brand: #1677ff;
+        --ok: #1e9f5b;
+        --warn: #e88a10;
+        --bad: #dd3345;
+        --radius-xl: 22px;
+        --radius-lg: 16px;
+        --radius-md: 12px;
+        --shadow: 0 25px 55px rgba(27, 39, 73, 0.09);
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Avenir Next", "SF Pro Display", "Segoe UI", sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(70rem 70rem at -5% -20%, var(--bg-a) 0%, rgba(233, 244, 255, 0) 65%),
+          radial-gradient(65rem 65rem at 105% -25%, var(--bg-b) 0%, rgba(238, 241, 255, 0) 60%),
+          var(--bg-c);
+      }
+
+      .wrap {
+        width: min(1220px, 100% - 26px);
+        margin: 18px auto 28px;
+        display: grid;
+        gap: 14px;
+      }
+
+      .hero {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-xl);
+        padding: 16px 18px;
+        background: var(--panel);
+        backdrop-filter: blur(10px);
+        box-shadow: var(--shadow);
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: center;
+      }
+
+      .hero h1 {
+        margin: 0;
+        font-size: 30px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+      }
+
+      .hero p {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .hero-right {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+
+      .tag {
+        border-radius: 999px;
+        border: 1px solid #b7d6ff;
+        background: #eef6ff;
+        color: #0d5fbc;
+        font-size: 12px;
+        padding: 7px 11px;
+        white-space: nowrap;
+      }
+
+      .pulse {
+        border-color: #cdebd8;
+        background: #effcf4;
+        color: #0f7d46;
+      }
+
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        background: var(--panel-solid);
+        box-shadow: 0 10px 28px rgba(28, 43, 84, 0.06);
+        padding: 14px;
+      }
+
+      .kpis {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .kpi {
+        border: 1px solid #dce4f1;
+        border-radius: 13px;
+        background: #fbfdff;
+        padding: 9px 10px;
+      }
+
+      .kpi span {
+        font-size: 11px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      .kpi b {
+        display: block;
+        margin-top: 4px;
+        font-size: 23px;
+        font-weight: 700;
+      }
+
+      .title-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: end;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+
+      .title-row h2 {
+        margin: 0;
+        font-size: 21px;
+        font-weight: 680;
+        letter-spacing: -0.01em;
+      }
+
+      .title-row p {
+        margin: 3px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .legend {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        display: inline-block;
+        margin-right: 5px;
+      }
+
+      .g { background: var(--ok); }
+      .o { background: var(--warn); }
+      .r { background: var(--bad); }
+
+      .matrix-wrap {
+        overflow: auto;
+        border: 1px solid #dde5f2;
+        border-radius: 14px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        min-width: 980px;
+      }
+
+      thead th {
+        text-align: left;
+        padding: 11px 10px;
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #677489;
+        background: #f6f9ff;
+        border-bottom: 1px solid #dde5f2;
+      }
+
+      tbody td {
+        padding: 11px 10px;
+        border-bottom: 1px solid #e6ecf6;
+        vertical-align: top;
+        font-size: 14px;
+      }
+
+      tbody tr:last-child td { border-bottom: 0; }
+
+      .agent {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .agent .ring {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+      }
+
+      .quality {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: 650;
+      }
+
+      .score-badge {
+        width: 38px;
+        height: 38px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .score-good { background: #e8f8ef; color: #0f7d46; border: 1px solid #bde7cf; }
+      .score-mid { background: #fff6e8; color: #9a5710; border: 1px solid #f7cf95; }
+      .score-bad { background: #feeef0; color: #a82436; border: 1px solid #f7c0c9; }
+
+      .chip {
+        display: inline-block;
+        border-radius: 999px;
+        border: 1px solid #d8e2f3;
+        background: #f8fbff;
+        color: #3e5f8b;
+        font-size: 11px;
+        padding: 3px 8px;
+        margin-right: 5px;
+        margin-bottom: 4px;
+      }
+
+      .chip.bad { border-color: #f4bec7; background: #feeff1; color: #a72436; }
+      .chip.warn { border-color: #f7d4a6; background: #fff7ee; color: #9a5410; }
+      .chip.ok { border-color: #bbe7cf; background: #ecfdf3; color: #0f7d46; }
+
+      .spark {
+        width: 92px;
+        height: 26px;
+      }
+
+      .state {
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .state.ok { color: #0f7d46; }
+      .state.warn { color: #9a5710; }
+      .state.bad { color: #a82436; }
+
+      .heatmap {
+        display: grid;
+        gap: 10px;
+      }
+
+      .heat-head,
+      .heat-row {
+        display: grid;
+        grid-template-columns: 170px repeat(6, minmax(0, 1fr));
+        gap: 7px;
+      }
+
+      .heat-head div {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: #6b758a;
+      }
+
+      .skill-name {
+        font-size: 13px;
+        color: #344154;
+      }
+
+      .cell {
+        height: 24px;
+        border-radius: 7px;
+        border: 1px solid #d9e2f0;
+      }
+
+      .cell.ok { background: #e8f8ef; border-color: #bde7cf; }
+      .cell.warn { background: #fff6e8; border-color: #f7cf95; }
+      .cell.bad { background: #feeef0; border-color: #f7c0c9; }
+
+      @media (max-width: 1080px) {
+        .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      }
+
+      @media (max-width: 720px) {
+        .hero {
+          flex-direction: column;
+          align-items: start;
+        }
+
+        .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+        .heat-head,
+        .heat-row {
+          grid-template-columns: 140px repeat(6, minmax(32px, 1fr));
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <section class="hero">
+        <div>
+          <h1>Agent Quality Matrix</h1>
+          <p>Everything auto-tested. One glance shows who is healthy, risky, or broken.</p>
+        </div>
+        <div class="hero-right">
+          <span class="tag pulse">Live Autopilot</span>
+          <span class="tag">Flagged chats auto-linked</span>
+          <span class="tag">AutoCoder repairing</span>
+        </div>
+      </section>
+
+      <section class="panel kpis">
+        <div class="kpi"><span>Agents</span><b>12</b></div>
+        <div class="kpi"><span>Skills</span><b>67</b></div>
+        <div class="kpi"><span>Test Cases</span><b>412</b></div>
+        <div class="kpi"><span>Runs (24h)</span><b>1,184</b></div>
+        <div class="kpi"><span>Pass Rate</span><b>87.8%</b></div>
+        <div class="kpi"><span>Open Repairs</span><b>23</b></div>
+      </section>
+
+      <section class="panel">
+        <div class="title-row">
+          <div>
+            <h2>Agent Matrix</h2>
+            <p>Quality score + skills + issues + trend + self-healing status.</p>
+          </div>
+          <div class="legend">
+            <span><span class="dot g"></span>Healthy</span>
+            <span><span class="dot o"></span>At Risk</span>
+            <span><span class="dot r"></span>Broken</span>
+          </div>
+        </div>
+
+        <div class="matrix-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Agent</th>
+                <th>Quality</th>
+                <th>Skills</th>
+                <th>Issues</th>
+                <th>Trend</th>
+                <th>Auto-repair</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <div class="agent"><span class="ring g" style="background: var(--ok)"></span>personal</div>
+                </td>
+                <td>
+                  <span class="quality"><span class="score-badge score-mid">82</span>Good</span>
+                </td>
+                <td>18 / 22 passing</td>
+                <td>
+                  <span class="chip bad">P1 x2</span>
+                  <span class="chip warn">P2 x2</span>
+                </td>
+                <td>
+                  <svg class="spark" viewBox="0 0 92 26" fill="none" aria-label="trend">
+                    <path d="M2 18L16 16L28 14L40 15L52 12L66 10L78 8L90 7" stroke="#1e9f5b" stroke-width="2.4" stroke-linecap="round" />
+                  </svg>
+                </td>
+                <td><span class="state warn">Repairing 2 issues</span></td>
+              </tr>
+
+              <tr>
+                <td>
+                  <div class="agent"><span class="ring g" style="background: var(--ok)"></span>knowledge-sync</div>
+                </td>
+                <td>
+                  <span class="quality"><span class="score-badge score-good">91</span>Strong</span>
+                </td>
+                <td>12 / 13 passing</td>
+                <td>
+                  <span class="chip bad">P1 x1</span>
+                </td>
+                <td>
+                  <svg class="spark" viewBox="0 0 92 26" fill="none">
+                    <path d="M2 16L14 15L26 14L38 12L50 11L64 9L78 8L90 8" stroke="#1e9f5b" stroke-width="2.4" stroke-linecap="round" />
+                  </svg>
+                </td>
+                <td><span class="state ok">Stable</span></td>
+              </tr>
+
+              <tr>
+                <td>
+                  <div class="agent"><span class="ring o" style="background: var(--warn)"></span>skill-scout</div>
+                </td>
+                <td>
+                  <span class="quality"><span class="score-badge score-mid">73</span>Risky</span>
+                </td>
+                <td>8 / 11 passing</td>
+                <td>
+                  <span class="chip bad">P1 x1</span>
+                  <span class="chip warn">P2 x2</span>
+                  <span class="chip warn">Untested x1</span>
+                </td>
+                <td>
+                  <svg class="spark" viewBox="0 0 92 26" fill="none">
+                    <path d="M2 10L16 11L28 12L40 14L52 15L66 17L78 18L90 20" stroke="#dd3345" stroke-width="2.4" stroke-linecap="round" />
+                  </svg>
+                </td>
+                <td><span class="state bad">Needs intervention</span></td>
+              </tr>
+
+              <tr>
+                <td>
+                  <div class="agent"><span class="ring g" style="background: var(--ok)"></span>store-auditor</div>
+                </td>
+                <td>
+                  <span class="quality"><span class="score-badge score-good">96</span>Excellent</span>
+                </td>
+                <td>9 / 9 passing</td>
+                <td>
+                  <span class="chip ok">No open issues</span>
+                </td>
+                <td>
+                  <svg class="spark" viewBox="0 0 92 26" fill="none">
+                    <path d="M2 14L16 13L28 12L40 11L52 9L66 8L78 7L90 6" stroke="#1e9f5b" stroke-width="2.4" stroke-linecap="round" />
+                  </svg>
+                </td>
+                <td><span class="state ok">Self-healed</span></td>
+              </tr>
+
+              <tr>
+                <td>
+                  <div class="agent"><span class="ring o" style="background: var(--warn)"></span>bmd-uploader</div>
+                </td>
+                <td>
+                  <span class="quality"><span class="score-badge score-mid">78</span>Watch</span>
+                </td>
+                <td>7 / 8 passing</td>
+                <td>
+                  <span class="chip bad">P1 x1</span>
+                  <span class="chip warn">Untested x1</span>
+                </td>
+                <td>
+                  <svg class="spark" viewBox="0 0 92 26" fill="none">
+                    <path d="M2 12L16 12L28 13L40 12L52 11L66 11L78 10L90 9" stroke="#e88a10" stroke-width="2.4" stroke-linecap="round" />
+                  </svg>
+                </td>
+                <td><span class="state warn">Queued for repair</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="title-row">
+          <div>
+            <h2>Skill Heatmap</h2>
+            <p>Rows are skills, columns are key agents. Red cells are where quality fails.</p>
+          </div>
+          <div class="legend">
+            <span><span class="dot g"></span>Pass</span>
+            <span><span class="dot o"></span>Weak</span>
+            <span><span class="dot r"></span>Fail</span>
+          </div>
+        </div>
+
+        <div class="heatmap">
+          <div class="heat-head">
+            <div></div>
+            <div>personal</div>
+            <div>knowledge</div>
+            <div>scout</div>
+            <div>store</div>
+            <div>bmd</div>
+            <div>social</div>
+          </div>
+
+          <div class="heat-row">
+            <div class="skill-name">memory_recall</div>
+            <div class="cell bad"></div><div class="cell ok"></div><div class="cell warn"></div><div class="cell ok"></div><div class="cell ok"></div><div class="cell warn"></div>
+          </div>
+          <div class="heat-row">
+            <div class="skill-name">tool_selection</div>
+            <div class="cell bad"></div><div class="cell ok"></div><div class="cell bad"></div><div class="cell ok"></div><div class="cell warn"></div><div class="cell ok"></div>
+          </div>
+          <div class="heat-row">
+            <div class="skill-name">latency_control</div>
+            <div class="cell warn"></div><div class="cell warn"></div><div class="cell bad"></div><div class="cell ok"></div><div class="cell warn"></div><div class="cell ok"></div>
+          </div>
+          <div class="heat-row">
+            <div class="skill-name">social_posting</div>
+            <div class="cell ok"></div><div class="cell warn"></div><div class="cell warn"></div><div class="cell ok"></div><div class="cell ok"></div><div class="cell bad"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
