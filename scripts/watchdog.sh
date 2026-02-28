@@ -289,11 +289,7 @@ gateway_pids() {
 autodev_pids() {
   ps -Ao pid=,command= | awk -v root="$PROJECT_ROOT" '
     index($0, root) {
-      if (
-        $0 ~ /scripts\/dev-autodev\.sh/ ||
-        $0 ~ /src\/autodev\/worker\.ts/ ||
-        $0 ~ /dist\/autodev\/worker\.js/
-      ) {
+      if ($0 ~ /scripts\/dev-autodev\.sh/ || $0 ~ /src\/autodev\/worker\.ts/ || $0 ~ /dist\/autodev\/worker\.js/) {
         print $1
       }
     }
